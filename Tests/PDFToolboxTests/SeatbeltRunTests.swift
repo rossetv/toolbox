@@ -33,7 +33,7 @@ final class SeatbeltRunTests: XCTestCase {
 
     // MARK: the M1-critical positive test — a REAL sandboxed gs compression
 
-    func testRealSandboxedCompressionProducesSmallerValidPDF() throws {
+    func testRealSandboxedCompressionProducesSmallerValidPDF() async throws {
         let runner = try GhostscriptRunner()   // bundled gs via Bundle.main
         let input = try Fixtures.imagePDF()
         let outDir = input.deletingLastPathComponent()
@@ -42,7 +42,7 @@ final class SeatbeltRunTests: XCTestCase {
         let before = TestSupport.fileSize(input)
         XCTAssertGreaterThan(before, 1_000_000, "image fixture should be several MB")
 
-        let result = try runner.run(
+        let result = try await runner.run(
             arguments: ["-sDEVICE=pdfwrite", "-dPDFSETTINGS=/ebook",
                         "-sOutputFile=\(output.path)", input.path],
             readPaths: [input],
@@ -63,7 +63,7 @@ final class SeatbeltRunTests: XCTestCase {
 
     // MARK: the sandbox actually confines — a write outside the scope is denied
 
-    func testWriteOutsideScopeIsDenied() throws {
+    func testWriteOutsideScopeIsDenied() async throws {
         let runner = try GhostscriptRunner()
         let input = try Fixtures.imagePDF()
         let inDir = input.deletingLastPathComponent()
@@ -71,7 +71,7 @@ final class SeatbeltRunTests: XCTestCase {
         // A sibling directory NOT handed to the runner as a write path.
         let forbidden = try Fixtures.uniqueURL("evil.pdf")
 
-        let result = try runner.run(
+        let result = try await runner.run(
             arguments: ["-sDEVICE=pdfwrite", "-dPDFSETTINGS=/ebook",
                         "-sOutputFile=\(forbidden.path)", input.path],
             readPaths: [input],

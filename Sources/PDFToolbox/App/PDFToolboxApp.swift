@@ -9,6 +9,12 @@ import SwiftUI
 
 @main
 struct PDFToolboxApp: App {
+    init() {
+        // Headless self-test hook (PDFTOOLBOX_SMOKE=compress) — runs the real compress path
+        // from the app process and exits, before any window appears.
+        CompressSmoke.runIfRequested()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

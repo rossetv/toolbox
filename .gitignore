@@ -26,3 +26,6 @@ Resources/ghostscript/
 .desloppify/
 .claude/worktrees/
 .claude/settings.local.json
+
+# Coverage artefacts from running instrumented binaries directly
+*.profraw
