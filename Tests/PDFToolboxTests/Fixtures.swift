@@ -173,6 +173,23 @@ enum Fixtures {
         return url.canonical
     }
 
+    /// `pages` empty white pages. Two uses: the `OutputValidator` blank-page check, and the
+    /// no-gain path — gs's `pdfwrite` structure/metadata makes a blank page *larger* than the
+    /// compact CoreGraphics original (verified), so compressing it yields `.noGain`.
+    static func blankPDF(pages: Int = 1) throws -> URL {
+        let url = try uniqueURL("blank.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        for _ in 0..<max(1, pages) {
+            ctx.beginPDFPage(nil)
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
+        return url.canonical
+    }
+
     /// A truncated/garbage file that is not a readable PDF (`PDFDocument(url:)` returns nil).
     static func corruptPDF() throws -> URL {
         let url = try uniqueURL("corrupt.pdf")

@@ -62,6 +62,10 @@ struct GhostscriptRunner {
 
     /// Run gs with `arguments` (device/settings/output/input — the caller must pass canonical
     /// paths, matching `readPaths`/`writePaths`). `-dSAFER -dBATCH -dNOPAUSE` are always prepended.
+    ///
+    /// `async` and **non-blocking for the caller**: the blocking process wait runs on a global
+    /// dispatch thread and the caller *suspends* (bridged via a continuation), so many
+    /// concurrent compressions under `ToolQueue` never starve the Swift cooperative pool.
     /// - Parameters:
     ///   - readPaths: extra readable paths (typically the input PDF).
     ///   - writePaths: writable paths (typically the output directory).
@@ -69,7 +73,24 @@ struct GhostscriptRunner {
     func run(arguments: [String],
              readPaths: [URL],
              writePaths: [URL],
-             onProgress: ((Int) -> Void)? = nil) throws -> ProcessResult {
+             onProgress: ((Int) -> Void)? = nil) async throws -> ProcessResult {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result = try self.runBlocking(arguments: arguments, readPaths: readPaths,
+                                                      writePaths: writePaths, onProgress: onProgress)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func runBlocking(arguments: [String],
+                             readPaths: [URL],
+                             writePaths: [URL],
+                             onProgress: ((Int) -> Void)?) throws -> ProcessResult {
         let fm = FileManager.default
 
         // gs's pdfwrite device writes scratch temp files to $TMPDIR; under (deny default) the
@@ -116,12 +137,12 @@ struct GhostscriptRunner {
             throw GhostscriptError.launchFailed(error.localizedDescription)
         }
 
-        let deadline = Date().addingTimeInterval(wallClockTimeout)
-        while process.isRunning {
-            if Date() >= deadline { process.terminate() }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
+        // Wall-clock cap without a busy-wait: a watchdog terminates a runaway gs; otherwise
+        // `waitUntilExit` blocks this (global-queue) thread until gs exits.
+        let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + wallClockTimeout, execute: watchdog)
         process.waitUntilExit()
+        watchdog.cancel()
         ioGroup.wait()
 
         let stdout = String(data: outData, encoding: .utf8) ?? ""

@@ -23,8 +23,7 @@ struct RootView: View {
     private func detail(for tool: Tool) -> some View {
         switch tool {
         case .compress:
-            // Replaced by CompressView once the engine is wired end-to-end (Task 0.4).
-            PlaceholderToolView(tool: tool)
+            CompressView()
         case .ocr, .merge, .split:
             PlaceholderToolView(tool: tool)
         }
