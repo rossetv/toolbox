@@ -22,7 +22,7 @@ The user wants a **native macOS app to compress large PDFs a lot while preservin
 
 - **SwiftUI**, macOS **14 (Sonoma)** minimum, **Apple Silicon** (arm64).
 - **Licence: AGPL-3.0, open-source at release.** Forced by two AGPL dependencies chosen for quality/risk: Ghostscript (engine) and the ported Internet-Archive `archive-pdf-tools` (MRC). Consequence: **Mac App Store permanently unavailable** (AGPL-incompatible) — accepted; distribution is a **notarised DMG**. **Repo private during development; user flips it public at/before release** — AGPL obligations trigger only on distribution, so private dev is compliant.
-- **Build path (corrected — verified on this machine):** `xcodebuild` is **non-functional here** (Command-Line-Tools-only; no Xcode.app — `xcode-select -p` = `/Library/Developer/CommandLineTools`, `xcodebuild -version` errors), and `xcodegen` is absent. **Primary build = Swift Package Manager (`swift build`), which works with CLT.** The app is an SPM executable target (`@main` SwiftUI `App`); the `.app` bundle (Info.plist, resources, icon) is assembled by a small build script and code-signed. **`notarytool` is present via CLT** (`xcrun notarytool`), so notarisation needs only the user's Apple Developer account + network at release — no full Xcode required for CI builds/tests. *Optional:* if the user later installs full Xcode, an XcodeGen `project.yml` can be added, but the SPM path is authoritative and is what CI/M0 proves.
+- **Build path (verified on this machine 2026-07-22):** **Xcode 26.6 is installed and functional** (`xcode-select -p` = `/Applications/Xcode.app/…`, `xcodebuild -version` = Xcode 26.6, macOS 26.5 SDK present). **Primary build = an Xcode project generated from a declarative XcodeGen `project.yml`, built via `xcodebuild`** — the standard macOS-app path, which makes the `.app` bundle, entitlements/hardened-runtime, code-signing, notarisation and DMG straightforward. `xcodegen` is not yet installed but `brew` is present → `brew install xcodegen` (an M0 setup step). **Fallback: Swift Package Manager (`swift build`) + a bundling script** (verified CLT-compatible) — kept as a documented alternative so the build has no single point of failure. `notarytool` is available (`xcrun notarytool`); notarisation needs the user's Apple Developer account + network at release.
 - **Native C/C++ deps are statically linked** into the app binary (one Mach-O). Verified (evidence/native-lib-plumbing.md): libdeflate built for arm64, linked via a module map, round-tripped, code-signed with `--options runtime` and **zero special entitlements** (`codesign -v --strict` clean). Ghostscript is the exception — a **separate bundled executable** invoked via `Process` (not linked), signed as an embedded helper (see §11 for its bundling risk).
 
 ## 4. Architecture
@@ -46,10 +46,10 @@ PDF Toolbox (SwiftUI)
 Why **PDFWriter** exists (fixes R1-M3/M4): Apple provides no in-place PDF-object edit API (verified, §9), and Ghostscript cannot import JBIG2/MRC images. So every output that isn't "GS re-distills the whole file" — JBIG2/CCITT scan pages, MRC pages, and the OCR invisible-text layer — requires us to write PDF bytes ourselves. `PDFWriter` is that single owner; `archive-pdf-tools` is the reference for its image-XObject/MRC assembly. It is carried as a scoped implementation risk (§11).
 
 **Module contracts (each independently testable):**
-- `ContentRouter.classify(doc) -> .bornDigital | .scan(.bilevel|.colour) | .mixed` — from PDFKit page inspection (extractable text coverage; image coverage; bit-depth).
+- `ContentRouter.classify(doc) -> .bornDigital | .scan(.bilevel|.colour) | .mixed` — from PDFKit page inspection (extractable text coverage; image coverage). **`.bilevel` is content-based (R2-N5):** "visually near-two-tone", determined by image analysis (corpus-tuned) — **not raw bit-depth**. 8-bit greyscale scans that are visually bilevel still take the binarise→JBIG2 path (which is why Rung 2 begins with a leptonica binarise step); this is what earns the headline 15–40× on ordinary greyscale document scans.
 - `CompressEngine.compress(url, preset, progress) async throws -> CompressResult`
 - `OCREngine.ocr(url, options, progress) async throws -> OCRResult`
-- `PDFWriter` — append-mode and assemble-mode; owns Vision-normalised→PDF-user-space coordinate mapping incl. page rotation & MediaBox.
+- `PDFWriter` — append-mode and assemble-mode; owns Vision-normalised→PDF-user-space coordinate mapping incl. page rotation & MediaBox. **Preservation contract (R2-N2):** assemble-mode (rebuilding scan pages) carries over document metadata and outlines/bookmarks; page-level annotations/links present on a rebuilt page are re-attached where feasible, otherwise recorded as dropped in the result summary — because the §5.4 open+render check cannot detect silently-dropped structure.
 - `ToolQueue` is generic over a job so both tools reuse queue/batch/state/estimate UI; only the options panel + run action differ.
 
 **Concurrency:** batch runs jobs concurrently, capped (default = performance-core count, tunable); each job cancellable; honest per-file + overall progress; heavy work off the main actor.
@@ -62,6 +62,8 @@ Why **PDFWriter** exists (fixes R1-M3/M4): Apple provides no in-place PDF-object
 - **Pure scan** → **native scan pipeline** (the big wins): bilevel pages → leptonica binarise → jbig2enc (lossless JBIG2) or CCITT G4 → `PDFWriter` assembles (**Rung 2**); colour/grey scan → MRC (leptonica segmentation → JBIG2 mask + downsampled background/foreground, layers JPEG-encoded via ImageIO for v1) → `PDFWriter` assembles (**Rung 3**).
 
 Per-page routing *inside* a mixed document (e.g. a born-digital report with a scanned appendix) is **v1.1**: v1 sends mixed docs whole to Ghostscript (safe; GS still downsamples/CCITTs images within), reserving the native JBIG2/MRC treatment for predominantly-scan documents — where the compression actually matters.
+
+**Routing fallback (R2-N1):** any content class whose rung is not yet built or is gated out (JBIG2 pending viewer verification, or the MRC spike failing) routes to **Ghostscript (Rung 1)** — no document is ever left unhandled, and Rung 1 alone is always a valid, shippable engine.
 
 | Rung | Path | Target | Gate |
 |---|---|---|---|
@@ -84,7 +86,7 @@ Before compressing, a **time-boxed, parse-only analysis** produces a per-file es
 - **Output validation (R1-M9):** before reporting success, re-open the output via PDFKit **and** assert page count == input **and** render-sample N pages (default 3, incl. first/last) without error — catches blank-page/JBIG2 corruption, not just "it opens".
 - **Untrusted-PDF security (R1-M2, mandatory):** input PDFs are untrusted and Ghostscript has a CVE history (e.g. CVE-2023-36664). Containment mechanism, pinned: the GS `Process` runs under a **macOS seatbelt sandbox profile** (via `sandbox-exec`/an XPC-isolated helper) that **denies network** and **restricts the filesystem to exactly the input file, the output directory, and GS's own resource bundle**; plus `-dSAFER` (assert it — default since GS 9.50), and per-job **memory + wall-clock caps**. Residual risk: a GS sandbox-escape CVE could still act within those FS/no-network limits — recorded (§11.4); mitigated, not eliminated.
 - **CMYK:** `ConvertCMYKImagesToRGB` on screen presets; preserve on High quality (avoid colour shift / broken print intent). Finalised in §5.5.
-- **Encrypted/corrupt:** detect up front; password-protected → per-file prompt or skip-with-error; corrupt → that one file fails inline, batch continues.
+- **Encrypted/corrupt (shared behaviour — applies to both Compress and OCR) (R2-N3):** detect up front; password-protected → per-file prompt or skip-with-error; corrupt → that one file fails inline, batch continues.
 
 ### 5.5 Corpus validation (privacy-bound)
 Presets, CMYK policy, JBIG2 viewer support and estimate accuracy are tuned/validated against a **local, machine-local test corpus of representative PDF *types*** (born-digital, colour scan, B/W scan, mixed, encrypted, corrupt, very-large). **The corpus is never committed; committed test fixtures are synthetic/anonymised only. No personal document paths, names, or contents appear anywhere in this repo.**
@@ -100,7 +102,7 @@ Presets, CMYK policy, JBIG2 viewer support and estimate accuracy are tuned/valid
 
 - **Compress UI:** rebuild Claude Design's `Toolbox.dc.html` **in SwiftUI, matching its visual output** (read it + `support.js` in full; match appearance, not prototype structure). Apple design language per repo `DESIGN.md`. Both **light and dark** mode; native controls, SF Symbols, system materials/vibrancy, resizable window, collapsible sidebar.
 - **Deviations from the mockup (R1-M5) — the SwiftUI build follows these, not the mockup, where they conflict:**
-  1. **Sidebar = §4's set:** Compress + **OCR** live (the mockup predates the OCR decision and lacks it), Merge + Split as "Soon". The mockup's other "Soon" entries (PDF-to-Word, Images-to-PDF, Protect) are **not** built and are omitted (a couple may remain as dimmed non-functional placeholders for extensibility flavour — designer's discretion, but not features).
+  1. **Sidebar = exactly §4's set (R2-N4):** four entries only — Compress + **OCR** live (the mockup predates the OCR decision and lacks it), Merge + Split as dimmed "Soon". The mockup's other entries (PDF-to-Word, Images-to-PDF, Protect) are **omitted entirely** — no other sidebar entries in v1.
   2. **"Saved this month · 1.24 GB" stats widget: cut from v1** — it needs cross-session storage + reset semantics (out of scope, §2). Reconsidered for v2.
   3. **Per-file % / MB figures** on preset cards are the **real §5.3 estimates**, not fabricated.
 - **OCR UI:** derived from the same design system + Claude Design's components — identical shell/queue/batch/state machine, an **OCR options panel** (language, accuracy) replacing preset cards, an "OCR N PDFs" action. No size estimate (OCR adds a layer); may show "N pages to OCR". No separate design round (user-confirmed).
@@ -122,7 +124,7 @@ Empty (drop zone + Choose Files, + drag-hover) → Ready (files + options + esti
 - **Engine/licences** — engine-research.md/-2.md. Licences confirmed first-hand: jpegli/libjxl BSD-3, leptonica BSD-2 (both fetched), jbig2enc Apache-2.0, libdeflate MIT, openjpeg BSD-2; Ghostscript AGPL; archive-pdf-tools AGPL.
 - **Apple PDF API limits** — grepped installed SDK headers: `saveImagesAsJPEG`/`optimizeImagesForScreen` are booleans; `compressionQuality` only on the image-init (rasterise) path. Confirms no tunable text-preserving native path and no in-place edit API.
 - **Native-lib plumbing** — native-lib-plumbing.md: real arm64 build + static link + round-trip + clean codesign (low risk).
-- **Toolchain (corrected, R1-C1) — verified live:** `swift`/SPM works; **`xcodebuild` non-functional (CLT-only, no Xcode.app)**; `xcodegen` absent; **`notarytool` present via CLT**. Swift 6.3.3, arm64 SDK.
+- **Toolchain — verified live (2026-07-22, updated after the user installed Xcode):** **Xcode 26.6 functional** (`xcodebuild -version` OK, macOS 26.5 SDK); `swift`/SPM works (Swift 6.3.3, arm64); `notarytool` available; `xcodegen` not yet installed but `brew` present to install it. (Round-1 reviewed an earlier CLT-only state where xcodebuild was absent; the machine has since gained Xcode — both the Xcode and SPM paths are now viable, Xcode primary.)
 
 ## 11. Risks & fallbacks
 
@@ -133,12 +135,12 @@ Empty (drop zone + Choose Files, + drag-hover) → Ready (files + options + esti
 5. **GS build & bundle** (R1-M6) — `gs` is not installed; it must be **built from source for arm64, bundled with its Resource tree + dylibs, each signed**, and pass notarisation — the plumbing evidence calls this a bigger risk than the four probed libs (only libdeflate was probed). **Gate (M1):** build + sign + invoke the bundled GS helper end-to-end on a real PDF *before* any engine tuning; if bundling proves intractable, fall back to requiring a user-installed GS (documented) — do not silently ship a broken engine.
 6. **Estimator accuracy/speed** — §5.3 criterion + typical-ranges fallback.
 7. **Notarisation** — needs the user's Apple Developer account + network; `notarytool` present; release-step dependency, not a dev blocker.
-8. **SPM SwiftUI build** — proven in M0 before feature work (fallback: minimal AppKit host if an SPM/SwiftUI-app-bundle issue arises).
+8. **Build tooling** — Xcode project (XcodeGen `project.yml` → `xcodebuild`) proven in M0 before feature work; `brew install xcodegen` is an M0 setup step; SPM + bundle-script kept as a validated fallback.
 9. **Memory on 1000-page scans** — stream page-by-page, cap concurrency, release buffers; validate on a large scan.
 
 ## 12. Milestones (build order)
 
-- **M0** SPM SwiftUI build proven end-to-end (binary → `.app` bundle → signs → launches) + empty shell (sidebar, two tool stubs) + `ToolQueue`/`PDFService`/`ContentRouter` + `PDFWriter` foundation + synthetic-corpus + measurement harness.
+- **M0** Xcode project (XcodeGen `project.yml`) builds the SwiftUI app end-to-end via `xcodebuild` (→ signed `.app` → launches); `brew install xcodegen` as setup; SPM+bundle fallback validated. + empty shell (sidebar, two tool stubs) + `ToolQueue`/`PDFService`/`ContentRouter` + `PDFWriter` foundation + synthetic-corpus + measurement harness.
 - **M1** Compress Rung 1 (tuned GS, seatbelt sandbox, `-dSAFER`, never-enlarge, output-validation) **behind the GS build+sign+invoke gate** + full Compress UI (per §7) + estimate pass.
 - **M2** OCR tool (Vision detect → recognise → `PDFWriter` incremental-update embed) + derived OCR UI. (First real `PDFWriter` consumer.)
 - **M3** Compress Rung 2 (jbig2enc + CCITT + `PDFWriter` assembly, JBIG2 verification gate).
@@ -147,10 +149,11 @@ Empty (drop zone + Choose Files, + drag-hover) → Ready (files + options + esti
 
 ## 13. Definition of done (v1)
 
-**v1-done = Rungs 1–2 + OCR solid and shippable.** Rung 3 (MRC) ships **iff** the segmentation spike (M4) passes; if not, it defers to v1.1 **without blocking v1** (R1-M13). Concretely: both tools work on the synthetic + local corpus (born-digital, colour scan, B/W scan, mixed, encrypted, corrupt, 1000-page); **every output re-opens in Preview + one other viewer, page count preserved, sampled pages render**; no output larger than input; batch cancellable with honest progress and atomic outputs; UI matches Claude Design fidelity in light + dark; the app builds/tests/signs from the CLI (SPM) and packages into a notarisable DMG; `.claude/GATES.md` (authored with the first code) green.
+**v1-done = Rungs 1–2 + OCR solid and shippable.** Rung 3 (MRC) ships **iff** the segmentation spike (M4) passes; if not, it defers to v1.1 **without blocking v1** (R1-M13). Concretely: both tools work on the synthetic + local corpus (born-digital, colour scan, B/W scan, mixed, encrypted, corrupt, 1000-page); **every output re-opens in Preview + one other viewer, page count preserved, sampled pages render**; no output larger than input; batch cancellable with honest progress and atomic outputs; UI matches Claude Design fidelity in light + dark; the app builds/tests/signs from the CLI (`xcodebuild`, SPM fallback) and packages into a notarisable DMG; `.claude/GATES.md` (authored with the first code) green.
 
 ---
 
 ## Round log
 - **R1** (Fable 5, full read): NO-SHIP — 1 critical (C1 toolchain evidence), 5 major (M2 GS sandbox, M3 PDF-assembly, M4 OCR mechanism, M5 UI deviations, M6 GS-bundle risk), 7 minor. Findings persisted at `.git/lcw/20260722-pdf-toolbox-v1/spec-review-r1.md`. Lesson-candidates LC-A/B/C recorded for retro.
-- **R2** (this revision): all C1/M2–M6 fixed (SPM-primary build; PDFWriter module; GS seatbelt sandbox; OCR incremental-update + coordinate contract; §7 deviation list; GS-bundle risk + M1 gate); minors 7–13 fixed (estimate criterion, atomic output, output validation, OCR DPI, mixed-page skip, JBIG2 verification matrix, DoD rung clause). → incremental re-review.
+- **R2** (revision): all C1/M2–M6 + minors 7–13 fixed (PDFWriter module; GS seatbelt sandbox; OCR incremental-update + coordinate contract; §7 deviation list; GS-bundle risk + M1 gate; the seven minors). **Gate verdict: SHIP** — all R1 critical/major genuinely resolved; 5 new minors (N1–N5). Findings: spec-review-r2.md; lesson-candidates LC-D/E → retro.
+- **R2 post-SHIP fixes:** N1 rung-absent routing → GS; N2 PDFWriter preservation contract; N3 shared encrypted/corrupt handling; N4 pinned 4-entry sidebar; N5 content-based `.bilevel`. **Toolchain update:** user installed Xcode 26.6 mid-review (verified functional) → build path switched from SPM-primary to **Xcode/XcodeGen+xcodebuild primary** (SPM fallback); §3/§10/§11.8/§12/§13 updated. This is a factual toolchain improvement (more-standard path, lower bundling/notarisation risk), no product/architecture/security change → certified for human approval.
