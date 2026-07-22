@@ -8,17 +8,20 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The Compress tool view (Phase 0: single-file drop/pick, preset, Compress, before/after
-/// rows). Styled with the `Theme` token stub only; the full design system lands in Track D
-/// and is applied in the S.1 polish pass.
+/// The Compress tool view — batch drop/pick, preset picker, optional output-folder picker,
+/// per-file rows (estimate → live progress → real before/after), cancel. Styled with the
+/// `Theme` token stub only; the full design system lands in Track D and is applied in the
+/// S.1 polish pass.
 struct CompressView: View {
     @StateObject private var model = CompressViewModel()
     @State private var isTargeted = false
     @State private var isImporting = false
+    @State private var isChoosingOutputFolder = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.large) {
             presetPicker
+            outputFolderRow
             dropZone
             if !model.jobs.isEmpty { jobList }
             Spacer(minLength: 0)
@@ -32,6 +35,10 @@ struct CompressView: View {
                       allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { model.add(urls) }
         }
+        .fileImporter(isPresented: $isChoosingOutputFolder,
+                      allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result { model.outputFolder = url }
+        }
         .overlay(alignment: .top) { loadErrorBanner }
     }
 
@@ -44,6 +51,22 @@ struct CompressView: View {
             }
         }
         .pickerStyle(.segmented)
+        .disabled(model.isRunning)
+    }
+
+    private var outputFolderRow: some View {
+        HStack(spacing: Theme.Spacing.small) {
+            Image(systemName: "folder").foregroundStyle(.secondary)
+            if let folder = model.outputFolder {
+                Text(folder.lastPathComponent).lineLimit(1).truncationMode(.middle)
+                Button("Change…") { isChoosingOutputFolder = true }.buttonStyle(.borderless)
+                Button("Use original location") { model.outputFolder = nil }.buttonStyle(.borderless)
+            } else {
+                Text("Save next to each original").foregroundStyle(.secondary)
+                Button("Choose folder…") { isChoosingOutputFolder = true }.buttonStyle(.borderless)
+            }
+            Spacer()
+        }
         .disabled(model.isRunning)
     }
 
@@ -87,7 +110,10 @@ struct CompressView: View {
                     .buttonStyle(.borderless)
             }
             Spacer()
-            if model.isRunning { ProgressView().controlSize(.small) }
+            if model.isRunning {
+                Button("Cancel") { model.cancel() }.buttonStyle(.bordered)
+                ProgressView().controlSize(.small)
+            }
             Button(action: model.compress) {
                 Text("Compress").frame(minWidth: 120)
             }
@@ -137,7 +163,7 @@ private struct JobRow: View {
     private var detail: some View {
         switch job.state {
         case .queued:
-            Text("Queued").foregroundStyle(.secondary)
+            estimateLabel
         case .analysing:
             Text("Analysing…").foregroundStyle(.secondary)
         case .running(let fraction):
@@ -151,6 +177,19 @@ private struct JobRow: View {
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red).lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private var estimateLabel: some View {
+        if let estimate = job.estimate {
+            // "~" marks a typical-range fallback (content type unknown/analysis timed out);
+            // "≈" marks a real sample-based prediction for this file.
+            let marker = estimate.isFallback ? "~" : "≈"
+            Text("\(marker)\(byteString(estimate.predictedBytes)) predicted")
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Queued").foregroundStyle(.secondary)
         }
     }
 
