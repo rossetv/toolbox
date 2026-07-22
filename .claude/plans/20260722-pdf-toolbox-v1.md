@@ -1,4 +1,4 @@
-# PDF Toolbox v1 — Implementation Plan (v2 — post plan-gate R1)
+# PDF Toolbox v1 — Implementation Plan (v3 — SHIP, gated R1→R3)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -44,7 +44,7 @@ toolbox/
     DesignSystem/   Theme.swift (0.1 stub → D.1 full)  Components.swift (D.1)
     Models/         ToolJob.swift  JobOutcome.swift  CompressPreset.swift  PDFContentType.swift  SizeEstimate.swift
     Services/       PDFService.swift  GhostscriptRunner.swift  SeatbeltProfile.swift  PDFWriter.swift  OutputValidator.swift  OpenGuard.swift
-    Shared/         ToolQueue.swift  FileNaming.swift  Log.swift
+    Shared/         ToolQueue.swift  FileNaming.swift  Log.swift  SystemInfo.swift
     Compress/       CompressEngine.swift  CompressEstimator.swift  CompressView.swift  CompressViewModel.swift
     OCR/            VisionOCR.swift  OCREngine.swift  OCROptions.swift  OCRView.swift  OCRViewModel.swift
   Resources/ghostscript/               (git-ignored; built)
@@ -93,7 +93,7 @@ Both env knobs are MANDATORY (deployment-floor + Homebrew-blinding). Copy `bin/g
 
 **Interfaces — Produces:**
 - `enum SeatbeltProfile { static func profile(gsPath: URL, readPaths: [URL], writePaths: [URL]) -> String }` — string begins `(version 1)(import "system.sb")(import "bsd.sb")(allow process-exec* (literal "<gsPath>"))(deny network*)` then `(allow file-read* (subpath "<gsDir>") (literal <inputs>))(allow file-write* (subpath "<tmpDir>") (literal <outputs>))` — where `<gsDir>` (containing the gs binary) is always included in the read scope `[M5][MAJOR-A]`.
-- `struct GhostscriptRunner { init() throws; func run(arguments: [String], readPaths: [URL], writePaths: [URL], onProgress: ((Int)->Void)?) throws -> ProcessResult }` — locates bundled `gs`, wraps in `sandbox-exec -p <profile>` (or `-f`), applies `-dSAFER` + caps, parses page markers for progress `[m10]`. `struct ProcessResult { let exitCode: Int32; let stdout, stderr: String }`.
+- `struct GhostscriptRunner { init() throws; func run(arguments: [String], readPaths: [URL], writePaths: [URL], onProgress: ((Int)->Void)?) throws -> ProcessResult }` — locates bundled `gs`, wraps in `sandbox-exec -p <profile>` (or `-f`), applies `-dSAFER` + caps, parses page markers for progress `[m10]`. **`[MINOR-F]` Canonicalise the gs path once (`URL(fileURLWithPath:).resolvingSymlinksInPath()` / `realpath`) and use that SAME canonical string both as the exec target and as the profile's `process-exec` literal** — a symlink mismatch (e.g. `/var` vs `/private/var`) between the two silently yields `execvp Operation not permitted`. `struct ProcessResult { let exitCode: Int32; let stdout, stderr: String }`.
 
 - [ ] Step 1: Commit `build-ghostscript.sh`; run it → populate `Resources/ghostscript/`. Verify `Resources/ghostscript/bin/gs --version` under `env -i`.
 - [ ] Step 2: `SeatbeltProfile.swift` per `[M5]`. Unit-test: generated string contains both imports, `(allow process-exec*`, `deny network*`, the gs binary dir in the read scope, and the scoped paths.
@@ -106,7 +106,7 @@ Both env knobs are MANDATORY (deployment-floor + Homebrew-blinding). Copy `bin/g
 
 This is the fix for the R1 root cause: the whole §4 shared layer lands here, before the Phase-1 fork.
 
-**Files:** Create `Models/{ToolJob,JobOutcome,CompressPreset,PDFContentType,SizeEstimate}.swift`, `Services/PDFService.swift`, `Services/OpenGuard.swift`, `Shared/{ToolQueue,FileNaming,Log}.swift`, `Tests/…/{Fixtures,PDFServiceTests,ToolQueueTests,FileNamingTests}.swift`.
+**Files:** Create `Models/{ToolJob,JobOutcome,CompressPreset,PDFContentType,SizeEstimate}.swift`, `Services/PDFService.swift`, `Services/OpenGuard.swift`, `Shared/{ToolQueue,FileNaming,Log,SystemInfo}.swift` `[MINOR-I]`, `Tests/…/{Fixtures,PDFServiceTests,ToolQueueTests,FileNamingTests}.swift`.
 
 **Interfaces — Produces:**
 - `struct SizeEstimate { let predictedBytes: Int; let confidence: Confidence; let isFallback: Bool }`, `enum Confidence { case high, medium, low }` `[M2]` — defined HERE, C.2 only implements the estimator against it.
@@ -229,7 +229,7 @@ This is the fix for the R1 root cause: the whole §4 shared layer lands here, be
 ### Task S.6: PR, merge, retro
 - [ ] Open PR referencing the spec path (branch already pushed in S.5 with the KB present). Check-2b receipt satisfied by S.3's review-team SHIP.
 - [ ] **Merge the PR into `main` myself** (user's explicit standing authorisation), push.
-- [ ] Retro: mine review-round footers → create/update `.claude/memory/review-lessons.md` (LC-A…E + LC-P1…P4 + new); commit on branch.
+- [ ] Retro: mine all review-round footers (spec R1–R2, plan R1–R3, review-team rounds) → create/update `.claude/memory/review-lessons.md` (LC-A…E, LC-P1…P7, + any new) `[MINOR-H]`; commit on branch.
 - [ ] Morning report: what works + evidence (real reduction numbers), what's deferred (Rung 2/3) + why, what's blocked on the user (Apple Developer cert → notarisation), copy-paste DMG test steps.
 
 ---
@@ -240,6 +240,6 @@ This is the fix for the R1 root cause: the whole §4 shared layer lands here, be
 Not part of tonight's DoD; the router sends all content to Rung-1 gs until they land.
 
 ## R1 finding coverage
-M1→ToolQueue in 0.3, wired both tools (0.4, B.2). M2→SizeEstimate/Confidence in 0.3. M3→`pageHasText` in 0.3. M4→JobOutcome/JobState in 0.3. M5→SeatbeltProfile imports + real sandboxed-compress test (0.2). M6→invariant restated (B.1). M7→VisionOCR normalised / PDFWriter transforms w/ geometry (B.1,B.2). M8→GATES.md (0.1) + KB (S.6). M9→OpenGuard (0.3). M10→OCROptions + panel (B.2). M11→Theme-stub-only in B/C, Components applied in S.1. Minors m1–m18 each pinned inline. m18→C.1(ToolQueue) is Phase-0 Opus.
+M1→ToolQueue in 0.3, wired both tools (0.4, B.2). M2→SizeEstimate/Confidence in 0.3. M3→`pageHasText` in 0.3. M4→JobOutcome/JobState in 0.3. M5→SeatbeltProfile imports + real sandboxed-compress test (0.2). M6→invariant restated (B.1). M7→VisionOCR normalised / PDFWriter transforms w/ geometry (B.1,B.2). M8→GATES.md (0.1) + KB (S.5). M9→OpenGuard (0.3). M10→OCROptions + panel (B.2). M11→Theme-stub-only in B/C, Components applied in S.1. Minors m1–m18 each pinned inline. m18→C.1(ToolQueue) is Phase-0 Opus.
 
 **R2 finding coverage** (`plan-review-r2.md`): MAJOR-A→seatbelt `(allow process-exec* (literal <gsPath>))` added + gs dir in read scope (Global+0.2). MAJOR-B→`ToolQueue.run` body now `(ToolJob, report)->…throws->JobOutcome`; queue owns `.running`/`.done`/`.failed` state, batch continues on throw (0.3 + test). MINOR-C→KB bootstrapped before first push (S.5). MINOR-D→concurrency default = performance-core count via `SystemInfo.performanceCoreCount` (0.3). MINOR-E→Track C header C.1/C.2. Lesson-candidates LC-P5 (validate a sandbox profile by running the binary under it, not string inspection), LC-P6 (a per-job queue closure needs progress + error channels, not just a success return) → retro.
