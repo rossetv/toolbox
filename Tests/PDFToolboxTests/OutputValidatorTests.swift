@@ -28,4 +28,20 @@ final class OutputValidatorTests: XCTestCase {
         let output = try Fixtures.blankPDF(pages: 1)
         XCTAssertFalse(try validator.validate(input: input, output: output, samplePages: 1))
     }
+
+    /// Regression: a legitimately sparse page (few lines, wide margins) renders below any fixed
+    /// "blank" threshold but is valid content — it must NOT be rejected. The old absolute-floor
+    /// heuristic falsely failed this, silently dropping real compress jobs.
+    func testSparseContentValidates() throws {
+        let input = try Fixtures.bilevelPDF()
+        let output = try Fixtures.bilevelPDF()
+        XCTAssertTrue(try validator.validate(input: input, output: output, samplePages: 1))
+    }
+
+    /// A genuinely blank input paired with a blank output is not corruption (no content was lost).
+    func testBlankInputBlankOutputPasses() throws {
+        let input = try Fixtures.blankPDF(pages: 1)
+        let output = try Fixtures.blankPDF(pages: 1)
+        XCTAssertTrue(try validator.validate(input: input, output: output, samplePages: 1))
+    }
 }

@@ -49,6 +49,23 @@ final class CompressEngineTests: XCTestCase {
                        "no output file should be written on no-gain")
     }
 
+    func testSparseBilevelValidatesNotFalselyRejected() async throws {
+        // Regression (found in Track C integration): a legitimately sparse scan — a few lines of
+        // text with wide margins — once tripped the OutputValidator blank-page check after real gs
+        // downsampling and was wrongly rejected as validationFailed, silently dropping the job. It
+        // must now complete: either compressed or no-gain, never a validation failure.
+        let engine = try makeEngine()
+        let input = try Fixtures.bilevelPDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("bilevel-compressed.pdf")
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+
+        switch outcome {
+        case .compressed, .noGain: break   // both acceptable; the point is it did NOT throw validationFailed
+        default: XCTFail("expected .compressed or .noGain, got \(outcome)")
+        }
+    }
+
     func testEncryptedInputThrows() async throws {
         let engine = try makeEngine()
         let input = try Fixtures.encryptedPDF()
