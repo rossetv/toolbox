@@ -1,0 +1,57 @@
+name: PDFToolbox
+
+options:
+  bundleIdPrefix: com.pdftoolbox
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    # Ad-hoc signing only — no Developer ID cert on this machine (0 identities).
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_REQUIRED: YES
+    CODE_SIGNING_ALLOWED: YES
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  PDFToolbox:
+    type: application
+    platform: macOS
+    # Glob/directory source discovery — Phase-1 tracks add files without editing project.yml.
+    sources:
+      - path: Sources/PDFToolbox
+      # Blue folder reference — the whole built Ghostscript tree is copied verbatim into
+      # the app bundle at Contents/Resources/ghostscript/. Git-ignored; present at build time.
+      - path: Resources/ghostscript
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pdftoolbox.app
+        PRODUCT_NAME: PDFToolbox
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_HARDENED_RUNTIME: YES
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright (C) 2026 PDF Toolbox authors. Licensed under the GNU AGPL v3.0 or later."
+
+  PDFToolboxTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/PDFToolboxTests
+    # Depending on the app target makes this a HOSTED unit-test bundle (XcodeGen wires
+    # TEST_HOST + BUNDLE_LOADER), so `@testable import PDFToolbox` resolves the app's symbols.
+    dependencies:
+      - target: PDFToolbox
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
