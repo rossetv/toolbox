@@ -22,9 +22,11 @@ final class OCRViewModel: ObservableObject {
     private var cancellable: AnyCancellable?
 
     init() {
-        cancellable = queue.$jobs
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.jobs = $0 }
+        // Subscribe synchronously: both ToolQueue and this view model are @MainActor, so a
+        // `.receive(on: RunLoop.main)` hop is not only unnecessary but hazardous — Combine replays
+        // the current value at subscription and the delayed hop can deliver that stale snapshot
+        // after a same-tick mutation, and it adds a one-runloop-tick lag. (Matches CompressViewModel.)
+        cancellable = queue.$jobs.sink { [weak self] in self?.jobs = $0 }
     }
 
     var hasQueuedWork: Bool {
@@ -46,12 +48,21 @@ final class OCRViewModel: ObservableObject {
     func run() {
         guard !isRunning else { return }
         let chosen = options
+        // Allocate every output name up front, serially, before the concurrent run — two inputs
+        // sharing a basename would otherwise both claim `<name>-ocr.pdf` and the second job's
+        // atomic rename would fail (a purely on-disk check races under concurrency). Matches
+        // CompressViewModel; each job then looks up its pre-reserved, unique destination.
+        var reserved = Set<URL>()
+        var outputs: [ToolJob.ID: URL] = [:]
+        for job in queue.jobs {
+            outputs[job.id] = FileNaming.output(for: job.url, suffix: "ocr", folder: nil, reserving: &reserved)
+        }
         isRunning = true
         Task {
             // A modest concurrency cap: each in-flight file holds one 300-DPI page raster, so 2
             // bounds memory while still overlapping I/O and recognition.
             await queue.run({ job, report in
-                let output = FileNaming.output(for: job.url, suffix: "ocr", folder: nil)
+                let output = outputs[job.id] ?? FileNaming.output(for: job.url, suffix: "ocr", folder: nil)
                 return try await self.engine.ocr(job.url, to: output, options: chosen) { report($0) }
             }, maxConcurrent: 2)
             isRunning = false
