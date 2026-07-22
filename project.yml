@@ -42,6 +42,10 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright (C) 2026 PDF Toolbox authors. Licensed under the GNU AGPL v3.0 or later."
+        # First-access TCC prompt copy for the user folders PDFs are selected from.
+        INFOPLIST_KEY_NSDesktopFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
+        INFOPLIST_KEY_NSDocumentsFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
+        INFOPLIST_KEY_NSDownloadsFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
 
   PDFToolboxTests:
     type: bundle.unit-test

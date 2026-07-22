@@ -16,13 +16,26 @@ struct ProcessResult {
 enum GhostscriptError: Error, LocalizedError {
     case binaryNotFound
     case launchFailed(String)
+    case timedOut(seconds: TimeInterval)
 
     var errorDescription: String? {
         switch self {
         case .binaryNotFound: return "The bundled Ghostscript binary could not be found."
         case .launchFailed(let msg): return "Ghostscript failed to launch: \(msg)"
+        case .timedOut(let seconds):
+            return "Ghostscript timed out after \(Int(seconds)) seconds and was terminated."
         }
     }
+}
+
+/// The seam `CompressEngine` depends on, so a test can substitute a double that reproduces gs
+/// outcomes the real binary can't be forced to produce deterministically — chiefly an
+/// exit-0-but-no-output *silent* failure. Production always uses `GhostscriptRunner`.
+protocol GhostscriptRunning {
+    func run(arguments: [String],
+             readPaths: [URL],
+             writePaths: [URL],
+             onProgress: ((Int) -> Void)?) async throws -> ProcessResult
 }
 
 /// Runs the bundled Ghostscript **only ever** inside a seatbelt sandbox (never a bare
@@ -137,13 +150,30 @@ struct GhostscriptRunner {
             throw GhostscriptError.launchFailed(error.localizedDescription)
         }
 
-        // Wall-clock cap without a busy-wait: a watchdog terminates a runaway gs; otherwise
-        // `waitUntilExit` blocks this (global-queue) thread until gs exits.
-        let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        // Wall-clock cap without a busy-wait: a watchdog terminates a runaway/hung gs; otherwise
+        // `waitUntilExit` blocks this (global-queue) thread until gs exits. When the watchdog
+        // fires it records the fact under a lock so the timeout can be surfaced as a *dedicated*
+        // error (the UI shows "timed out", not a bare non-zero exit) and the batch continues.
+        let timeoutLock = NSLock()
+        var didTimeout = false
+        let watchdog = DispatchWorkItem {
+            if process.isRunning {
+                timeoutLock.lock(); didTimeout = true; timeoutLock.unlock()
+                process.terminate()
+            }
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + wallClockTimeout, execute: watchdog)
         process.waitUntilExit()
         watchdog.cancel()
         ioGroup.wait()
+
+        // Distinguish a genuine timeout from a job that finished on the wire: a process that
+        // exited cleanly (status 0) at the deadline is a success, never a timeout — so require a
+        // non-zero termination (a terminated gs carries SIGTERM ⇒ non-zero) before throwing.
+        timeoutLock.lock(); let timedOut = didTimeout; timeoutLock.unlock()
+        if timedOut && process.terminationStatus != 0 {
+            throw GhostscriptError.timedOut(seconds: wallClockTimeout)
+        }
 
         let stdout = String(data: outData, encoding: .utf8) ?? ""
         // Best-effort progress: report the highest "Page N" gs emitted (coarse but real;
@@ -165,3 +195,5 @@ struct GhostscriptRunner {
             stderr: String(data: errData, encoding: .utf8) ?? "")
     }
 }
+
+extension GhostscriptRunner: GhostscriptRunning {}
