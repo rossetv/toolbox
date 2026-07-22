@@ -1,26 +1,30 @@
-# PDF Toolbox v1 — Implementation Plan
+# PDF Toolbox v1 — Implementation Plan (v2 — post plan-gate R1)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship a native macOS app, **PDF Toolbox**, with two working tools — **Compress** (Ghostscript-core, Rung 1) and **OCR** (Apple Vision) — in an extensible SwiftUI shell, packaged as an ad-hoc-signed DMG with GitHub Actions CI.
 
-**Architecture:** Depth-first. A thin end-to-end vertical slice (shell → shared PDF spine → bundled Ghostscript → Rung-1 compress → validated output) is built and proven FIRST (the M1 gate). Everything after — OCR, batch queue, presets, estimate, UI polish — is incremental breadth on a known-good base. No big-bang integration.
+**Architecture:** Depth-first. A serial vertical slice (Phase 0) builds the **complete shared layer** (§4) — models, PDFService, GhostscriptRunner+sandbox, ToolQueue, FileNaming — plus Rung-1 compress wired end-to-end, and proves it works at the **M1 gate** (launch → compress → validate). Only then does Phase 1 fork into breadth tracks (OCR, compress-depth, design) that *consume settled interfaces*, never build shared modules in parallel. Phase 2 integrates, validates on the real corpus, gates, and ships.
 
-**Tech Stack:** SwiftUI, Swift 5.9+, macOS 14+ (Apple Silicon), XcodeGen + xcodebuild, bundled Ghostscript (arm64, built from source per the spike recipe), Apple Vision (`VNRecognizeTextRequest`), PDFKit, `sandbox-exec` (seatbelt) for GS containment. Licence AGPL-3.0.
+**Tech Stack:** SwiftUI, Swift 5.9+, macOS 14+ (Apple Silicon), XcodeGen + xcodebuild, bundled Ghostscript 10.07.1 (arm64, built from source per the spike recipe), Apple Vision (`VNRecognizeTextRequest`), PDFKit, `sandbox-exec` (seatbelt) for GS containment. Licence AGPL-3.0.
 
-**Spec:** `.claude/specs/20260722-pdf-toolbox-v1.md` (approved 2026-07-22). This plan is subordinate to the spec; on any conflict the spec wins.
+**Spec:** `.claude/specs/20260722-pdf-toolbox-v1.md` (approved 2026-07-22) — law; on any conflict the spec wins.
+**Plan-gate R1 findings addressed:** `.git/lcw/20260722-pdf-toolbox-v1/plan-review-r1.md` (11 major + 18 minor). Resolution notes inline as `[M#]`/`[m#]`.
 
 ## Global Constraints
 
 - **Platform:** macOS 14.0 minimum deployment target; Apple Silicon (arm64). Built with Xcode 26.6 / macOS 26 SDK.
-- **Licence:** AGPL-3.0. Every source file carries a short AGPL header. Repo private during dev, public at release.
-- **Build:** XcodeGen generates `PDFToolbox.xcodeproj` from `project.yml`; `xcodebuild` is the build driver. No `.xcodeproj` committed (generated). CI regenerates it.
+- **Licence:** AGPL-3.0. **Every new source file carries a short AGPL header** `[m13]`. Repo private during dev, public at release.
+- **Build:** XcodeGen generates `PDFToolbox.xcodeproj` from `project.yml`; `xcodebuild` drives builds. `project.yml` uses **directory/glob source discovery** (no explicit file lists) so Phase-1 tracks add files without editing it `[m6]`. `.xcodeproj` is generated (git-ignored), regenerated locally + in CI.
+- **Ghostscript:** built from source by `scripts/build-ghostscript.sh` (spike recipe) into `Resources/ghostscript/`, which is **git-ignored, not committed** `[m15]` (a 26 MB arm64 binary must not bloat an open-source repo's history). A fresh clone / CI runs the script before building the app.
 - **Signing:** ad-hoc only (`codesign -s -`) — no Developer ID cert available. Hardened runtime enabled. Notarisation deferred (needs user's Apple Developer credentials); CI notarise step guarded on secrets.
-- **Naming/copy:** Product name "PDF Toolbox". Output files: `<name>-compressed.pdf` / `<name>-ocr.pdf` written next to the original (batch: optional output-folder picker). British English in all prose/comments/commits; code identifiers follow platform/library spelling.
-- **Privacy (HARD):** Never commit anything about the user's personal test PDFs at `<private local corpus>` — no path, names, sizes-tied-to-names, contents, or subject matter. Committed fixtures are synthetic only. Local quality validation on the real corpus reports anonymised aggregates only.
-- **GS containment:** every Ghostscript invocation runs under `sandbox-exec` with a profile denying network and scoping filesystem to the specific input + output paths, plus `-dSAFER` and resource caps. Never a bare `Process`.
-- **Output safety:** compress/OCR write to a temp file then atomically rename; never overwrite the input; compress never emits a file larger than the input (fall back to copying the original if gs output is bigger); every output re-validated (page count matches + N sample pages render) before it is called done.
-- **DoD floor:** v1 is "done" with **Rung 1 Compress + OCR** working, tested, DMG'd. Rung 2 (jbig2enc/CCITT) and Rung 3 (MRC) are explicitly deferred stretch — attempted only if the core lands with hours to spare, never at the cost of polish or stability.
+- **Naming/copy:** Product "PDF Toolbox". Outputs `<name>-compressed.pdf` / `<name>-ocr.pdf` next to the original (batch: optional output-folder picker). British English in prose/comments/commits; code identifiers follow platform/library spelling.
+- **Privacy (HARD):** Never commit anything about the user's personal test PDFs at `<private local corpus>` — no path, names, sizes-tied-to-names, contents, or subject matter. Committed fixtures are synthetic only. Local quality validation on the real corpus reports anonymised aggregates only, to the ledger (uncommittable), never the repo.
+- **GS containment `[M5]`:** every Ghostscript invocation runs under `sandbox-exec` with a profile that **`(import "system.sb")` + `(import "bsd.sb")`** (so the dynamically-linked binary can launch: dyld, `/usr/lib`+`/System/Library` reads, `com.apple.dyld` mach-lookup, `sysctl-read`, `/dev/urandom`) **then `(deny network*)`** and **scopes file-read/write to the specific input, output, and temp paths** — plus `-dSAFER` and resource caps. Never a bare `Process`.
+- **Output safety:** compress/OCR write to a temp file **in the output directory** (same volume, so atomic rename cannot cross-device-fail `[m5]`) then atomically rename; never overwrite the input; compress never emits a file larger than the input — on no-gain, **keep the original, surface "already optimised", and write NO redundant copy** `[m4-minor]`; every output re-validated before it is called done.
+- **Memory `[m14]`:** page rasterisation (OCR render, compress render-sample) is **per-page render-then-release**, never all-pages-in-memory — must survive a 1000-page scan.
+- **Progress `[m10-minor]`:** never fabricate a percentage. Compress parses `gs` page markers on stdout for real progress, else shows **indeterminate**; OCR reports real per-page progress.
+- **DoD floor:** v1 is "done" with **Rung 1 Compress + OCR** working, tested, DMG'd. Rung 2 (jbig2enc/CCITT) and Rung 3 (MRC) are explicitly deferred stretch — attempted only if the core lands with hours to spare, never at the cost of polish or stability. (Spec §13's literal "Rungs 1–2" wording is superseded by its own M13 fix setting Rung 1 as the floor — confirmed by the approval dispatch.)
 
 ---
 
@@ -28,241 +32,211 @@
 
 ```
 toolbox/
-  project.yml                          XcodeGen spec (app + tests targets)
-  LICENSE                              AGPL-3.0 text
-  Sources/PDFToolbox/
-    App/
-      PDFToolboxApp.swift              @main, WindowGroup
-      RootView.swift                   NavigationSplitView shell
-      SidebarView.swift                tool list (Compress, OCR, + Soon)
-      Tool.swift                       enum of tools + metadata
-    DesignSystem/
-      Theme.swift                      colour/type/spacing tokens from DESIGN.md
-      Components.swift                 PrimaryButton, Card, DropZone, StatPill, etc.
-    Models/
-      ToolJob.swift                    a queued file + its state
-      CompressPreset.swift             preset enum → gs params
-      PDFContentType.swift             .bornDigital/.mixed/.scan/.bilevel classification
-    Services/
-      PDFService.swift                 load, pageCount, classify, render-sample
-      GhostscriptRunner.swift          locate bundled gs, run sandboxed
-      SeatbeltProfile.swift            build the sandbox-exec profile
-      PDFWriter.swift                  incremental-update append (OCR text layer)
-      OutputValidator.swift            page-count + render-sample validation
-    Compress/
-      CompressEngine.swift             route + run Rung-1 gs compress
-      CompressEstimator.swift          time-boxed per-file size estimate
-      CompressView.swift               UI
-      CompressViewModel.swift          state, queue binding
-    OCR/
-      VisionOCR.swift                  VNRecognizeTextRequest per page
-      OCREngine.swift                  detect image-only pages, orchestrate
-      OCRView.swift                    UI
-      OCRViewModel.swift               state
-    Shared/
-      ToolQueue.swift                  batch queue (ObservableObject)
-      FileNaming.swift                 output path derivation
-      Log.swift                        os.Logger wrapper
-  Resources/
-    ghostscript/                       bundled gs binary + Resource tree (from spike)
-  Tests/PDFToolboxTests/
-    Fixtures.swift                     synthetic PDF generators (born-digital, image, bilevel)
-    CompressEngineTests.swift
-    PDFServiceTests.swift
-    OutputValidatorTests.swift
-    PDFWriterTests.swift
-    OCREngineTests.swift
-    FileNamingTests.swift
+  project.yml                          XcodeGen (glob sources; app + tests targets)
+  LICENSE                              AGPL-3.0
+  .gitignore                           + Resources/ghostscript/, *.xcodeproj, .build
+  .claude/GATES.md                     the gates that define "done"  [M8]
   scripts/
-    build-ghostscript.sh              reproducible gs build (from spike; used by CI)
-    package-dmg.sh                    build .app → ad-hoc sign → DMG
-  .github/workflows/
-    build.yml                          CI: build gs, build app, test, package DMG, (guarded) notarise+release
+    build-ghostscript.sh               reproducible gs build (spike recipe; local + CI)
+    package-dmg.sh                     archive → ad-hoc sign → DMG
+  Sources/PDFToolbox/
+    App/            PDFToolboxApp.swift RootView.swift SidebarView.swift Tool.swift
+    DesignSystem/   Theme.swift (0.1 stub → D.1 full)  Components.swift (D.1)
+    Models/         ToolJob.swift  JobOutcome.swift  CompressPreset.swift  PDFContentType.swift  SizeEstimate.swift
+    Services/       PDFService.swift  GhostscriptRunner.swift  SeatbeltProfile.swift  PDFWriter.swift  OutputValidator.swift  OpenGuard.swift
+    Shared/         ToolQueue.swift  FileNaming.swift  Log.swift
+    Compress/       CompressEngine.swift  CompressEstimator.swift  CompressView.swift  CompressViewModel.swift
+    OCR/            VisionOCR.swift  OCREngine.swift  OCROptions.swift  OCRView.swift  OCRViewModel.swift
+  Resources/ghostscript/               (git-ignored; built)
+  Tests/PDFToolboxTests/
+    Fixtures.swift  (bornDigital / image / bilevel / textImage / encrypted / corrupt)
+    PDFServiceTests.swift  SeatbeltRunTests.swift  CompressEngineTests.swift
+    OutputValidatorTests.swift  PDFWriterTests.swift  OCREngineTests.swift
+    ToolQueueTests.swift  FileNamingTests.swift  EstimatorTests.swift
+  .github/workflows/build.yml          CI
 ```
 
 ---
 
 # PHASE 0 — Foundation spine (SERIAL — the M1 gate). Track: `spine`. Model: Opus.
 
-This whole phase is one dependency chain, built serially by the orchestrator's loop. It ends at the M1 gate: **app launches, compresses a synthetic PDF, saves a validated `-compressed.pdf`.** Nothing in Phase 1 starts until M1 is green and committed.
+One dependency chain, orchestrator-led. Builds the **entire §4 shared layer** so Phase-1 tracks only consume it. Ends at **M1: app launches, compresses a synthetic PDF under the sandbox, saves a validated `-compressed.pdf`.** No Phase-1 track starts until M1 is committed.
 
-### Task 0.1: XcodeGen project + launching SwiftUI shell
+### Task 0.1: XcodeGen project + launching shell + GATES.md
 **Track:** spine · **Model:** Opus · **Depends:** none
 
-**Files:**
-- Create: `project.yml`, `LICENSE`, `Sources/PDFToolbox/App/PDFToolboxApp.swift`, `RootView.swift`, `SidebarView.swift`, `Tool.swift`
-- Create: `Sources/PDFToolbox/DesignSystem/Theme.swift` (minimal token stub — full styling in Phase 1 Track D)
+**Files:** Create `project.yml` (glob sources), `LICENSE`, `.gitignore`, `.claude/GATES.md`, `App/*`, `DesignSystem/Theme.swift` (token stub).
 
-**Interfaces:**
-- Produces: `enum Tool: String, CaseIterable, Identifiable { case compress, ocr }` with `title`, `systemImage`, `isAvailable` (Compress/OCR available; Merge/Split as `.soon` cases rendered disabled per spec §7 deviation list — a 4-entry sidebar: Compress, OCR, Merge (Soon), Split (Soon)). `RootView` owns `@State selectedTool: Tool`.
+**Interfaces — Produces:** `enum Tool: String, CaseIterable, Identifiable { case compress, ocr, merge, split }` with `title`, `systemImage`, `isAvailable` (compress/ocr true; merge/split shown disabled = "Soon" per spec §7 — a 4-entry sidebar). `RootView` owns `@State selectedTool: Tool`.
 
-- [ ] **Step 1:** Write `project.yml` — one app target `PDFToolbox` (bundleId `com.pdftoolbox.app`, deployment 14.0, arm64, `INFOPLIST_KEY_LSMinimumSystemVersion`, hardened runtime settings), one unit-test target `PDFToolboxTests`. Include `Resources/` as a folder reference so `Resources/ghostscript/` bundles.
-- [ ] **Step 2:** Write `PDFToolboxApp.swift` (`@main`, `WindowGroup { RootView() }`, min window size 900×620), `RootView.swift` (`NavigationSplitView` sidebar + detail placeholder per tool), `SidebarView.swift`, `Tool.swift`.
-- [ ] **Step 3:** Add AGPL `LICENSE`, per-file AGPL headers.
-- [ ] **Step 4:** `xcodegen generate` then `xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox -configuration Debug build`. Expected: BUILD SUCCEEDED.
-- [ ] **Step 5:** Launch the built `.app` (smoke): `open` it, confirm window + sidebar appears (verify via screenshot / accessibility dump, then kill). Commit `feat: scaffold PDFToolbox app shell (XcodeGen + SwiftUI NavigationSplitView)`.
+- [ ] Step 1: `project.yml` — app target `PDFToolbox` (bundleId `com.pdftoolbox.app`, deploy 14.0, arm64, hardened runtime), test target `PDFToolboxTests`; **glob-based sources** (`Sources/PDFToolbox`, `Tests/PDFToolboxTests`) `[m6]`; `Resources/` folder reference so `Resources/ghostscript/` bundles. `.gitignore` adds `Resources/ghostscript/`, `*.xcodeproj`, `.build/`, `DerivedData/`.
+- [ ] Step 2: `PDFToolboxApp.swift` (`@main`, `WindowGroup { RootView() }`, min 900×620), `RootView` (`NavigationSplitView`), `SidebarView`, `Tool.swift`. AGPL `LICENSE` + per-file headers.
+- [ ] Step 3: `.claude/GATES.md` `[M8]` — the commands that define "done": `xcodegen generate`; `xcodebuild -scheme PDFToolbox build`; `xcodebuild test`; `scripts/build-ghostscript.sh` succeeds + produces `Resources/ghostscript/bin/gs`; `scripts/package-dmg.sh` produces a mountable DMG. (KB itself bootstrapped in Phase 2 once modules exist.)
+- [ ] Step 4: `xcodegen generate` → `xcodebuild -scheme PDFToolbox build` → BUILD SUCCEEDED. Launch (smoke): window + 4-entry sidebar appears; kill.
+- [ ] Step 5: Commit `feat: scaffold app shell (XcodeGen glob project, SwiftUI shell, GATES.md)`.
 
-### Task 0.2: Bundle Ghostscript + GhostscriptRunner
-**Track:** spine · **Model:** Opus · **Depends:** 0.1, gs-build-spike
-
-**Files:**
-- Create: `scripts/build-ghostscript.sh` (verbatim from the spike's proven recipe), `Resources/ghostscript/` (built artifacts), `Sources/PDFToolbox/Services/GhostscriptRunner.swift`, `SeatbeltProfile.swift`
-- Test: `Tests/PDFToolboxTests/GhostscriptRunnerTests.swift`
-
-**Interfaces:**
-- Produces: `struct GhostscriptRunner { init() throws; func run(arguments: [String], inputURL: URL, outputURL: URL) throws -> ProcessResult }` — locates the bundled `gs` at `Bundle.main.url(forResource:...)`, sets `GS_LIB`/`-I` to the bundled Resource tree, wraps the call in `sandbox-exec -f <profile>` (network denied, FS scoped to input+output+bundle), applies `-dSAFER` + resource caps. `struct ProcessResult { let exitCode: Int32; let stdout: String; let stderr: String }`.
-- Produces: `enum SeatbeltProfile { static func profile(readPaths: [URL], writePaths: [URL], bundlePath: URL) -> String }`.
-
-- [ ] **Step 1:** Commit `scripts/build-ghostscript.sh` and run it → populate `Resources/ghostscript/` (binary + dylibs + Resource tree, install-names rewritten to `@executable_path`/`@rpath` per spike). Verify `Resources/ghostscript/bin/gs --version` runs from a scrubbed PATH.
-- [ ] **Step 2:** Write `SeatbeltProfile.swift` — generate a seatbelt profile string: `(version 1)(deny default)(allow process-exec* ...)(deny network*)(allow file-read* (subpath "<bundle>") (literal "<input>"))(allow file-write* (literal "<output>") (subpath "<tmp>"))`. Unit-test the generated string contains the deny-network + scoped paths.
-- [ ] **Step 3:** Write `GhostscriptRunner.swift`. Write failing test: run `gs --version` through the runner, assert exit 0 and version string present.
-- [ ] **Step 4:** Run test → PASS. Also assert a network attempt is blocked (best-effort: profile string check + a gs invocation that would need no network succeeds).
-- [ ] **Step 5:** Commit `feat: bundle Ghostscript arm64 and add sandboxed GhostscriptRunner`.
-
-### Task 0.3: Shared PDF spine — models + PDFService
+### Task 0.2: Bundle Ghostscript + sandboxed GhostscriptRunner (with a REAL sandboxed-compress test)
 **Track:** spine · **Model:** Opus · **Depends:** 0.1
 
-**Files:**
-- Create: `Models/ToolJob.swift`, `Models/CompressPreset.swift`, `Models/PDFContentType.swift`, `Services/PDFService.swift`, `Shared/FileNaming.swift`, `Shared/Log.swift`
-- Test: `Tests/PDFToolboxTests/PDFServiceTests.swift`, `FileNamingTests.swift`, `Fixtures.swift`
+**Files:** Create `scripts/build-ghostscript.sh` (verbatim spike recipe below), `Services/GhostscriptRunner.swift`, `Services/SeatbeltProfile.swift`, `Tests/…/SeatbeltRunTests.swift`.
 
-**Interfaces:**
-- Produces: `enum CompressPreset: String, CaseIterable { case maximumQuality, balanced, smallestSize }` each mapping to a `gsSettings` param set (dPDFSETTINGS + explicit image-downsample DPI/quality overrides — values from spec §5).
-- Produces: `enum PDFContentType { case bornDigital, mixed, scan, bilevel }`.
-- Produces: `struct PDFService { func pageCount(_ url: URL) throws -> Int; func classify(_ url: URL) throws -> PDFContentType; func renderSample(_ url: URL, pages: Int) throws -> [CGImage] }` — classify by sampling pages: text-layer presence + image coverage ratio + colour depth (born-digital = has text, low raster; mixed = text + images; scan = full-page images, no text; bilevel = scan that is ~1-bit).
-- Produces: `enum FileNaming { static func output(for input: URL, suffix: String, folder: URL?) -> URL }`.
-- Produces: `struct ToolJob: Identifiable { let id; let url: URL; var state: JobState; var resultURL: URL?; var estimate: SizeEstimate? }`, `enum JobState { case queued, analysing, running(Double), done(bytesBefore:Int, bytesAfter:Int), failed(String) }`.
+**Spike recipe (proven — VERDICT YES, single 26 MB system-dylibs-only binary):**
+```sh
+curl -sSL -o gs.tar.xz https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10071/ghostscript-10.07.1.tar.xz
+tar xf gs.tar.xz && cd ghostscript-10.07.1
+env MACOSX_DEPLOYMENT_TARGET=14.0 PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig PKG_CONFIG_PATH= \
+  ./configure --prefix="$PWD/../install" --disable-fontconfig --disable-dbus --disable-cups --without-tesseract --without-x
+env MACOSX_DEPLOYMENT_TARGET=14.0 PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig PKG_CONFIG_PATH= make -j"$(sysctl -n hw.ncpu)"
+# → ./bin/gs (arm64, minos 14.0, ~26 MB, otool -L = libSystem + libiconv only, Resource tree in ROM)
+```
+Both env knobs are MANDATORY (deployment-floor + Homebrew-blinding). Copy `bin/gs` → `Resources/ghostscript/bin/gs`.
 
-- [ ] **Step 1:** Write `Fixtures.swift` — generate synthetic PDFs at test time via `PDFDocument`/Core Graphics: `bornDigitalPDF()` (text), `imagePDF()` (embeds a generated photo-like CGImage), `bilevelPDF()` (1-bit scan-like). Never read from disk.
-- [ ] **Step 2:** Write failing `PDFServiceTests`: pageCount of a 3-page fixture == 3; classify(bornDigital) == .bornDigital; classify(image) == .scan.
-- [ ] **Step 3:** Implement `PDFService`, `PDFContentType`, `CompressPreset`, `FileNaming`, `ToolJob`, `Log`. Run tests → PASS.
-- [ ] **Step 4:** Write + pass `FileNamingTests` (suffix, collision `-compressed-1.pdf`, output-folder override).
-- [ ] **Step 5:** Commit `feat: add PDF content classification, models, and file-naming`.
+**Interfaces — Produces:**
+- `enum SeatbeltProfile { static func profile(readPaths: [URL], writePaths: [URL]) -> String }` — string begins `(version 1)(import "system.sb")(import "bsd.sb")(deny network*)` then `(allow file-read* (subpath "<gsDir>") (literal <inputs>))(allow file-write* (subpath "<tmpDir>") (literal <outputs>))` `[M5]`.
+- `struct GhostscriptRunner { init() throws; func run(arguments: [String], readPaths: [URL], writePaths: [URL], onProgress: ((Int)->Void)?) throws -> ProcessResult }` — locates bundled `gs`, wraps in `sandbox-exec -p <profile>` (or `-f`), applies `-dSAFER` + caps, parses page markers for progress `[m10]`. `struct ProcessResult { let exitCode: Int32; let stdout, stderr: String }`.
 
-### Task 0.4: Rung-1 CompressEngine + OutputValidator + end-to-end UI wire
+- [ ] Step 1: Commit `build-ghostscript.sh`; run it → populate `Resources/ghostscript/`. Verify `Resources/ghostscript/bin/gs --version` under `env -i`.
+- [ ] Step 2: `SeatbeltProfile.swift` per `[M5]`. Unit-test: generated string contains both imports, `deny network*`, and the scoped paths.
+- [ ] Step 3: **`SeatbeltRunTests` — the M1-critical positive test:** generate an `imagePDF()` fixture, run a REAL `gs -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook` through `GhostscriptRunner` (i.e. under `sandbox-exec`), assert exit 0 AND output is a smaller valid PDF `[M5]`. (Not a string check — proves the sandbox lets gs launch and work.)
+- [ ] Step 4: Implement `GhostscriptRunner`; tests PASS.
+- [ ] Step 5: Commit `feat: bundle Ghostscript arm64 + sandboxed GhostscriptRunner (seatbelt, real-run tested)`.
+
+### Task 0.3: COMPLETE shared layer — models, PDFService, ToolQueue, open-guard, fixtures
+**Track:** spine · **Model:** Opus · **Depends:** 0.1
+
+This is the fix for the R1 root cause: the whole §4 shared layer lands here, before the Phase-1 fork.
+
+**Files:** Create `Models/{ToolJob,JobOutcome,CompressPreset,PDFContentType,SizeEstimate}.swift`, `Services/PDFService.swift`, `Services/OpenGuard.swift`, `Shared/{ToolQueue,FileNaming,Log}.swift`, `Tests/…/{Fixtures,PDFServiceTests,ToolQueueTests,FileNamingTests}.swift`.
+
+**Interfaces — Produces:**
+- `struct SizeEstimate { let predictedBytes: Int; let confidence: Confidence; let isFallback: Bool }`, `enum Confidence { case high, medium, low }` `[M2]` — defined HERE, C.2 only implements the estimator against it.
+- `enum JobOutcome { case compressed(before: Int, after: Int); case noGain(bytes: Int); case ocrAdded(pages: Int, skipped: Int); case alreadySearchable }` `[M4]` — tool-agnostic terminal result.
+- `enum JobState { case queued, analysing, running(Double), done(JobOutcome), failed(String) }` `[M4]`.
+- `struct ToolJob: Identifiable { let id: UUID; let url: URL; var state: JobState; var resultURL: URL?; var estimate: SizeEstimate? }`.
+- `enum CompressPreset: String, CaseIterable { case maximumQuality, balanced, smallestSize }` → `gsArguments()` with a **concrete provisional baseline** `[m1]` from `engine-research-2.md`: per-preset `-dPDFSETTINGS`, explicit `-dColorImageDownsampleType=/Bicubic` + target DPI (300/150/100), `-dAutoFilterColorImages=false -sColorImageFilter=DCTEncode` + per-preset `-dJPEGQ`, `-dSubsetFonts=true -dCompressFonts=true -dDetectDuplicateImages=true -dFastWebView=true`, DCTDecode passthrough; **CMYK policy** `[m2]`: `-dConvertCMYKImagesToRGB=true` on balanced/smallestSize, preserved on maximumQuality. (Numbers retuned against the corpus in S.2.)
+- `enum PDFContentType { case bornDigital, mixedColour, scanColour, scanBilevel }` `[m9]` — colour/bilevel scan distinction preserved for Rungs 2/3; **`.scanBilevel` classified content-based** (visually near-two-tone, not raw bit-depth) `[m8]`.
+- `struct PDFService { func pageCount(_:) throws -> Int; func classify(_:) throws -> PDFContentType; func pageHasText(_ url: URL, index: Int) throws -> Bool` (via `PDFPage.string` non-empty) `[M3]`; `func renderSample(_ url: URL, pages: Int) throws -> [CGImage]` (per-page render/release `[m14]`) `}`.
+- `enum OpenGuard { static func inspect(_ url: URL) throws -> OpenState }`, `enum OpenState { case ok(pageCount: Int); case encrypted; case corrupt }` `[M9]` — up-front detection; both engines call it and prompt-or-skip encrypted, fail corrupt inline.
+- `@MainActor final class ToolQueue: ObservableObject { @Published var jobs: [ToolJob]; func add(_ urls: [URL]); func removeCompleted(); func run(_ body: @escaping (ToolJob) async -> JobOutcome, maxConcurrent: Int = ProcessInfo.processInfo.activeProcessorCount) async; func cancel() }` `[M1][m12]` — shared by BOTH tools; bounded concurrency defaulting to core count; cancellable; cancelled jobs leave no partial output.
+- `enum FileNaming { static func output(for input: URL, suffix: String, folder: URL?) -> URL }`.
+
+- [ ] Step 1: `Fixtures.swift` — synthetic generators via CoreGraphics: `bornDigitalPDF()`, `imagePDF()` (photo-like), `bilevelPDF()`, **`textImagePDF()`** (a rasterised image containing the rendered words "HELLO WORLD" for OCR tests, so Track B never edits Fixtures) `[m7]`, `encryptedPDF()` (owner/user password), `corruptPDF()` (truncated bytes). Never read disk.
+- [ ] Step 2: Failing `PDFServiceTests` — pageCount==3 on a 3-page fixture; classify(bornDigital)==.bornDigital, classify(image)==.scanColour; `pageHasText` true on born-digital page, false on image page; `OpenGuard.inspect(encrypted)`==.encrypted, `.inspect(corrupt)`==.corrupt.
+- [ ] Step 3: Implement all models + `PDFService` + `OpenGuard` + `FileNaming` + `Log`. Tests PASS. **Verify the module compiles standalone** (no forward refs to Phase-1 types) `[M2]`.
+- [ ] Step 4: Failing `ToolQueueTests` — add 5 jobs, `run` with a stub returning `.compressed(1,1)` flips all to done; `cancel` mid-run leaves remaining queued, no partial output. Failing `FileNamingTests` — suffix, collision `-compressed-1.pdf`, folder override. Implement; PASS.
+- [ ] Step 5: Commit `feat: complete shared layer — models, PDFService+OpenGuard, ToolQueue, fixtures`.
+
+### Task 0.4: Rung-1 CompressEngine + OutputValidator + end-to-end UI wire (M1 GATE)
 **Track:** spine · **Model:** Opus · **Depends:** 0.2, 0.3
 
-**Files:**
-- Create: `Services/OutputValidator.swift`, `Compress/CompressEngine.swift`, `Compress/CompressView.swift`, `Compress/CompressViewModel.swift`
-- Test: `Tests/PDFToolboxTests/CompressEngineTests.swift`, `OutputValidatorTests.swift`
+**Files:** Create `Services/OutputValidator.swift`, `Compress/{CompressEngine,CompressView,CompressViewModel}.swift`, `Tests/…/{OutputValidatorTests,CompressEngineTests}.swift`.
 
-**Interfaces:**
-- Produces: `struct OutputValidator { func validate(input: URL, output: URL, samplePages: Int) throws -> Bool }` — page counts equal AND N sample pages render non-blank (compare against input renders for gross corruption).
-- Produces: `struct CompressEngine { init(runner: GhostscriptRunner); func compress(_ input: URL, preset: CompressPreset, to output: URL, progress: (Double)->Void) async throws -> CompressResult }` — routes `.bornDigital`/`.mixed`/`.scan`/`.bilevel` all to Rung-1 gs for v1 (Rungs 2/3 deferred — router has the seam but one implementation now); temp-file + atomic rename; never-bigger guard (if gs output ≥ input, copy input to output and flag `.noGain`); calls `OutputValidator`. `struct CompressResult { let bytesBefore, bytesAfter: Int; let validated: Bool; let noGain: Bool }`.
+**Interfaces — Produces:**
+- `struct OutputValidator { func validate(input: URL, output: URL, samplePages: Int) throws -> Bool }` — page counts equal AND N sample pages **render without error and are non-blank**; does NOT pixel-compare against input (lossy output legitimately differs) `[m3]`.
+- `struct CompressEngine { init(runner: GhostscriptRunner, service: PDFService); func compress(_ input: URL, preset: CompressPreset, to output: URL, progress: @escaping (Double)->Void) async throws -> JobOutcome }` — `OpenGuard.inspect` first (throw/skip on encrypted/corrupt); route all content types to Rung-1 gs for v1 (router seam present, one impl); temp-file in output dir + atomic rename; never-bigger guard → on no-gain return `.noGain(bytes:)` and **do not write an output file** `[m4-minor]`; `OutputValidator` before success; returns `.compressed(before:after:)`.
 
-- [ ] **Step 1:** Write failing `OutputValidatorTests` (equal-page-count pass; mismatched-page-count fail; blank-output fail).
-- [ ] **Step 2:** Implement `OutputValidator`; tests PASS.
-- [ ] **Step 3:** Write failing `CompressEngineTests`: compress `imagePDF()` at `.balanced` → output smaller than input, validated true, page count preserved. Test never-bigger guard with `bornDigitalPDF()` (tiny; likely no gain → `.noGain`, output == input bytes).
-- [ ] **Step 4:** Implement `CompressEngine`; tests PASS.
-- [ ] **Step 5:** Wire `CompressView` + `CompressViewModel`: a drop zone / file picker for ONE file, a preset control, a Compress button, a result row (before/after size). No batch yet. Build, launch, manually compress a synthetic PDF through the GUI, confirm `-compressed.pdf` appears and validates.
-- [ ] **Step 6:** **M1 GATE.** Commit `feat: Rung-1 Ghostscript compress engine wired end-to-end (M1)`. Update ledger: M1 green.
+- [ ] Step 1: Failing `OutputValidatorTests` (equal-count non-blank → pass; count mismatch → fail; blank page → fail).
+- [ ] Step 2: Implement `OutputValidator`; PASS.
+- [ ] Step 3: Failing `CompressEngineTests` — compress `imagePDF()` at `.balanced` → `.compressed` with after<before, count preserved, validated; `bornDigitalPDF()` (tiny) → `.noGain`, no output file written; `encryptedPDF()` → throws/`.failed`.
+- [ ] Step 4: Implement `CompressEngine`; PASS.
+- [ ] Step 5: Wire `CompressView` + `CompressViewModel` (single-file: drop/pick, preset control, Compress button, before/after row) onto `ToolQueue`. Build, launch, compress a synthetic PDF via GUI → validated `-compressed.pdf` appears.
+- [ ] Step 6: **M1 GATE.** Commit `feat: Rung-1 Ghostscript compress wired end-to-end under sandbox (M1)`. Ledger: M1 green.
 
 ---
 
-# PHASE 1 — Breadth (parallelizable after M1). Three tracks, file-disjoint.
+# PHASE 1 — Breadth (parallel after M1). Tracks B/C/D, file-disjoint, each in its own worktree.
 
-Dispatched as concurrent background subagents, one per worktree, ONLY after M1 is committed. Each track's files are disjoint (see below). The orchestrator owns cross-track seams (shared model additions land in Phase 0; tracks consume, don't mutate, each other's files).
+**Worktree-isolation rule `[M11]`:** each track runs in its own worktree off the feature branch. `DesignSystem/Components.swift` (Track D) does NOT exist in B's or C's worktree during Phase 1. Therefore **Tracks B and C reference ONLY the Task 0.1 `Theme` stub** (present at the fork) — never `Components` symbols. ALL `Components` application to views is deferred to the serial S.1 polish pass. Track file ownership is disjoint: B owns `OCR/*` + `Services/PDFWriter.swift`; C owns `Compress/CompressEstimator.swift` + additive edits to `Compress/CompressView.swift`/`CompressViewModel.swift`; D owns `DesignSystem/*`. ToolQueue/PDFService/models are settled (Phase 0) — consumed, never mutated.
 
-### Track B — OCR tool. Model: Opus (Vision + PDF incremental append is subtle). Files: `OCR/*`, `Services/PDFWriter.swift`, `Tests/…/PDFWriterTests.swift`, `OCREngineTests.swift`.
+### Track B — OCR tool. Model: Opus (Vision + PDF incremental append is subtle).
 
 ### Task B.1: PDFWriter — incremental-update invisible text layer
 **Depends:** 0.3
 
-**Interfaces:**
-- Produces: `struct PDFWriter { func appendTextLayer(to input: URL, output: URL, pageTexts: [Int: [PositionedText]]) throws }` where `struct PositionedText { let text: String; let rect: CGRect /* PDF user space */; }`. Appends an invisible text-render-mode-3 layer via PDF incremental update so the original image bytes are untouched (append-only; original object table preserved). Validates: output opens, page count == input, original page objects byte-identical.
-- Produces: coordinate contract — Vision normalised (origin bottom-left, 0–1) → PDF user space accounting for page `mediaBox` + rotation.
+**Interfaces — Produces:**
+- `struct PositionedText { let text: String; let boundingBox: CGRect /* Vision-normalised, origin bottom-left, 0…1 */ }` `[M7]`.
+- `struct PageGeometry { let mediaBox: CGRect; let rotation: Int }`.
+- `struct PDFWriter { func appendTextLayer(to input: URL, output: URL, pageText: [Int: [PositionedText]], geometry: [Int: PageGeometry]) throws }` `[M7]` — **PDFWriter owns the coordinate transform**: normalised box → PDF user space accounting for `mediaBox` origin + `rotation`. Uses PDF incremental update (original bytes verbatim; appended objects + xref delta + trailer `/Prev`). Invisible text via render mode 3, Helvetica, sized to bbox.
+- **Invariant `[M6]`:** image XObject streams remain byte-identical; each OCR'd page dict is *superseded* (appends the invisible-text content stream to `/Contents`, adds a font to `/Resources`); rendered appearance unchanged (validated by render-diff, not byte-identity).
 
-- [ ] Step 1: Failing `PDFWriterTests` — append a known string to a 1-page image PDF; reopen; assert extractable text present AND original image XObject bytes unchanged (compare object stream).
-- [ ] Step 2: Implement incremental-update append (write original bytes verbatim, append new objects + xref delta + trailer with `/Prev`). Text render mode 3 (invisible), font Helvetica, sized to bbox.
-- [ ] Step 3: Tests PASS. Commit `feat: PDFWriter incremental-update invisible text layer`.
+- [ ] Step 1: Failing `PDFWriterTests` — append "HELLO" to `imagePDF()`; reopen → text extractable; **image XObject stream bytes unchanged** (the correct invariant); page count preserved; a render-diff of the page shows no visible change.
+- [ ] Step 2: Implement incremental append + the normalised→user-space transform (test a 90°-rotated page maps correctly). PASS.
+- [ ] Step 3: Commit `feat: PDFWriter incremental-update invisible OCR text layer`.
 
-### Task B.2: VisionOCR + OCREngine + OCRView
+### Task B.2: VisionOCR + OCROptions + OCREngine + OCRView (batch + options panel)
 **Depends:** B.1, 0.3
 
-**Interfaces:**
-- Produces: `struct VisionOCR { func recognise(_ image: CGImage) async throws -> [PositionedText] }` (VNRecognizeTextRequest, `.accurate`, on-device, language auto). Render each page to CGImage at ≥300 DPI for OCR (spec M10 default).
-- Produces: `struct OCREngine { func ocr(_ input: URL, to output: URL, progress:(Double)->Void) async throws -> OCRResult }` — for each page: if page already has a text layer (spec M11: skip `.mixed`/text pages), keep as-is; else render→VisionOCR→collect PositionedText; then `PDFWriter.appendTextLayer`. `struct OCRResult { let pagesOCRd: Int; let pagesSkipped: Int }`.
+**Interfaces — Produces:**
+- `struct OCROptions { var accuracy: Accuracy = .accurate; var languages: [String] = [] /* empty = auto */ }`, `enum Accuracy { case fast, accurate }` `[M10]`.
+- `struct VisionOCR { func recognise(_ image: CGImage, options: OCROptions) async throws -> [PositionedText] }` `[M10]` — `VNRecognizeTextRequest`, `.recognitionLevel` from accuracy, `recognitionLanguages` from options, on-device; boxes returned Vision-normalised (NOT transformed) `[M7]`. Page rendered at ≥300 DPI, per-page render/release `[m14]`.
+- `struct OCREngine { func ocr(_ input: URL, to output: URL, options: OCROptions, progress: @escaping (Double)->Void) async throws -> JobOutcome }` `[M10]` — `OpenGuard.inspect` first; for each page: `PDFService.pageHasText` true → skip `[M3]`; else render → `VisionOCR.recognise` → collect. Then `PDFWriter.appendTextLayer` (with geometry) → temp+rename+`OutputValidator` `[m11]`. Returns `.ocrAdded(pages:skipped:)`, or `.alreadySearchable` if every page had text.
 
-- [ ] Step 1: Failing `OCREngineTests` — OCR an `imagePDF()` whose image contains rendered text "HELLO WORLD"; assert output has extractable "HELLO WORLD" and skipped-count for a born-digital page.
-- [ ] Step 2: Implement `VisionOCR`, `OCREngine`. Tests PASS.
-- [ ] Step 3: `OCRView` + `OCRViewModel` derived from the design system: drop zone, run button, per-file state, result. Commit `feat: Apple Vision OCR tool with searchable-layer output`.
+- [ ] Step 1: Failing `OCREngineTests` — OCR `textImagePDF()` → output has extractable "HELLO WORLD"; born-digital page reported skipped; a fully-text PDF → `.alreadySearchable`.
+- [ ] Step 2: Implement `OCROptions`, `VisionOCR`, `OCREngine`; PASS.
+- [ ] Step 3: `OCRView` + `OCRViewModel` on `ToolQueue` (batch, like Compress) with an **options panel (accuracy toggle + language)** `[M10]`, styled with the `Theme` stub only `[M11]`. Commit `feat: Apple Vision OCR tool — batch, options panel, searchable-layer output`.
 
-### Track C — Compress depth (batch, estimate, presets UI). Model: Sonnet. Files: `Shared/ToolQueue.swift`, `Compress/CompressEstimator.swift`, and additive edits to `CompressView.swift`/`CompressViewModel.swift` (coordinated: Track C owns these two after M1; Track B/D do not touch them).
+### Track C — Compress depth (estimate + batch/preset UI). Model: Sonnet (C.2/C.3; ToolQueue already Opus-built in Phase 0 `[m18]`).
 
-### Task C.1: ToolQueue (batch)
-**Depends:** 0.3
-
-**Interfaces:**
-- Produces: `@MainActor final class ToolQueue: ObservableObject { @Published var jobs: [ToolJob]; func add(_ urls: [URL]); func removeCompleted(); func run(using: (ToolJob) async -> Void, maxConcurrent: Int) async; func cancel() }` — bounded concurrency (default 2), cancellable, per-job progress. Cancelled jobs leave no partial output (temp-file discipline lives in the engines).
-
-- [ ] Step 1: Failing `ToolQueueTests` — add 5 jobs, run with a stub that flips state, assert all done; cancel mid-run leaves remaining queued.
-- [ ] Step 2: Implement. Tests PASS. Commit `feat: batch ToolQueue with bounded concurrency and cancellation`.
-
-### Task C.2: CompressEstimator (per-file, time-boxed)
+### Task C.1: CompressEstimator (per-file, time-boxed)
 **Depends:** 0.4
 
-**Interfaces:**
-- Produces: `struct CompressEstimator { func estimate(_ input: URL, preset: CompressPreset) async -> SizeEstimate }` — a quick analysis (sample-based: classify + measure image payload ratio) bounded to spec M7 (fall back to typical-range table if median error would exceed ±25% or analysis > 500 ms/file). `struct SizeEstimate { let predictedBytes: Int; let confidence: Confidence; let isFallback: Bool }`.
+**Interfaces — Produces:** `struct CompressEstimator { func estimate(_ input: URL, preset: CompressPreset) async -> SizeEstimate }` — sample-based analysis (classify + image-payload ratio) bounded per spec M7: fall back to a typical-range table (flag `isFallback`, lower `confidence`) if analysis would exceed **±25 % median error or 500 ms/file**.
 
-- [ ] Step 1: Failing test — estimate returns within time box; fallback flagged when analysis times out (inject a slow classifier).
-- [ ] Step 2: Implement. Tests PASS. Commit `feat: time-boxed per-file compression estimate`.
+- [ ] Step 1: Failing `EstimatorTests` — returns within the time box; fallback flagged when a slow classifier is injected.
+- [ ] Step 2: Implement; PASS. Commit `feat: time-boxed per-file compression estimate`.
 
-### Task C.3: Wire batch + presets + estimate into CompressView
-**Depends:** C.1, C.2
+### Task C.2: Wire batch + presets + estimate into CompressView
+**Depends:** C.1
 
-- [ ] Step 1: Extend `CompressView`/`CompressViewModel` — multi-file drop, per-file rows with estimate → live progress → real before/after, preset picker, optional output-folder picker, cancel. Build + launch, run a 3-file synthetic batch through the GUI.
+- [ ] Step 1: Extend `CompressView`/`CompressViewModel` — multi-file drop, per-file rows (estimate → live progress → real before/after), preset picker, optional output-folder picker, cancel. `Theme` stub only `[M11]`. Build + launch, run a 3-file synthetic batch via GUI.
 - [ ] Step 2: Commit `feat: batch compress UI with presets, estimates, output folder`.
 
-### Track D — Design system + polish. Model: Sonnet. Files: `DesignSystem/Theme.swift`, `DesignSystem/Components.swift`, and the visual layer only. Coordinated: Track D owns `DesignSystem/*`; view files are owned by B/C — Track D delivers reusable components + tokens that B/C consume. To avoid races, Track D runs its component/token work in parallel, and a short serial polish pass (orchestrator) applies them to the views after B and C land.
+### Track D — Design system. Model: Sonnet.
 
-### Task D.1: Design tokens + components from DESIGN.md + Claude Design output
+### Task D.1: Theme (full) + Components from DESIGN.md + Claude Design output
 **Depends:** 0.1
 
-**Interfaces:**
-- Produces: `enum Theme { static let colours…; static let type…; static let spacing…; static let radius… }` from `DESIGN.md` (bg `#f5f5f7`, text `#1d1d1f`/`#000`, accent `#0071e3`, pill radius, SF Pro Display ≥20 / Text <20, soft sparse shadow), light + dark.
-- Produces: `Components.swift` — `PrimaryButton` (pill), `Card`, `DropZone`, `StatPill`, `SegmentedPreset`, `FileRow`, matching the Claude Design output at `<private design mockup>/` (rebuilt faithfully, not pixel-copied; §7 deviations: 4-entry sidebar, stats widget cut for v1).
+**Interfaces — Produces:** `enum Theme` (full tokens from `DESIGN.md`: bg `#f5f5f7`, text `#1d1d1f`/`#000`, accent `#0071e3`, pill radius 980, SF Pro Display ≥20 / Text <20, soft sparse shadow; light + dark). `Components.swift` — `PrimaryButton`(pill), `Card`, `DropZone`, `StatPill`, `SegmentedPreset`, `FileRow` — rebuilt faithfully (not pixel-copied) from the Claude Design output at **`the Claude Design mockup (kept outside this repository)`** (+`support.js`) `[m16]`; §7 deviations: 4-entry sidebar, stats widget cut for v1.
 
-- [ ] Step 1: Implement `Theme` + `Components` with SwiftUI previews (light + dark). No test target (visual); verify via preview render / screenshot.
-- [ ] Step 2: Commit `feat: design system tokens and reusable components (Apple DESIGN.md)`.
+- [ ] Step 1: Implement `Theme` + `Components` with light+dark SwiftUI previews; verify via preview render/screenshot.
+- [ ] Step 2: Commit `feat: design system tokens + reusable components (Apple DESIGN.md)`.
 
 ---
 
 # PHASE 2 — Integrate, validate, ship. Track: `ship`. Model: Opus (orchestrator-led).
 
-### Task S.1: Design polish pass
-- [ ] Apply `Theme`/`Components` across `CompressView`, `OCRView`, `RootView`, `SidebarView`; states (empty, queued, analysing, running, done, error) all styled; light + dark verified. Commit.
+### Task S.1: Design polish pass `[M11]`
+- [ ] Merge Tracks B/C/D to the feature branch. Apply `Theme`/`Components` across `CompressView`, `OCRView`, `RootView`, `SidebarView`; style all states (empty, queued, analysing, running, done, already-optimised/already-searchable, error) `[M4/M9]`; light + dark verified. Commit.
 
-### Task S.2: Integration + real-corpus quality validation
-- [ ] Full test suite green (`xcodebuild test`).
-- [ ] Build the app; run the **local quality harness** on the real corpus at `<private local corpus>` (authorised): for each PDF, compress at each preset + OCR the image-only ones; record size-reduction % and a quality spot-check (render-diff sanity). **Report anonymised aggregates only** (avg/median reduction by content type; OCR success rate). Write results to the LCW ledger (uncommittable) — NEVER to the repo.
-- [ ] If reduction is weak, tune Rung-1 gs params (within spec §5 bounds) and re-measure. Commit any param tuning.
+### Task S.2: Integration + real-corpus quality validation `[m17]`
+- [ ] Full suite green (`xcodebuild test`).
+- [ ] Run the local quality harness on the real corpus at `<private local corpus>` (authorised): each PDF × each preset compress + OCR the image-only ones; record size-reduction % + render-diff quality spot-check. **Acceptance target `[m17]`: Rung-1 meets or beats stock-GS `/ebook` reduction on the corpus, with no visible quality regression at `.balanced`.** Report anonymised aggregates only, to the ledger. NEVER to the repo.
+- [ ] If below target, retune `CompressPreset` gs params (within spec §5 bounds) and re-measure. Commit tuning.
 
 ### Task S.3: Review-team gate
-- [ ] Run the review-team runbook (`skills/review-team/SKILL.md`) on the branch: 4 lenses (spec-fidelity, correctness, security, elegance), loop to SHIP, fix/rebut every minor. Record rounds in the ledger. On stop-red, climb the recovery ladder (diagnose/resume → panel), don't loop forever.
+- [ ] Run the review-team runbook (4 lenses: spec-fidelity, correctness, security, elegance), loop to SHIP, fix/rebut every minor, record rounds in the ledger. On stop-red, climb the recovery ladder (diagnose/resume → panel) — don't loop forever.
 
 ### Task S.4: DMG packaging + Gatekeeper reality test
-- [ ] `scripts/package-dmg.sh`: `xcodebuild archive` → export → deep ad-hoc sign (`codesign -s - --options runtime --deep`) → `hdiutil` DMG.
-- [ ] Empirically verify open-flow: mount DMG, drag to /Applications, launch (confirm window + a real compress works). Then set `com.apple.quarantine` xattr (simulate download), retry, capture the exact Gatekeeper failure + the one-time bypass (`xattr -dr com.apple.quarantine` / right-click→Open). Document precise steps for the morning report.
+- [ ] `scripts/package-dmg.sh`: `xcodebuild archive` → export → **deep ad-hoc sign** (`codesign -s - --options runtime --deep`, incl. the bundled `gs`) → `hdiutil` DMG.
+- [ ] Empirically verify: mount DMG, drag to /Applications, launch, run a real compress + a real OCR. Then set `com.apple.quarantine` (simulate download), retry, capture the exact Gatekeeper failure + one-time bypass (`xattr -dr com.apple.quarantine` / right-click→Open). Document precise steps for the morning report.
 
 ### Task S.5: GitHub Actions CI
-- [ ] `.github/workflows/build.yml` on `macos-15` (or latest): install xcodegen, run `build-ghostscript.sh` (cached), `xcodegen generate`, `xcodebuild test`, `xcodebuild archive`, ad-hoc sign, build DMG, upload as artifact. A `release` job (tag-triggered) publishes the DMG to a GitHub Release. Notarise + Developer-ID-sign steps present but **guarded on `secrets.APPLE_*` being set** (skipped until user adds credentials).
-- [ ] Push branch; confirm the CI run goes green on GitHub (fix until it does).
+- [ ] `.github/workflows/build.yml` on `macos-15`: install xcodegen; run `build-ghostscript.sh` (cache the built binary by source hash); `xcodegen generate`; `xcodebuild test`; `xcodebuild archive`; ad-hoc sign; `package-dmg.sh`; upload DMG artifact. A tag-triggered `release` job publishes the DMG to a GitHub Release. Developer-ID-sign + notarise steps present but **guarded on `secrets.APPLE_*`** (skipped until the user adds credentials). Belt-and-braces: a smoke job that launches the built app (or at least runs the bundled `gs --version`) to confirm the 14.0-target binary runs.
+- [ ] Push branch; iterate until the CI run is green on GitHub.
 
-### Task S.6: PR, merge, retro
-- [ ] Push `feat/pdf-toolbox-v1`. Open PR referencing the spec path. KB update (kb-updater diff mode) + Check-2b receipt satisfied by S.3's review-team SHIP.
+### Task S.6: KB bootstrap, PR, merge, retro
+- [ ] Bootstrap a minimal `.claude/` KB (OVERVIEW, INDEX, ARCHITECTURE, module docs) describing the now-real modules `[M8]` so the push/PR gate passes; DECISIONS.md entry for the engine/licence/build decisions.
+- [ ] Push `feat/pdf-toolbox-v1`. Open PR referencing the spec path. Check-2b receipt satisfied by S.3's review-team SHIP.
 - [ ] **Merge the PR into `main` myself** (user's explicit standing authorisation), push.
-- [ ] Retro: mine review-round footers → update/create `.claude/memory/review-lessons.md` (LC-A…LC-E + any new), commit on branch pre-merge (or a follow-up commit + push post-merge).
-- [ ] Write the morning report: what works + evidence (real reduction numbers), what's deferred (Rung 2/3) + why, what's blocked on the user (Apple Developer cert for notarisation), copy-paste DMG test steps.
+- [ ] Retro: mine review-round footers → create/update `.claude/memory/review-lessons.md` (LC-A…E + LC-P1…P4 + new); commit on branch.
+- [ ] Morning report: what works + evidence (real reduction numbers), what's deferred (Rung 2/3) + why, what's blocked on the user (Apple Developer cert → notarisation), copy-paste DMG test steps.
 
 ---
 
 ## Deferred (stretch — only if core lands with hours to spare)
-- **Rung 2:** jbig2enc (JBIG2, lossless bilevel) + CCITT G4 fallback + PDF image-XObject splicing via PDFWriter. Router already has the seam.
+- **Rung 2:** jbig2enc (JBIG2 lossless bilevel) + CCITT G4 fallback + PDF image-XObject splicing via PDFWriter. Router seam present.
 - **Rung 3:** MRC port (segmentation spike first; ship without if inadequate).
+Not part of tonight's DoD; the router sends all content to Rung-1 gs until they land.
 
-These are NOT part of tonight's DoD. The router in `CompressEngine` sends all content types to Rung-1 gs until/unless these land.
-
-## Self-Review (against spec)
-- Spec §5 Compress (Rung 1) → Tasks 0.2/0.4/C.*. §6 OCR → Track B. §4 shell → 0.1/D.1. §7 UI deviations → captured in 0.1 + D.1. §5.4/§11.4 GS sandbox → 0.2 SeatbeltProfile. §5.3 estimate → C.2. Output safety (temp+rename, never-bigger, validation) → 0.4. §9 build → 0.1 + S.5. §11.5 GS bundle risk → 0.2 (proven by spike). DoD floor (Rung 1 + OCR) → Phase 0 + Track B.
-- Rungs 2/3 deferred per spec's own allowance (M13 fix: Rung 1 = v1-done floor).
-- No placeholders: every task names files, interfaces, and test assertions. Code sketches given for the subtle parts (sandbox profile, incremental append, coordinate contract); full implementation is the subagent's, guided by the spec.
+## R1 finding coverage
+M1→ToolQueue in 0.3, wired both tools (0.4, B.2). M2→SizeEstimate/Confidence in 0.3. M3→`pageHasText` in 0.3. M4→JobOutcome/JobState in 0.3. M5→SeatbeltProfile imports + real sandboxed-compress test (0.2). M6→invariant restated (B.1). M7→VisionOCR normalised / PDFWriter transforms w/ geometry (B.1,B.2). M8→GATES.md (0.1) + KB (S.6). M9→OpenGuard (0.3). M10→OCROptions + panel (B.2). M11→Theme-stub-only in B/C, Components applied in S.1. Minors m1–m18 each pinned inline. m18→C.1(ToolQueue) is Phase-0 Opus.
