@@ -39,4 +39,24 @@ final class FileNamingTests: XCTestCase {
         XCTAssertEqual(output.lastPathComponent, "scan-ocr.pdf")
         XCTAssertEqual(output.deletingLastPathComponent().path, outDir.path)
     }
+
+    /// Regression: two inputs with the SAME basename from DIFFERENT folders, both directed at the
+    /// same output folder, must get distinct output names even though neither exists on disk yet.
+    /// A purely on-disk check returns the same name for both (TOCTOU race under concurrency); the
+    /// reserving set makes the up-front allocation collision-free.
+    func testBatchReservationAvoidsSameBasenameCollision() throws {
+        let folderA = try uniqueDir()
+        let folderB = try uniqueDir()
+        let outDir = try uniqueDir()
+        let inputA = folderA.appendingPathComponent("image.pdf")
+        let inputB = folderB.appendingPathComponent("image.pdf")   // same basename, different folder
+
+        var reserved = Set<URL>()
+        let outA = FileNaming.output(for: inputA, suffix: "compressed", folder: outDir, reserving: &reserved)
+        let outB = FileNaming.output(for: inputB, suffix: "compressed", folder: outDir, reserving: &reserved)
+
+        XCTAssertNotEqual(outA, outB, "same-basename batch inputs must get distinct outputs")
+        XCTAssertEqual(outA.lastPathComponent, "image-compressed.pdf")
+        XCTAssertEqual(outB.lastPathComponent, "image-compressed-1.pdf")
+    }
 }

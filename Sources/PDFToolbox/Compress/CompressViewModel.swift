@@ -89,10 +89,21 @@ final class CompressViewModel: ObservableObject {
         guard let engine, !isRunning else { return }
         let chosen = preset
         let folder = outputFolder
+        // Allocate every output name up front, serially, on this thread — BEFORE the concurrent
+        // run starts — so two same-basename inputs from different folders can't both claim the same
+        // target and fail the second job's atomic rename (a purely on-disk check races under
+        // concurrency). Each job then looks up its pre-reserved, guaranteed-unique destination.
+        var reserved = Set<URL>()
+        var outputs: [ToolJob.ID: URL] = [:]
+        for job in queue.jobs {
+            outputs[job.id] = FileNaming.output(for: job.url, suffix: "compressed",
+                                                folder: folder, reserving: &reserved)
+        }
         isRunning = true
         Task {
             await queue.run { job, report in
-                let output = FileNaming.output(for: job.url, suffix: "compressed", folder: folder)
+                let output = outputs[job.id]
+                    ?? FileNaming.output(for: job.url, suffix: "compressed", folder: folder)
                 return try await engine.compress(job.url, preset: chosen, to: output) { report($0) }
             }
             isRunning = false
