@@ -1,139 +1,156 @@
 # Spec — PDF Toolbox v1 (Compress + OCR)
 
-Date: 2026-07-22 · Branch: `feat/pdf-toolbox-v1` · Status: draft (pre spec-reviewer gate)
+Date: 2026-07-22 · Branch: `feat/pdf-toolbox-v1` · Status: draft (spec-reviewer round 2)
 Evidence: `./20260722-pdf-toolbox-v1-evidence/` (engine research ×2, native-lib plumbing probe, brainstorm review, design brief)
+Revision note: R2 addresses spec-reviewer R1 (C1 toolchain, M2 GS sandbox, M3 PDF-assembly, M4 OCR mechanism, M5 UI deviations, M6 GS-bundle risk, minors 7–13). Round log in the footer.
 
 ---
 
 ## 1. Origin & goal
 
-The user wants a **native macOS app to compress large PDFs a lot while preserving quality** — private/local, no cloud upload, no subscriptions, an Apple-suite-quality experience. Named a **toolbox** from the outset: compression is the first of several intended PDF utilities. During brainstorm a second v1 tool was added — **OCR** (make image-only PDFs searchable via Apple Vision) — because it validates the extensible shell, reuses Compress's infrastructure, and is fully native/Apple-Silicon.
+The user wants a **native macOS app to compress large PDFs a lot while preserving quality** — private/local, no cloud upload, no subscriptions, Apple-suite-quality experience. Named a **toolbox** from the outset: compression is the first of several intended PDF utilities. During brainstorm a second v1 tool was added — **OCR** (make image-only PDFs searchable via Apple Vision) — because it validates the extensible shell, reuses Compress's infrastructure, and is fully native/Apple-Silicon.
 
-**Quality bar (explicit user mandate, first-class requirement):** the app must be *best-in-class* at compression, **polished, beautiful, efficient and fast.** "Best result" was explicitly ranked above "purely native" by the user.
+**Quality bar (explicit user mandate, first-class requirement):** best-in-class compression, **polished, beautiful, efficient, fast.** The user explicitly ranked "best result" above "purely native."
 
 ## 2. Scope
 
-**In (v1):**
-- **Compress** tool — shrink PDFs via a Ghostscript-core engine, 3 quality presets, batch, per-file estimates.
-- **OCR** tool — detect PDFs/pages lacking a text layer, add an invisible searchable layer via Apple Vision, batch.
-- **Shell** — a macOS sidebar hosting the two tools; Merge/Split shown as dimmed "Soon" placeholders (not built).
+**In (v1):** **Compress** (Ghostscript-core engine, 3 presets, batch, per-file estimates); **OCR** (Vision text layer for image-only PDFs, batch); **Shell** (sidebar hosting the two tools; Merge/Split shown as dimmed "Soon" placeholders, not built).
 
-**Out (v2+, noted, not built):** Merge, Split, a combined compress+OCR pass, a Finder Quick Action, a target-size mode ("get under 10 MB"), a visual before/after preview. Mac App Store (permanently foreclosed by the AGPL licence — accepted).
+**Out (v2+, noted, not built):** Merge, Split, combined compress+OCR pass, Finder Quick Action, target-size mode, visual before/after preview, a "saved so far" stats widget (§7), per-page routing inside mixed documents (§5.1), jpegli/libdeflate codec upgrades (§5.1). Mac App Store — permanently foreclosed by AGPL, accepted.
 
-## 3. Platform, licence, distribution
+## 3. Platform, licence, distribution, build
 
-- **SwiftUI**, macOS **14 (Sonoma)** minimum, **Apple Silicon** (arm64). Rationale: wide enough for a shared app, modern SwiftUI, and the target machines are M-series.
-- **Licence: AGPL-3.0**, **open-source at release.** Forced by two AGPL dependencies chosen for quality/risk reasons: Ghostscript (engine) and the ported Internet-Archive `archive-pdf-tools` (MRC). Consequence: **the Mac App Store is permanently unavailable** (AGPL is App-Store-incompatible) — accepted, because distribution is a **notarised DMG** outside the store. **Repo stays private during development; the user flips it public at/ before release** — AGPL's obligations trigger only on distribution, so private dev is compliant.
-- Build: **XcodeGen** (declarative `project.yml` → `.xcodeproj`) driven by `xcodebuild`, so builds/tests run head­lessly from the CLI. Fallback if XcodeGen misbehaves: SwiftPM target + a bundling step (documented risk, §11).
-- Native C/C++ dependencies are **statically linked** into the app binary (one Mach-O). **Verified** (evidence/native-lib-plumbing.md): libdeflate built for arm64, linked into a Swift binary via a module map, round-tripped, and code-signed with `--options runtime` and **zero special entitlements** (`codesign -v --strict` clean). No `disable-library-validation`, no `allow-unsigned-executable-memory` needed. Ghostscript, if bundled as a separate executable, is a signed embedded helper invoked via `Process` (not linked).
+- **SwiftUI**, macOS **14 (Sonoma)** minimum, **Apple Silicon** (arm64).
+- **Licence: AGPL-3.0, open-source at release.** Forced by two AGPL dependencies chosen for quality/risk: Ghostscript (engine) and the ported Internet-Archive `archive-pdf-tools` (MRC). Consequence: **Mac App Store permanently unavailable** (AGPL-incompatible) — accepted; distribution is a **notarised DMG**. **Repo private during development; user flips it public at/before release** — AGPL obligations trigger only on distribution, so private dev is compliant.
+- **Build path (corrected — verified on this machine):** `xcodebuild` is **non-functional here** (Command-Line-Tools-only; no Xcode.app — `xcode-select -p` = `/Library/Developer/CommandLineTools`, `xcodebuild -version` errors), and `xcodegen` is absent. **Primary build = Swift Package Manager (`swift build`), which works with CLT.** The app is an SPM executable target (`@main` SwiftUI `App`); the `.app` bundle (Info.plist, resources, icon) is assembled by a small build script and code-signed. **`notarytool` is present via CLT** (`xcrun notarytool`), so notarisation needs only the user's Apple Developer account + network at release — no full Xcode required for CI builds/tests. *Optional:* if the user later installs full Xcode, an XcodeGen `project.yml` can be added, but the SPM path is authoritative and is what CI/M0 proves.
+- **Native C/C++ deps are statically linked** into the app binary (one Mach-O). Verified (evidence/native-lib-plumbing.md): libdeflate built for arm64, linked via a module map, round-tripped, code-signed with `--options runtime` and **zero special entitlements** (`codesign -v --strict` clean). Ghostscript is the exception — a **separate bundled executable** invoked via `Process` (not linked), signed as an embedded helper (see §11 for its bundling risk).
 
 ## 4. Architecture
 
-Three layers; the two tools share most machinery (so OCR is far from double the work).
+Three layers; the two tools share most machinery.
 
 ```
 PDF Toolbox (SwiftUI)
 ├─ Shell            NavigationSplitView sidebar: [Compress] [OCR] [Merge·soon] [Split·soon]
 ├─ SHARED (built once, used by both tools)
-│   ├─ ToolQueue (UI + state)  drag-drop · file list · batch runner · per-file state machine · output control
-│   ├─ PDFService             open/save · page inspection · ContentRouter (per page: has-text vs image-only)
-│   ├─ VisionOCR              VNRecognizeTextRequest → text + bounding boxes (Neural Engine)
-│   └─ TextLayerEmbedder      observations → invisible, selectable PDF text layer
-├─ CompressEngine   input PDFs + preset → output PDF + stats; internally staged (GS → +jbig2enc → +MRC)
-└─ OCREngine        input PDFs + options → output PDF + stats; router → VisionOCR → TextLayerEmbedder
+│   ├─ ToolQueue          drag-drop · file list · batch runner · per-file state machine · estimate/result display
+│   ├─ PDFService         open/save · page inspection · ContentRouter (per doc/page: born-digital vs image-scan)
+│   ├─ PDFWriter          our own PDF construction — (a) incremental-update append (OCR text layer, images untouched);
+│   │                     (b) image-XObject page construction/splice (JBIG2/CCITT/MRC pages). Owns coordinate math.
+│   ├─ VisionOCR          VNRecognizeTextRequest → text + normalised bounding boxes (Neural Engine)
+│   └─ TextLayerEmbedder  Vision observations → invisible selectable text via PDFWriter(a)
+├─ CompressEngine   routes per document: born-digital/mixed → Ghostscript; pure scan → native encoders + PDFWriter(b)
+└─ OCREngine        ContentRouter → VisionOCR → TextLayerEmbedder
 ```
 
-**Module contracts (each independently testable):**
-- `ContentRouter.classify(page) -> .text | .imageOnly | .mixed` — pure, from PDFKit page inspection (extractable text present? image coverage?). Shared by Compress (routing) and OCR (which pages need OCR).
-- `CompressEngine.compress(url, preset, progress) async throws -> CompressResult` (result = output URL, original/new bytes, per-page notes). No UI knowledge.
-- `OCREngine.ocr(url, options, progress) async throws -> OCRResult`.
-- `ToolQueue` is generic over a "job" so both tools reuse the queue/batch/state/estimate UI; only the options panel and the run action differ.
+Why **PDFWriter** exists (fixes R1-M3/M4): Apple provides no in-place PDF-object edit API (verified, §9), and Ghostscript cannot import JBIG2/MRC images. So every output that isn't "GS re-distills the whole file" — JBIG2/CCITT scan pages, MRC pages, and the OCR invisible-text layer — requires us to write PDF bytes ourselves. `PDFWriter` is that single owner; `archive-pdf-tools` is the reference for its image-XObject/MRC assembly. It is carried as a scoped implementation risk (§11).
 
-**Concurrency:** batch runs jobs concurrently, capped (default = performance-core count, tunable) to stay responsive; each job is cancellable; the UI shows honest per-file + overall progress. GS/native work runs off the main actor.
+**Module contracts (each independently testable):**
+- `ContentRouter.classify(doc) -> .bornDigital | .scan(.bilevel|.colour) | .mixed` — from PDFKit page inspection (extractable text coverage; image coverage; bit-depth).
+- `CompressEngine.compress(url, preset, progress) async throws -> CompressResult`
+- `OCREngine.ocr(url, options, progress) async throws -> OCRResult`
+- `PDFWriter` — append-mode and assemble-mode; owns Vision-normalised→PDF-user-space coordinate mapping incl. page rotation & MediaBox.
+- `ToolQueue` is generic over a job so both tools reuse queue/batch/state/estimate UI; only the options panel + run action differ.
+
+**Concurrency:** batch runs jobs concurrently, capped (default = performance-core count, tunable); each job cancellable; honest per-file + overall progress; heavy work off the main actor.
 
 ## 5. Compress tool
 
-### 5.1 Engine — Strategy 1 (Ghostscript-core), staged ladder
-Each rung is independently shippable and de-risks the next. Internally the engine is a pipeline behind one interface; the ladder is build order, not user-visible modes.
+### 5.1 Engine — Strategy 1 (Ghostscript-core), staged ladder, content-routed
+`CompressEngine` classifies each document and routes it:
+- **Born-digital or mixed** → **tuned Ghostscript `pdfwrite`** (preserves vector text; subsets fonts; dedups; downsamples colour images to preset DPI; CCITT G4 for any bilevel images). This is **Rung 1** — a gold-standard compressor that ships first.
+- **Pure scan** → **native scan pipeline** (the big wins): bilevel pages → leptonica binarise → jbig2enc (lossless JBIG2) or CCITT G4 → `PDFWriter` assembles (**Rung 2**); colour/grey scan → MRC (leptonica segmentation → JBIG2 mask + downsampled background/foreground, layers JPEG-encoded via ImageIO for v1) → `PDFWriter` assembles (**Rung 3**).
 
-| Rung | Adds | Target result | Notes / gate |
+Per-page routing *inside* a mixed document (e.g. a born-digital report with a scanned appendix) is **v1.1**: v1 sends mixed docs whole to Ghostscript (safe; GS still downsamples/CCITTs images within), reserving the native JBIG2/MRC treatment for predominantly-scan documents — where the compression actually matters.
+
+| Rung | Path | Target | Gate |
 |---|---|---|---|
-| **1** | Tuned Ghostscript `pdfwrite` | Gold-standard general + colour downsample + CCITT B/W | ships an excellent compressor first |
-| **2** | jbig2enc (lossless JBIG2) | B/W scans 15–40× (else CCITT G4 5–15×) | **lossless only** (lossy JBIG2 corrupts digits — 2013 Xerox bug); **JBIG2 viewer support must be empirically verified on target macOS before it becomes the default**; CCITT G4 is the universal fallback |
-| **3** | MRC — **port** Internet-Archive `archive-pdf-tools` | Beats stock GS on colour/grey scans (5–15×) | preceded by a **segmentation spike** on 5–10 real scans; if segmentation quality is inadequate, ship without Rung 3 (baseline still excellent) |
+| **1** | tuned GS (born-digital/mixed) | gold-standard general; ships in days | GS build+sign+invoke gate (§11) |
+| **2** | jbig2enc/CCITT + PDFWriter (bilevel scans) | 15–40× (JBIG2) / 5–15× (CCITT) | **lossless JBIG2 only**; JBIG2 viewer support **verified before default**, else CCITT |
+| **3** | MRC port + PDFWriter (colour scans) | beats stock GS on colour scans | segmentation **spike** on real scans first; ship without it if inadequate |
 
-GS tuning (baseline, from evidence/engine-research-2.md, tuned per content class, then validated on a real corpus): `-dPDFSETTINGS=/ebook` overridden with `/Bicubic` downsampling to a preset-specific DPI, `AutoFilter*=false` to force DCT, `QFactor` per preset, `SubsetFonts/CompressFonts`, `DetectDuplicateImages`, `-dFastWebView`. **DCTDecode passthrough** — do not re-encode already-JPEG images at target DPI (avoids generational artefacts).
+GS tuning baseline (evidence/engine-research-2.md): `/ebook` overridden — `/Bicubic` downsample to preset DPI, `AutoFilter*=false`, per-preset `QFactor`, `SubsetFonts/CompressFonts`, `DetectDuplicateImages`, `-dFastWebView`; **DCTDecode passthrough** (never re-encode already-JPEG-at-target-DPI images). Exact numbers finalised against a corpus (§5.5). *v1 native deps: Ghostscript + leptonica + jbig2enc + the MRC port. jpegli/libdeflate are deferred (v1.1) — GS handles born-digital encoding; MRC layers use ImageIO JPEG for v1.*
 
-### 5.2 Presets (map to GS tuning; exact numbers finalised against a corpus during implementation)
-- **Smallest** — aggressive DPI + lower QFactor (email/upload).
-- **Balanced** (default) — great size, near-original look.
-- **High quality** — light touch, keeps fine detail.
+### 5.2 Presets (map to GS tuning; exact DPI/QFactor set in §5.5)
+**Smallest** (aggressive) · **Balanced** (default) · **High quality** (light touch).
 
-### 5.3 Per-file estimate (user-requested)
-Before compressing, a **quick, time-boxed analysis pass** produces a per-file estimate: parse image XObjects (bytes, pixel dimensions → effective DPI, colour space), model the post-preset recompressed size per image + residual, sum. Displayed as an estimate (`~X MB · ~Y% smaller`); the **real** figure replaces it after compression. Constraints: **parse-only, no full encode**; time-boxed per file (coarse-estimate or skip beyond a cap) so a 1000-page scan never stalls the UI; runs async. **Fallback** (if estimates prove too inaccurate or slow in practice): show *typical ranges* per preset instead — documented risk (§11).
+### 5.3 Per-file estimate
+Before compressing, a **time-boxed, parse-only analysis** produces a per-file estimate: parse image XObjects (bytes, pixel dims → effective DPI, colour space), model post-preset recompressed size, sum. Shown as an estimate (`~X MB · ~Y% smaller`); the **real** figure replaces it after compression. **Parse-only, no encode; time-boxed per file** (coarse-estimate beyond a cap) so a 1000-page scan never stalls the UI; runs async. **Fallback (pinned criterion, R1-M7):** if median estimate error exceeds **±25 %** on the validation corpus, or analysis exceeds **500 ms/file**, switch that build to *typical ranges per preset* instead of per-file figures.
 
 ### 5.4 Behaviour & safety
 - Output `<name>-compressed.pdf` **alongside the original**, optional batch output-folder override, **never overwrite**.
-- **Never emit a larger file** — measure output vs input, keep the smaller; if not smaller, mark **"already optimised"** and keep the original.
-- **Untrusted-PDF security (mandatory):** input PDFs are untrusted. Run Ghostscript with `-dSAFER` (default in modern GS — assert it), disable unsafe device/file ops, cap memory/time per job, and isolate the GS `Process` so a crash/exploit can't take the app down or escape. Validate that every produced output opens (re-parse via PDFKit) before reporting success.
-- **CMYK policy:** preserve or convert per preset (`ConvertCMYKImagesToRGB` for screen presets; avoid colour shifts / broken print intent on high-quality). Finalised during corpus validation.
-- **Encrypted/corrupt PDFs:** detect up front; a password-protected PDF prompts (or is skipped with a clear per-file error); a corrupt PDF fails that one file with an inline error and the batch continues.
+- **Atomicity (R1-M8):** write to a temp file, then atomic rename on success; a cancelled or failed job leaves **no partial output**.
+- **Never emit a larger file:** compare output vs input bytes, keep the smaller; if not smaller, mark **"already optimised"**, keep the original.
+- **Output validation (R1-M9):** before reporting success, re-open the output via PDFKit **and** assert page count == input **and** render-sample N pages (default 3, incl. first/last) without error — catches blank-page/JBIG2 corruption, not just "it opens".
+- **Untrusted-PDF security (R1-M2, mandatory):** input PDFs are untrusted and Ghostscript has a CVE history (e.g. CVE-2023-36664). Containment mechanism, pinned: the GS `Process` runs under a **macOS seatbelt sandbox profile** (via `sandbox-exec`/an XPC-isolated helper) that **denies network** and **restricts the filesystem to exactly the input file, the output directory, and GS's own resource bundle**; plus `-dSAFER` (assert it — default since GS 9.50), and per-job **memory + wall-clock caps**. Residual risk: a GS sandbox-escape CVE could still act within those FS/no-network limits — recorded (§11.4); mitigated, not eliminated.
+- **CMYK:** `ConvertCMYKImagesToRGB` on screen presets; preserve on High quality (avoid colour shift / broken print intent). Finalised in §5.5.
+- **Encrypted/corrupt:** detect up front; password-protected → per-file prompt or skip-with-error; corrupt → that one file fails inline, batch continues.
+
+### 5.5 Corpus validation (privacy-bound)
+Presets, CMYK policy, JBIG2 viewer support and estimate accuracy are tuned/validated against a **local, machine-local test corpus of representative PDF *types*** (born-digital, colour scan, B/W scan, mixed, encrypted, corrupt, very-large). **The corpus is never committed; committed test fixtures are synthetic/anonymised only. No personal document paths, names, or contents appear anywhere in this repo.**
 
 ## 6. OCR tool
 
-- **Detect** per page (via `ContentRouter`): only OCR pages lacking extractable text. A fully-text PDF → **"already searchable — nothing to do."** (A future "force re-OCR" toggle is out of scope.)
-- **Recognise** with Apple **Vision** `VNRecognizeTextRequest` on the Neural Engine — for each image-only page, render at a sufficient DPI, recognise text + bounding boxes.
-- **Embed** an **invisible, selectable text layer** (`TextLayerEmbedder`) positioned by the Vision bounding boxes — appearance unchanged, the file becomes searchable/selectable.
-- **Languages:** automatic detection by default, with an **optional language override** in the options panel (`recognitionLanguages`).
-- **Accuracy:** Vision `.accurate` by default, with a **fast/accurate toggle**.
-- **Output:** `<name>-ocr.pdf` alongside the original, never overwrite (mirrors Compress).
-- OCR **adds a text layer only** — it does not alter images or compress (distinct from Compress). Compress and OCR are **separate tools** in v1 (a combined pass is v2).
+- **Detect** (via `ContentRouter`): OCR only **image-only pages** with no extractable text. A page/doc that already has extractable text → **"already searchable — nothing to do."** **Mixed pages are skipped in v1** (they already carry text; per-region OCR of their image areas is v1.1) (R1-M11).
+- **Recognise:** render each image-only page to a raster at **300 DPI (default, corpus-tunable)** (R1-M10) and run Vision `VNRecognizeTextRequest` → text + normalised boxes. **Accuracy** `.accurate` default + fast/accurate toggle. **Languages** auto-detect + optional override.
+- **Embed (mechanism pinned, R1-M4):** `TextLayerEmbedder` adds an **invisible, selectable text layer via `PDFWriter` incremental update** — appended objects only, so the **original page bytes/images are untouched** (hence "appearance unchanged" is literally true, and is still validated per §5.4). `PDFWriter` owns the coordinate contract: **Vision normalised coordinates → PDF user space, accounting for page rotation and MediaBox origin**, with glyph size fitted to each observation's bounding box.
+- **Output:** `<name>-ocr.pdf` alongside, never overwrite. OCR **adds a text layer only** — no image alteration, no compression (distinct from Compress; a combined pass is v2).
 
 ## 7. UI
 
-- **Compress UI:** rebuild Claude Design's `Toolbox.dc.html` **pixel-perfect in SwiftUI** (read it in full + its `support.js`; match visual output, not prototype structure). Apple design language per repo `DESIGN.md`.
-- **OCR UI:** **derived** from the same design system + Claude Design's realised components — identical shell/queue/batch/state machine, with an **OCR options panel** (language, accuracy) replacing the preset cards and an "OCR N PDFs" action. No separate design round (user-confirmed).
-- **Both light and dark mode** (per DESIGN.md). Native macOS controls, SF Symbols, system materials/vibrancy, resizable window, collapsible sidebar.
-- **Estimate display** reconciled: the mockup's per-file `% smaller · MB` figures are the §5.3 real estimates (not fabricated). OCR has no size estimate (it adds a layer); it may show a page-count / "N pages to OCR".
+- **Compress UI:** rebuild Claude Design's `Toolbox.dc.html` **in SwiftUI, matching its visual output** (read it + `support.js` in full; match appearance, not prototype structure). Apple design language per repo `DESIGN.md`. Both **light and dark** mode; native controls, SF Symbols, system materials/vibrancy, resizable window, collapsible sidebar.
+- **Deviations from the mockup (R1-M5) — the SwiftUI build follows these, not the mockup, where they conflict:**
+  1. **Sidebar = §4's set:** Compress + **OCR** live (the mockup predates the OCR decision and lacks it), Merge + Split as "Soon". The mockup's other "Soon" entries (PDF-to-Word, Images-to-PDF, Protect) are **not** built and are omitted (a couple may remain as dimmed non-functional placeholders for extensibility flavour — designer's discretion, but not features).
+  2. **"Saved this month · 1.24 GB" stats widget: cut from v1** — it needs cross-session storage + reset semantics (out of scope, §2). Reconsidered for v2.
+  3. **Per-file % / MB figures** on preset cards are the **real §5.3 estimates**, not fabricated.
+- **OCR UI:** derived from the same design system + Claude Design's components — identical shell/queue/batch/state machine, an **OCR options panel** (language, accuracy) replacing preset cards, an "OCR N PDFs" action. No size estimate (OCR adds a layer); may show "N pages to OCR". No separate design round (user-confirmed).
 
-## 8. States (both tools, shared state machine)
+## 8. States (both tools, shared machine)
 
-Empty (drop zone + Choose Files) → Ready (file list + options + estimate + action) → Working (per-file + overall progress, cancellable) → Done (per-file result + summary + Reveal in Finder). Plus per-file **error** and **already-optimised / already-searchable** states. **Progress is honest** — page-based where possible; no fabricated percentages.
+Empty (drop zone + Choose Files, + drag-hover) → Ready (files + options + estimate + action) → Working (per-file + overall progress, cancellable) → Done (per-file result + summary + Reveal in Finder). Plus per-file **error** and **already-optimised / already-searchable**. **Progress is honest** — page-based where possible; no fabricated percentages.
 
-## 9. Decisions & rejected alternatives (the whys)
+## 9. Decisions & rejected alternatives (whys)
 
-- **Engine = Ghostscript-core, not native.** GS is the gold-standard text-preserving optimiser (font subsetting, object dedup, structure rewrite) and is drop-in low-risk. *Rejected:* pure-Apple native — Apple's PDF write API is only two shapes (PDFKit optimise = one fixed level, not tunable → **can't deliver 3 presets on born-digital PDFs**; rasterise = tunable but flattens text), and it structurally caps on bilevel scans (no JBIG2/CCITT). Verified against SDK headers (`PDFDocument.h`: `saveImagesAsJPEG`/`optimizeImagesForScreen` are booleans; `PDFPage.h`: `compressionQuality` only on the rasterise path). *Rejected:* PDFium-permissive (BSD) — viable and more native, but once AGPL is accepted for MRC it buys nothing GS doesn't, and it forces a from-scratch MRC. *Rejected:* stock GS presets — blunt; we tune per content class.
-- **AGPL accepted.** The user chose to open-source at release; that unlocks GS (free) and lets **MRC be a port of proven code** (`archive-pdf-tools`) rather than a from-scratch signal-processing build — collapsing the project's single biggest risk. Cost (MAS foreclosed, un-native engine) accepted because "best result" outranks "native", and distribution is DMG.
-- **MRC via port, staged to Rung 3.** Building MRC first would produce a *worse* MRC: segmentation quality is empirical and needs a corpus + measurement harness + router + reassembly (which *are* the baseline). So the baseline ships first; MRC follows, front-loaded by a segmentation spike. (Confirmed by the Fable-5 advisor consult.)
-- **Two tools in v1.** OCR validates the extensible shell, is fully native/Vision (balances GS's un-nativeness), and reuses Compress's queue/router/Vision/text-layer infrastructure.
-- **UX:** batch queue (real need for "large PDFs" plural); 3 simple presets (Apple-reductive); output alongside + never overwrite + never enlarge (safety); per-file estimate via quick analysis (user-requested).
+- **Engine = Ghostscript-core (born-digital) + native scan pipeline, not pure-Apple.** GS is the gold-standard text-preserving optimiser and drop-in low-risk for born-digital. *Rejected pure-Apple:* Apple's PDF write API is only two shapes — PDFKit optimise (one fixed level → **can't deliver 3 presets on born-digital**) and rasterise (tunable but flattens text); no in-place image API; caps on bilevel scans (no JBIG2/CCITT). Verified against SDK headers (§10). *Rejected PDFium-permissive (BSD):* viable/more-native, but once AGPL is accepted for MRC it buys nothing GS doesn't and forces from-scratch MRC.
+- **AGPL accepted, open-source at release.** Unlocks GS (free) and lets **MRC be a port** of `archive-pdf-tools` rather than from-scratch — collapsing the project's biggest risk. Costs (MAS foreclosed, un-native engine) accepted: "best" outranks "native", distribution is DMG.
+- **MRC staged to Rung 3, preceded by a spike.** Building MRC first yields a *worse* MRC — segmentation quality is empirical and needs the corpus + measurement harness + router + `PDFWriter` (which are the baseline). Confirmed by the Fable-5 advisor consult.
+- **Two tools in v1.** OCR validates the extensible shell, is fully native/Vision (balances GS's un-nativeness), reuses Compress's queue/router/`PDFWriter`.
+- **UX:** batch queue; 3 reductive presets; output alongside + never-overwrite + never-enlarge; per-file estimate via quick analysis (all user-confirmed).
 
-## 10. Verification evidence (done this session)
+## 10. Verification evidence (this session)
 
-- **Engine landscape & licences** — engine-research.md, engine-research-2.md. Licences **confirmed first-hand**: jpegli/libjxl BSD-3 (fetched LICENSE), leptonica BSD-2 (fetched), jbig2enc Apache-2.0, libdeflate MIT, openjpeg BSD-2; Ghostscript AGPL/commercial; archive-pdf-tools AGPL.
-- **Apple PDF API limits** — grepped the installed SDK headers (see §9).
-- **Native-lib plumbing** — native-lib-plumbing.md: real arm64 build + static link + round-trip + clean codesign. Verdict: low risk.
-- **Toolchain present** — Swift 6.3.3, xcodebuild, arm64 SDK.
+- **Engine/licences** — engine-research.md/-2.md. Licences confirmed first-hand: jpegli/libjxl BSD-3, leptonica BSD-2 (both fetched), jbig2enc Apache-2.0, libdeflate MIT, openjpeg BSD-2; Ghostscript AGPL; archive-pdf-tools AGPL.
+- **Apple PDF API limits** — grepped installed SDK headers: `saveImagesAsJPEG`/`optimizeImagesForScreen` are booleans; `compressionQuality` only on the image-init (rasterise) path. Confirms no tunable text-preserving native path and no in-place edit API.
+- **Native-lib plumbing** — native-lib-plumbing.md: real arm64 build + static link + round-trip + clean codesign (low risk).
+- **Toolchain (corrected, R1-C1) — verified live:** `swift`/SPM works; **`xcodebuild` non-functional (CLT-only, no Xcode.app)**; `xcodegen` absent; **`notarytool` present via CLT**. Swift 6.3.3, arm64 SDK.
 
 ## 11. Risks & fallbacks
 
-1. **MRC segmentation quality** (top risk) — mitigated by porting a proven reference + an early spike; fallback: ship without Rung 3 (baseline already excellent).
-2. **JBIG2 portability** — viewer support unverified on shared recipients; mitigated by empirical verification before defaulting + **CCITT G4 fallback** (universal). Lossless JBIG2 only.
-3. **Estimator accuracy/speed** — mitigated by time-boxing + labelling as estimate; fallback: typical ranges per preset.
-4. **GS security** (untrusted PDF parsing) — `-dSAFER`, resource caps, process isolation, output re-validation (§5.4).
-5. **Notarisation** — needs the user's Apple Developer account + network; documented as a required release step, not a dev blocker.
-6. **XcodeGen build tooling** — prove a clean CLI build before feature code; fallback SwiftPM + bundling.
-7. **Memory on 1000-page scans** — stream page-by-page, cap concurrency, release buffers; validate on a large scan.
+1. **MRC segmentation quality** (top) — mitigated by porting a proven reference + an early spike; fallback: ship without Rung 3 (baseline excellent).
+2. **PDFWriter correctness** (R1-M3) — hand-written PDF assembly (JBIG2/MRC pages, incremental-update text) is fiddly; mitigated by following `archive-pdf-tools` + the §5.4 output-validation gate on every file.
+3. **JBIG2 portability** — viewer support unverified on recipients; verify empirically before defaulting; **CCITT G4 universal fallback**; lossless JBIG2 only (lossy corrupts digits). Verification matrix (R1-M12): test JBIG2 rendering on the macOS versions reachable in dev (this machine is macOS 26 only; floor is 14) + Preview + one third-party viewer; until verified across the support range, **CCITT is the default and JBIG2 is opt-in**.
+4. **GS security** (R1-M2) — seatbelt sandbox (no network, FS-scoped) + `-dSAFER` + caps + output re-validation; residual: an escape-within-sandbox CVE — accepted, monitored, GS kept updated.
+5. **GS build & bundle** (R1-M6) — `gs` is not installed; it must be **built from source for arm64, bundled with its Resource tree + dylibs, each signed**, and pass notarisation — the plumbing evidence calls this a bigger risk than the four probed libs (only libdeflate was probed). **Gate (M1):** build + sign + invoke the bundled GS helper end-to-end on a real PDF *before* any engine tuning; if bundling proves intractable, fall back to requiring a user-installed GS (documented) — do not silently ship a broken engine.
+6. **Estimator accuracy/speed** — §5.3 criterion + typical-ranges fallback.
+7. **Notarisation** — needs the user's Apple Developer account + network; `notarytool` present; release-step dependency, not a dev blocker.
+8. **SPM SwiftUI build** — proven in M0 before feature work (fallback: minimal AppKit host if an SPM/SwiftUI-app-bundle issue arises).
+9. **Memory on 1000-page scans** — stream page-by-page, cap concurrency, release buffers; validate on a large scan.
 
 ## 12. Milestones (build order)
 
-M0 XcodeGen project + CI-buildable skeleton + empty shell (sidebar, two tool stubs) + `ToolQueue`/`PDFService`/`ContentRouter` + test corpus/harness scaffolding.
-M1 Compress Rung 1 (tuned GS, `-dSAFER`, never-enlarge, output validation) + full Compress UI (Claude Design) + estimate pass.
-M2 OCR tool (Vision detect → recognise → embed) + derived OCR UI.
-M3 Compress Rung 2 (jbig2enc + CCITT, JBIG2 verification gate) — proves native-lib plumbing end-to-end with one lib.
-M4 MRC spike → Rung 3 (port) if the spike passes.
-M5 Polish pass (animation, empty/error states, keyboard/menus, dark mode), notarised DMG packaging.
+- **M0** SPM SwiftUI build proven end-to-end (binary → `.app` bundle → signs → launches) + empty shell (sidebar, two tool stubs) + `ToolQueue`/`PDFService`/`ContentRouter` + `PDFWriter` foundation + synthetic-corpus + measurement harness.
+- **M1** Compress Rung 1 (tuned GS, seatbelt sandbox, `-dSAFER`, never-enlarge, output-validation) **behind the GS build+sign+invoke gate** + full Compress UI (per §7) + estimate pass.
+- **M2** OCR tool (Vision detect → recognise → `PDFWriter` incremental-update embed) + derived OCR UI. (First real `PDFWriter` consumer.)
+- **M3** Compress Rung 2 (jbig2enc + CCITT + `PDFWriter` assembly, JBIG2 verification gate).
+- **M4** MRC spike → Rung 3 (port) if the spike passes.
+- **M5** Polish (animation, empty/error states, keyboard/menus, dark mode) + notarised DMG.
 
 ## 13. Definition of done (v1)
 
-Both tools work on a real corpus (born-digital, colour scan, B/W scan, mixed, encrypted, corrupt, 1000-page); every output re-opens in Preview + one other viewer; no output larger than input; batch is cancellable with honest progress; UI matches the Claude Design fidelity in light and dark; the app builds/tests/signs from the CLI and packages into a notarisable DMG; gates in `.claude/GATES.md` (to be authored with the first code) are green.
+**v1-done = Rungs 1–2 + OCR solid and shippable.** Rung 3 (MRC) ships **iff** the segmentation spike (M4) passes; if not, it defers to v1.1 **without blocking v1** (R1-M13). Concretely: both tools work on the synthetic + local corpus (born-digital, colour scan, B/W scan, mixed, encrypted, corrupt, 1000-page); **every output re-opens in Preview + one other viewer, page count preserved, sampled pages render**; no output larger than input; batch cancellable with honest progress and atomic outputs; UI matches Claude Design fidelity in light + dark; the app builds/tests/signs from the CLI (SPM) and packages into a notarisable DMG; `.claude/GATES.md` (authored with the first code) green.
+
+---
+
+## Round log
+- **R1** (Fable 5, full read): NO-SHIP — 1 critical (C1 toolchain evidence), 5 major (M2 GS sandbox, M3 PDF-assembly, M4 OCR mechanism, M5 UI deviations, M6 GS-bundle risk), 7 minor. Findings persisted at `.git/lcw/20260722-pdf-toolbox-v1/spec-review-r1.md`. Lesson-candidates LC-A/B/C recorded for retro.
+- **R2** (this revision): all C1/M2–M6 fixed (SPM-primary build; PDFWriter module; GS seatbelt sandbox; OCR incremental-update + coordinate contract; §7 deviation list; GS-bundle risk + M1 gate); minors 7–13 fixed (estimate criterion, atomic output, output validation, OCR DPI, mixed-page skip, JBIG2 verification matrix, DoD rung clause). → incremental re-review.
