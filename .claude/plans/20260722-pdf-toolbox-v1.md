@@ -20,7 +20,7 @@
 - **Signing:** ad-hoc only (`codesign -s -`) — no Developer ID cert available. Hardened runtime enabled. Notarisation deferred (needs user's Apple Developer credentials); CI notarise step guarded on secrets.
 - **Naming/copy:** Product "PDF Toolbox". Outputs `<name>-compressed.pdf` / `<name>-ocr.pdf` next to the original (batch: optional output-folder picker). British English in prose/comments/commits; code identifiers follow platform/library spelling.
 - **Privacy (HARD):** Never commit anything about the user's personal test PDFs at `<private local corpus>` — no path, names, sizes-tied-to-names, contents, or subject matter. Committed fixtures are synthetic only. Local quality validation on the real corpus reports anonymised aggregates only, to the ledger (uncommittable), never the repo.
-- **GS containment `[M5]`:** every Ghostscript invocation runs under `sandbox-exec` with a profile that **`(import "system.sb")` + `(import "bsd.sb")`** (so the dynamically-linked binary can launch: dyld, `/usr/lib`+`/System/Library` reads, `com.apple.dyld` mach-lookup, `sysctl-read`, `/dev/urandom`) **then `(deny network*)`** and **scopes file-read/write to the specific input, output, and temp paths** — plus `-dSAFER` and resource caps. Never a bare `Process`.
+- **GS containment `[M5]`:** every Ghostscript invocation runs under `sandbox-exec` with a profile that **`(import "system.sb")` + `(import "bsd.sb")`** (so the dynamically-linked binary can launch: dyld, `/usr/lib`+`/System/Library` reads, `com.apple.dyld` mach-lookup, `sysctl-read`, `/dev/urandom`), **`(allow process-exec* (literal "<gsPath>"))`** (empirically required `[MAJOR-A]` — without it `sandbox-exec` refuses to exec gs, `execvp Operation not permitted`), **then `(deny network*)`** and **scopes file-read/write to the specific input, output, and temp paths** (the gs binary's own dir MUST be inside the `file-read*` scope) — plus `-dSAFER` and resource caps. Never a bare `Process`. (Empirically verified this round: with the imports + `process-exec*` + scoped `file-read*`, gs launches and a read outside the scope is still denied — the FS confinement is real.)
 - **Output safety:** compress/OCR write to a temp file **in the output directory** (same volume, so atomic rename cannot cross-device-fail `[m5]`) then atomically rename; never overwrite the input; compress never emits a file larger than the input — on no-gain, **keep the original, surface "already optimised", and write NO redundant copy** `[m4-minor]`; every output re-validated before it is called done.
 - **Memory `[m14]`:** page rasterisation (OCR render, compress render-sample) is **per-page render-then-release**, never all-pages-in-memory — must survive a 1000-page scan.
 - **Progress `[m10-minor]`:** never fabricate a percentage. Compress parses `gs` page markers on stdout for real progress, else shows **indeterminate**; OCR reports real per-page progress.
@@ -92,11 +92,11 @@ env MACOSX_DEPLOYMENT_TARGET=14.0 PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig PKG_CONFI
 Both env knobs are MANDATORY (deployment-floor + Homebrew-blinding). Copy `bin/gs` → `Resources/ghostscript/bin/gs`.
 
 **Interfaces — Produces:**
-- `enum SeatbeltProfile { static func profile(readPaths: [URL], writePaths: [URL]) -> String }` — string begins `(version 1)(import "system.sb")(import "bsd.sb")(deny network*)` then `(allow file-read* (subpath "<gsDir>") (literal <inputs>))(allow file-write* (subpath "<tmpDir>") (literal <outputs>))` `[M5]`.
+- `enum SeatbeltProfile { static func profile(gsPath: URL, readPaths: [URL], writePaths: [URL]) -> String }` — string begins `(version 1)(import "system.sb")(import "bsd.sb")(allow process-exec* (literal "<gsPath>"))(deny network*)` then `(allow file-read* (subpath "<gsDir>") (literal <inputs>))(allow file-write* (subpath "<tmpDir>") (literal <outputs>))` — where `<gsDir>` (containing the gs binary) is always included in the read scope `[M5][MAJOR-A]`.
 - `struct GhostscriptRunner { init() throws; func run(arguments: [String], readPaths: [URL], writePaths: [URL], onProgress: ((Int)->Void)?) throws -> ProcessResult }` — locates bundled `gs`, wraps in `sandbox-exec -p <profile>` (or `-f`), applies `-dSAFER` + caps, parses page markers for progress `[m10]`. `struct ProcessResult { let exitCode: Int32; let stdout, stderr: String }`.
 
 - [ ] Step 1: Commit `build-ghostscript.sh`; run it → populate `Resources/ghostscript/`. Verify `Resources/ghostscript/bin/gs --version` under `env -i`.
-- [ ] Step 2: `SeatbeltProfile.swift` per `[M5]`. Unit-test: generated string contains both imports, `deny network*`, and the scoped paths.
+- [ ] Step 2: `SeatbeltProfile.swift` per `[M5]`. Unit-test: generated string contains both imports, `(allow process-exec*`, `deny network*`, the gs binary dir in the read scope, and the scoped paths.
 - [ ] Step 3: **`SeatbeltRunTests` — the M1-critical positive test:** generate an `imagePDF()` fixture, run a REAL `gs -sDEVICE=pdfwrite -dPDFSETTINGS=/ebook` through `GhostscriptRunner` (i.e. under `sandbox-exec`), assert exit 0 AND output is a smaller valid PDF `[M5]`. (Not a string check — proves the sandbox lets gs launch and work.)
 - [ ] Step 4: Implement `GhostscriptRunner`; tests PASS.
 - [ ] Step 5: Commit `feat: bundle Ghostscript arm64 + sandboxed GhostscriptRunner (seatbelt, real-run tested)`.
@@ -117,13 +117,14 @@ This is the fix for the R1 root cause: the whole §4 shared layer lands here, be
 - `enum PDFContentType { case bornDigital, mixedColour, scanColour, scanBilevel }` `[m9]` — colour/bilevel scan distinction preserved for Rungs 2/3; **`.scanBilevel` classified content-based** (visually near-two-tone, not raw bit-depth) `[m8]`.
 - `struct PDFService { func pageCount(_:) throws -> Int; func classify(_:) throws -> PDFContentType; func pageHasText(_ url: URL, index: Int) throws -> Bool` (via `PDFPage.string` non-empty) `[M3]`; `func renderSample(_ url: URL, pages: Int) throws -> [CGImage]` (per-page render/release `[m14]`) `}`.
 - `enum OpenGuard { static func inspect(_ url: URL) throws -> OpenState }`, `enum OpenState { case ok(pageCount: Int); case encrypted; case corrupt }` `[M9]` — up-front detection; both engines call it and prompt-or-skip encrypted, fail corrupt inline.
-- `@MainActor final class ToolQueue: ObservableObject { @Published var jobs: [ToolJob]; func add(_ urls: [URL]); func removeCompleted(); func run(_ body: @escaping (ToolJob) async -> JobOutcome, maxConcurrent: Int = ProcessInfo.processInfo.activeProcessorCount) async; func cancel() }` `[M1][m12]` — shared by BOTH tools; bounded concurrency defaulting to core count; cancellable; cancelled jobs leave no partial output.
+- `@MainActor final class ToolQueue: ObservableObject { @Published var jobs: [ToolJob]; func add(_ urls: [URL]); func removeCompleted(); func run(_ body: @escaping (ToolJob, _ report: @escaping (Double)->Void) async throws -> JobOutcome, maxConcurrent: Int = SystemInfo.performanceCoreCount) async; func cancel() }` `[M1][MAJOR-B][m12]` — shared by BOTH tools. **ToolQueue owns per-job state**: sets `jobs[i].state = .running(p)` on each `report(p)` callback, `.done(outcome)` on the body's return, and **`.failed(msg)` when the body throws (batch continues — the one failing file fails inline, the rest complete)** `[M9]`. Bounded concurrency defaulting to **performance-core count** `[m12]`; cancellable; cancelled jobs leave no partial output. The engines fit this contract directly: `try await engine.compress(job.url, preset, to: out) { report($0) }`.
+- `enum SystemInfo { static var performanceCoreCount: Int }` `[m12]` — reads `sysctl hw.perflevel0.logicalcpu` (Apple Silicon P-cores), falling back to `ProcessInfo.processInfo.activeProcessorCount`.
 - `enum FileNaming { static func output(for input: URL, suffix: String, folder: URL?) -> URL }`.
 
 - [ ] Step 1: `Fixtures.swift` — synthetic generators via CoreGraphics: `bornDigitalPDF()`, `imagePDF()` (photo-like), `bilevelPDF()`, **`textImagePDF()`** (a rasterised image containing the rendered words "HELLO WORLD" for OCR tests, so Track B never edits Fixtures) `[m7]`, `encryptedPDF()` (owner/user password), `corruptPDF()` (truncated bytes). Never read disk.
 - [ ] Step 2: Failing `PDFServiceTests` — pageCount==3 on a 3-page fixture; classify(bornDigital)==.bornDigital, classify(image)==.scanColour; `pageHasText` true on born-digital page, false on image page; `OpenGuard.inspect(encrypted)`==.encrypted, `.inspect(corrupt)`==.corrupt.
 - [ ] Step 3: Implement all models + `PDFService` + `OpenGuard` + `FileNaming` + `Log`. Tests PASS. **Verify the module compiles standalone** (no forward refs to Phase-1 types) `[M2]`.
-- [ ] Step 4: Failing `ToolQueueTests` — add 5 jobs, `run` with a stub returning `.compressed(1,1)` flips all to done; `cancel` mid-run leaves remaining queued, no partial output. Failing `FileNamingTests` — suffix, collision `-compressed-1.pdf`, folder override. Implement; PASS.
+- [ ] Step 4: Failing `ToolQueueTests` — add 5 jobs, `run` with a stub returning `.compressed(1,1)` flips all to `.done`; a stub that calls `report(0.5)` sets that job `.running(0.5)` before `.done`; **a stub that throws on one job sets THAT job `.failed` while the other four still reach `.done` (batch continues)** `[MAJOR-B][M9]`; `cancel` mid-run leaves remaining queued, no partial output. Failing `FileNamingTests` — suffix, collision `-compressed-1.pdf`, folder override. Implement; PASS.
 - [ ] Step 5: Commit `feat: complete shared layer — models, PDFService+OpenGuard, ToolQueue, fixtures`.
 
 ### Task 0.4: Rung-1 CompressEngine + OutputValidator + end-to-end UI wire (M1 GATE)
@@ -175,7 +176,7 @@ This is the fix for the R1 root cause: the whole §4 shared layer lands here, be
 - [ ] Step 2: Implement `OCROptions`, `VisionOCR`, `OCREngine`; PASS.
 - [ ] Step 3: `OCRView` + `OCRViewModel` on `ToolQueue` (batch, like Compress) with an **options panel (accuracy toggle + language)** `[M10]`, styled with the `Theme` stub only `[M11]`. Commit `feat: Apple Vision OCR tool — batch, options panel, searchable-layer output`.
 
-### Track C — Compress depth (estimate + batch/preset UI). Model: Sonnet (C.2/C.3; ToolQueue already Opus-built in Phase 0 `[m18]`).
+### Track C — Compress depth (estimate + batch/preset UI). Model: Sonnet (C.1/C.2; ToolQueue already Opus-built in Phase 0 `[m18]`).
 
 ### Task C.1: CompressEstimator (per-file, time-boxed)
 **Depends:** 0.4
@@ -220,13 +221,13 @@ This is the fix for the R1 root cause: the whole §4 shared layer lands here, be
 - [ ] `scripts/package-dmg.sh`: `xcodebuild archive` → export → **deep ad-hoc sign** (`codesign -s - --options runtime --deep`, incl. the bundled `gs`) → `hdiutil` DMG.
 - [ ] Empirically verify: mount DMG, drag to /Applications, launch, run a real compress + a real OCR. Then set `com.apple.quarantine` (simulate download), retry, capture the exact Gatekeeper failure + one-time bypass (`xattr -dr com.apple.quarantine` / right-click→Open). Document precise steps for the morning report.
 
-### Task S.5: GitHub Actions CI
+### Task S.5: KB bootstrap + GitHub Actions CI
+- [ ] **KB bootstrap FIRST — before any push `[MINOR-C]`.** Bootstrap a minimal `.claude/` KB (OVERVIEW, INDEX, ARCHITECTURE, module docs) describing the now-real modules `[M8]` + a DECISIONS.md entry for the engine/licence/build decisions; commit it. The push/PR KB gate requires the KB present, so this must precede the first branch push below.
 - [ ] `.github/workflows/build.yml` on `macos-15`: install xcodegen; run `build-ghostscript.sh` (cache the built binary by source hash); `xcodegen generate`; `xcodebuild test`; `xcodebuild archive`; ad-hoc sign; `package-dmg.sh`; upload DMG artifact. A tag-triggered `release` job publishes the DMG to a GitHub Release. Developer-ID-sign + notarise steps present but **guarded on `secrets.APPLE_*`** (skipped until the user adds credentials). Belt-and-braces: a smoke job that launches the built app (or at least runs the bundled `gs --version`) to confirm the 14.0-target binary runs.
-- [ ] Push branch; iterate until the CI run is green on GitHub.
+- [ ] Push branch (KB already committed); iterate until the CI run is green on GitHub.
 
-### Task S.6: KB bootstrap, PR, merge, retro
-- [ ] Bootstrap a minimal `.claude/` KB (OVERVIEW, INDEX, ARCHITECTURE, module docs) describing the now-real modules `[M8]` so the push/PR gate passes; DECISIONS.md entry for the engine/licence/build decisions.
-- [ ] Push `feat/pdf-toolbox-v1`. Open PR referencing the spec path. Check-2b receipt satisfied by S.3's review-team SHIP.
+### Task S.6: PR, merge, retro
+- [ ] Open PR referencing the spec path (branch already pushed in S.5 with the KB present). Check-2b receipt satisfied by S.3's review-team SHIP.
 - [ ] **Merge the PR into `main` myself** (user's explicit standing authorisation), push.
 - [ ] Retro: mine review-round footers → create/update `.claude/memory/review-lessons.md` (LC-A…E + LC-P1…P4 + new); commit on branch.
 - [ ] Morning report: what works + evidence (real reduction numbers), what's deferred (Rung 2/3) + why, what's blocked on the user (Apple Developer cert → notarisation), copy-paste DMG test steps.
@@ -240,3 +241,5 @@ Not part of tonight's DoD; the router sends all content to Rung-1 gs until they 
 
 ## R1 finding coverage
 M1→ToolQueue in 0.3, wired both tools (0.4, B.2). M2→SizeEstimate/Confidence in 0.3. M3→`pageHasText` in 0.3. M4→JobOutcome/JobState in 0.3. M5→SeatbeltProfile imports + real sandboxed-compress test (0.2). M6→invariant restated (B.1). M7→VisionOCR normalised / PDFWriter transforms w/ geometry (B.1,B.2). M8→GATES.md (0.1) + KB (S.6). M9→OpenGuard (0.3). M10→OCROptions + panel (B.2). M11→Theme-stub-only in B/C, Components applied in S.1. Minors m1–m18 each pinned inline. m18→C.1(ToolQueue) is Phase-0 Opus.
+
+**R2 finding coverage** (`plan-review-r2.md`): MAJOR-A→seatbelt `(allow process-exec* (literal <gsPath>))` added + gs dir in read scope (Global+0.2). MAJOR-B→`ToolQueue.run` body now `(ToolJob, report)->…throws->JobOutcome`; queue owns `.running`/`.done`/`.failed` state, batch continues on throw (0.3 + test). MINOR-C→KB bootstrapped before first push (S.5). MINOR-D→concurrency default = performance-core count via `SystemInfo.performanceCoreCount` (0.3). MINOR-E→Track C header C.1/C.2. Lesson-candidates LC-P5 (validate a sandbox profile by running the binary under it, not string inspection), LC-P6 (a per-job queue closure needs progress + error channels, not just a success return) → retro.
