@@ -6,6 +6,7 @@
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
 import CoreGraphics
+import CoreText
 import Foundation
 @testable import PDFToolbox
 
@@ -93,6 +94,127 @@ enum Fixtures {
         }
         ctx.beginPDFPage(nil)
         ctx.draw(img, in: CGRect(x: 18, y: 18, width: 576, height: 756)) // 8×10.5in @ 300dpi
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return url.canonical
+    }
+
+    /// Born-digital vector text, `pages` pages — extractable text, classifies `.bornDigital`.
+    static func bornDigitalPDF(pages: Int = 3) throws -> URL {
+        let url = try uniqueURL("born-digital.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        let font = CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+        for page in 1...max(1, pages) {
+            ctx.beginPDFPage(nil)
+            var y: CGFloat = 748
+            for line in 0..<14 {
+                let string = "Page \(page), line \(line): The quick brown fox jumps over the lazy dog. " +
+                             "Born-digital vector text — 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ."
+                drawText(string, in: ctx, at: CGPoint(x: 40, y: y), font: font)
+                y -= 16
+            }
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
+        return url.canonical
+    }
+
+    /// One page whose only content is a rasterised near-two-tone image (black shapes/text on
+    /// white) — no text layer, classifies `.scanBilevel`.
+    static func bilevelPDF() throws -> URL {
+        // Sparse black-on-white content with generous margins — overwhelmingly near-two-tone
+        // even after the embedded image is JPEG-encoded (dense text greys the edges and drops
+        // below the near-bilevel threshold).
+        let image = renderBitmap(width: 1700, height: 2200) { ctx, _ in
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: 1700, height: 2200))
+            let font = CTFontCreateWithName("Helvetica" as CFString, 44, nil)
+            var y: CGFloat = 1600
+            for line in 0..<12 {
+                drawText("Bilevel scan line \(line).",
+                         in: ctx, at: CGPoint(x: 150, y: y), font: font, color: .black)
+                y -= 70
+            }
+        }
+        return try embedImagePDF(image, name: "bilevel.pdf")
+    }
+
+    /// One page whose only content is a rasterised image containing the rendered words
+    /// "HELLO WORLD" — no text layer, for OCR tests (Track B).
+    static func textImagePDF() throws -> URL {
+        let image = renderBitmap(width: 1700, height: 600) { ctx, _ in
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: 1700, height: 600))
+            let font = CTFontCreateWithName("Helvetica-Bold" as CFString, 160, nil)
+            drawText("HELLO WORLD", in: ctx, at: CGPoint(x: 120, y: 240), font: font, color: .black)
+        }
+        return try embedImagePDF(image, name: "text-image.pdf")
+    }
+
+    /// A user-password-protected PDF — opens locked (`PDFDocument.isLocked == true`).
+    static func encryptedPDF(userPassword: String = "secret") throws -> URL {
+        let url = try uniqueURL("encrypted.pdf")
+        let auxInfo: [CFString: Any] = [
+            kCGPDFContextUserPassword: userPassword,
+            kCGPDFContextOwnerPassword: userPassword + "-owner",
+        ]
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, auxInfo as CFDictionary) else {
+            throw FixtureError.contextCreation
+        }
+        ctx.beginPDFPage(nil)
+        drawText("Encrypted.", in: ctx, at: CGPoint(x: 72, y: 700),
+                 font: CTFontCreateWithName("Helvetica" as CFString, 24, nil))
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return url.canonical
+    }
+
+    /// A truncated/garbage file that is not a readable PDF (`PDFDocument(url:)` returns nil).
+    static func corruptPDF() throws -> URL {
+        let url = try uniqueURL("corrupt.pdf")
+        let bytes = "%PDF-1.4\n%\u{00}\u{00} truncated garbage \u{FF}\u{FE} not a real xref".data(using: .isoLatin1)!
+        try bytes.write(to: url)
+        return url.canonical
+    }
+
+    // MARK: drawing helpers
+
+    private enum InkColour { case black, white }
+
+    private static func drawText(_ string: String, in ctx: CGContext, at point: CGPoint,
+                                 font: CTFont, color: InkColour = .black) {
+        let cg = color == .black
+            ? CGColor(red: 0, green: 0, blue: 0, alpha: 1)
+            : CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+        let attributes: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: cg]
+        let attributed = CFAttributedStringCreate(nil, string as CFString, attributes as CFDictionary)!
+        let ctLine = CTLineCreateWithAttributedString(attributed)
+        ctx.textPosition = point
+        CTLineDraw(ctLine, ctx)
+    }
+
+    private static func renderBitmap(width: Int, height: Int,
+                                     draw: (CGContext, Fixtures.RNG) -> Void) -> CGImage {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                            bytesPerRow: 0, space: cs,
+                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        draw(ctx, RNG())
+        return ctx.makeImage()!
+    }
+
+    private static func embedImagePDF(_ image: CGImage, name: String) throws -> URL {
+        let url = try uniqueURL(name)
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        ctx.beginPDFPage(nil)
+        ctx.draw(image, in: CGRect(x: 18, y: 18, width: 576, height: 756))
         ctx.endPDFPage()
         ctx.closePDF()
         return url.canonical
