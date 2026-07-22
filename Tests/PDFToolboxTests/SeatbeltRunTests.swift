@@ -81,4 +81,33 @@ final class SeatbeltRunTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: forbidden.path),
                        "no file should be created outside the write scope")
     }
+
+    // MARK: FIX 3 — a hung gs is terminated at the wall-clock cap and throws a clear error
+
+    func testRunTimesOutAndThrows() async throws {
+        // A PostScript program that loops forever — gs spins until the wall-clock cap fires.
+        // (Self-checking: an input that errored instantly would *return* a ProcessResult and
+        // trip the XCTFail below; only a real hang-then-kill throws `.timedOut`.)
+        let ps = try Fixtures.uniqueURL("infinite.ps")
+        let dir = ps.deletingLastPathComponent()
+        try Data("%!PS-Adobe-3.0\n{ } loop\n".utf8).write(to: ps)
+        let output = dir.appendingPathComponent("out.pdf")
+
+        let runner = try GhostscriptRunner(wallClockTimeout: 2)   // bundled gs, tiny cap for the test
+        let start = Date()
+        do {
+            _ = try await runner.run(
+                arguments: ["-sDEVICE=pdfwrite", "-sOutputFile=\(output.path)", ps.path],
+                readPaths: [ps],
+                writePaths: [dir])
+            XCTFail("expected a timeout throw for a hanging gs")
+        } catch let error as GhostscriptError {
+            guard case .timedOut = error else {
+                return XCTFail("expected GhostscriptError.timedOut, got \(error)")
+            }
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThan(elapsed, 1, "should have waited for the ~2s cap, not failed instantly")
+        XCTAssertLessThan(elapsed, 60, "should terminate near the cap, well under the 300s production bound")
+    }
 }

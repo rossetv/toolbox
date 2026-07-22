@@ -75,4 +75,71 @@ final class CompressEngineTests: XCTestCase {
             // expected
         }
     }
+
+    // MARK: FIX 2 — a gs exit-0 with no / invalid output is a FAILURE, never `.noGain`
+
+    /// gs "succeeds" (exit 0) but writes nothing → the batch must see a failure, not a
+    /// masked "already optimised". Reproduced with a stub runner because a real gs cannot be
+    /// forced to exit 0 while producing an empty output.
+    func testEmptyGhostscriptOutputIsFailureNotNoGain() async throws {
+        let engine = CompressEngine(runner: StubRunner(exitCode: 0, output: .none))
+        let input = try Fixtures.imagePDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("empty-compressed.pdf")
+
+        do {
+            let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+            XCTFail("expected a failure for empty gs output, got \(outcome)")
+        } catch is CompressError {
+            // expected — any CompressError, never a `.noGain`/`.compressed` return
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "no output file should be written when gs produced nothing")
+    }
+
+    /// gs exits 0 and writes a blob that is ≥ the input but is not a valid PDF → this must be
+    /// a failure, not `.noGain`: an invalid ≥-input output must never masquerade as no-gain.
+    func testInvalidLargerOutputIsFailureNotNoGain() async throws {
+        // A ≥-input, non-PDF blob (100 KB of zero bytes → `PDFDocument` returns nil).
+        let blob = Data(count: 100_000)
+        let engine = CompressEngine(runner: StubRunner(exitCode: 0, output: .bytes(blob)))
+        let input = try Fixtures.blankPDF(pages: 1)   // a few KB → the blob is larger
+        let output = input.deletingLastPathComponent().appendingPathComponent("invalid-compressed.pdf")
+
+        do {
+            let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+            XCTFail("expected a failure for an invalid ≥-input output, got \(outcome)")
+        } catch is CompressError {
+            // expected
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "no output file should be written for an invalid output")
+    }
+}
+
+/// A test double for the gs runner. Simulates outcomes the real binary can't be forced to
+/// produce: an exit-0 run that writes no output, or one that writes a chosen blob to gs's
+/// `-sOutputFile=` path. Never launches a process.
+private struct StubRunner: GhostscriptRunning {
+    enum Output {
+        case none
+        case bytes(Data)
+    }
+
+    let exitCode: Int32
+    let output: Output
+
+    func run(arguments: [String],
+             readPaths: [URL],
+             writePaths: [URL],
+             onProgress: ((Int) -> Void)?) async throws -> ProcessResult {
+        if case let .bytes(data) = output, let path = Self.outputPath(from: arguments) {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+        return ProcessResult(exitCode: exitCode, stdout: "", stderr: "")
+    }
+
+    private static func outputPath(from arguments: [String]) -> String? {
+        let flag = "-sOutputFile="
+        return arguments.first { $0.hasPrefix(flag) }.map { String($0.dropFirst(flag.count)) }
+    }
 }
