@@ -544,9 +544,11 @@ struct PDFThumbnail: View {
 
     @State private var preview: NSImage?
 
-    private var height: CGFloat { (width * 1.29).rounded() }        // roughly A4/Letter proportions
-    private var bandHeight: CGFloat { (height * 0.3).rounded() }
-    private let radius: CGFloat = 4
+    private var height: CGFloat { (width * 1.3).rounded() }         // roughly A4/Letter proportions
+    /// A fifth of the card. Deep enough to hold the label comfortably, shallow enough that the
+    /// thumbnail still reads as a page with a footer rather than a label with a picture above it.
+    private var bandHeight: CGFloat { (height * 0.21).rounded() }
+    private let radius: CGFloat = 4.5
 
     var body: some View {
         VStack(spacing: 0) {
@@ -554,8 +556,8 @@ struct PDFThumbnail: View {
             // Flush to the card's edges and centred by its own frame, so the label sits in the
             // base of the document rather than floating under it.
             Text("PDF")
-                .font(.system(size: bandHeight * 0.56, weight: .heavy))
-                .kerning(0.3)
+                .font(.system(size: 6, weight: .heavy))
+                .kerning(0.35)
                 .foregroundStyle(.white)
                 .frame(width: width, height: bandHeight)
                 .background(Theme.Colors.documentBadge)
@@ -564,9 +566,13 @@ struct PDFThumbnail: View {
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.14), lineWidth: 0.5)
+                .strokeBorder(Color.black.opacity(0.16), lineWidth: 0.5)
         )
-        .shadow(color: .black.opacity(0.25), radius: 1.5, x: 0, y: 1)
+        // Two shadows, not one: a tight contact shadow anchors the card to the row, and a wider,
+        // fainter one gives it depth. A single mid-radius shadow reads as a grey smudge at this
+        // size and is most of why the first attempt looked cheap.
+        .shadow(color: .black.opacity(0.28), radius: 0.8, x: 0, y: 0.5)
+        .shadow(color: .black.opacity(0.14), radius: 3, x: 0, y: 1.5)
         .task(id: url) { await loadPreview() }
     }
 
