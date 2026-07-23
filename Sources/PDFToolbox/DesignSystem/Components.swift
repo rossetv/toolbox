@@ -378,6 +378,8 @@ struct FileRow: View {
     let meta: String
     var status: Status = .queued(detail: nil, savedPercent: nil)
     var onRemove: (() -> Void)?
+    /// Opening the file the row represents. Nil leaves the row inert.
+    var onOpen: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 13) {
@@ -396,6 +398,8 @@ struct FileRow: View {
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
         .background(Theme.Colors.background, in: RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
+        .modifier(RowOpenModifier(onOpen: onOpen))
     }
 
     private var fileBadge: some View {
@@ -607,7 +611,7 @@ private var toolChromeGallery: some View {
             HStack(spacing: Theme.Spacing.small) {
                 ToolIconTile(systemImage: "text.viewfinder")
                 ToolIconTile(systemImage: "square.stack.3d.up.fill")
-                ToolIconTile(systemImage: "square.split.2x1", size: 34)
+                ToolIconTile(systemImage: "text.viewfinder", size: 34)
             }
         }
         .padding(Theme.Spacing.large)
@@ -721,5 +725,21 @@ struct LinearProgress: View {
             }
         }
         .frame(height: 6)
+    }
+}
+
+/// Makes a row open its file on click, and shows the hand cursor, only when an action exists.
+private struct RowOpenModifier: ViewModifier {
+    let onOpen: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if let onOpen {
+            content
+                .onTapGesture(perform: onOpen)
+                .pointingHandCursor()
+                .help("Open this PDF")
+        } else {
+            content
+        }
     }
 }

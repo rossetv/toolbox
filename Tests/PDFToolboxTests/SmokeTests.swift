@@ -11,11 +11,8 @@ import XCTest
 /// Proves the hosted test target is wired (TEST_HOST launches, `@testable import`
 /// resolves the app module) before the real engine tests build on top of it.
 final class SmokeTests: XCTestCase {
-    func testToolCatalogue() {
-        XCTAssertEqual(Tool.allCases.count, 4)
-        XCTAssertTrue(Tool.compress.isAvailable)
-        XCTAssertTrue(Tool.ocr.isAvailable)
-        XCTAssertFalse(Tool.merge.isAvailable)
-        XCTAssertFalse(Tool.split.isAvailable)
+    /// The sidebar lists only tools that exist — no placeholders for unbuilt features.
+    func testToolCatalogueListsOnlyBuiltTools() {
+        XCTAssertEqual(Tool.allCases, [.compress, .ocr])
     }
 }

@@ -35,39 +35,6 @@ struct RootView: View {
             CompressView()
         case .ocr:
             OCRView()
-        case .merge, .split:
-            PlaceholderToolView(tool: tool)
         }
     }
-}
-
-/// Detail shown for the two tools that aren't built in v1.
-private struct PlaceholderToolView: View {
-    let tool: Tool
-
-    var body: some View {
-        VStack(spacing: Theme.Spacing.medium) {
-            ToolIconTile(systemImage: tool.systemImage, size: 56)
-                .opacity(0.45)
-            VStack(spacing: 4) {
-                Text(tool.title).themeFont(.tileHeading).foregroundStyle(Theme.Colors.text)
-                Text("Coming soon.").themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.Colors.surface)
-        .navigationTitle(tool.title)
-    }
-}
-
-#Preview("Placeholder – Light") {
-    PlaceholderToolView(tool: .merge)
-        .frame(width: 520, height: 320)
-        .preferredColorScheme(.light)
-}
-
-#Preview("Placeholder – Dark") {
-    PlaceholderToolView(tool: .split)
-        .frame(width: 520, height: 320)
-        .preferredColorScheme(.dark)
 }

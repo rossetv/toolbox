@@ -129,7 +129,10 @@ final class CompressViewModel: ObservableObject {
             await queue.run { job, report in
                 let output = outputs[job.id]
                     ?? FileNaming.output(for: job.url, suffix: "compressed", folder: folder)
-                return try await engine.compress(job.url, preset: chosen, to: output) { report($0) }
+                let outcome = try await engine.compress(job.url, preset: chosen, to: output) { report($0) }
+                // `.noGain` deliberately writes nothing, so there is no output file to point at.
+                if case .noGain = outcome { return JobResult(outcome) }
+                return JobResult(outcome, outputURL: output)
             }
             isRunning = false
         }

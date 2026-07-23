@@ -11,7 +11,7 @@ import Foundation
 /// concurrency; the tool supplies the per-job `body`.
 ///
 /// Contract:
-///  - the body is `(ThisJob, report) async throws -> JobOutcome`; it must **suspend** on its
+///  - the body is `(ThisJob, report) async throws -> JobResult`; it must **suspend** on its
 ///    blocking work (never block a cooperative-pool thread) so the concurrency cap is real;
 ///  - each `report(fraction)` sets that job `.running(fraction)`; the body's return sets
 ///    `.done(outcome)`; a **throw sets that one job `.failed` and the batch continues**;
@@ -19,6 +19,18 @@ import Foundation
 ///    returns to `.queued` and (by the engine's atomic-write contract) leaves no partial output;
 ///  - **one batch at a time**: `run` while a batch is in flight is a no-op, so the live batch can
 ///    never be orphaned from `cancel()`. The invariant lives here, in the type that owns the task.
+/// What a job produced: its outcome, and where the output landed (nil when nothing was written —
+/// a no-gain compress keeps the original, so there is no new file to reveal or open).
+struct JobResult {
+    let outcome: JobOutcome
+    let outputURL: URL?
+
+    init(_ outcome: JobOutcome, outputURL: URL? = nil) {
+        self.outcome = outcome
+        self.outputURL = outputURL
+    }
+}
+
 @MainActor
 final class ToolQueue: ObservableObject {
     @Published private(set) var jobs: [ToolJob] = []
@@ -51,7 +63,7 @@ final class ToolQueue: ObservableObject {
     /// A call made while a batch is already running returns immediately without touching the
     /// queue: overwriting `runTask` would leave the live batch running with nothing able to
     /// cancel it. (Both view models also gate on `isRunning`, but the invariant belongs here.)
-    func run(_ body: @escaping (ToolJob, _ report: @escaping (Double) -> Void) async throws -> JobOutcome,
+    func run(_ body: @escaping (ToolJob, _ report: @escaping (Double) -> Void) async throws -> JobResult,
              maxConcurrent: Int = SystemInfo.performanceCoreCount) async {
         guard runTask == nil else { return }
         let task = Task { [weak self] in
@@ -71,7 +83,7 @@ final class ToolQueue: ObservableObject {
 
     // MARK: private
 
-    private func execute(body: @escaping (ToolJob, @escaping (Double) -> Void) async throws -> JobOutcome,
+    private func execute(body: @escaping (ToolJob, @escaping (Double) -> Void) async throws -> JobResult,
                          maxConcurrent: Int) async {
         let queuedIDs: [UUID] = jobs.compactMap { job in
             if case .queued = job.state { return job.id } else { return nil }
@@ -95,7 +107,7 @@ final class ToolQueue: ObservableObject {
     }
 
     private func process(id: UUID,
-                         body: @escaping (ToolJob, @escaping (Double) -> Void) async throws -> JobOutcome) async {
+                         body: @escaping (ToolJob, @escaping (Double) -> Void) async throws -> JobResult) async {
         guard let job = jobs.first(where: { $0.id == id }) else { return }
         if Task.isCancelled { return }   // cancelled before starting → stays .queued
 
@@ -105,8 +117,11 @@ final class ToolQueue: ObservableObject {
         }
 
         do {
-            let outcome = try await body(job, report)
-            setState(id, .done(outcome))
+            let result = try await body(job, report)
+            if let index = jobs.firstIndex(where: { $0.id == id }) {
+                jobs[index].resultURL = result.outputURL
+            }
+            setState(id, .done(result.outcome))
         } catch is CancellationError {
             setState(id, .queued)        // interrupted; engine's atomic write left no partial output
         } catch {

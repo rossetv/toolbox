@@ -5,6 +5,7 @@
 // This file is part of PDF Toolbox, released under the GNU Affero General
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -74,7 +75,8 @@ struct OCRView: View {
                     ForEach(model.jobs) { job in
                         FileRow(name: job.url.lastPathComponent,
                                 meta: meta(for: job),
-                                status: status(for: job))
+                                status: status(for: job),
+                                onOpen: { NSWorkspace.shared.open(job.resultURL ?? job.url) })
                     }
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {

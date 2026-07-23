@@ -46,6 +46,16 @@ targets:
         INFOPLIST_KEY_NSDesktopFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
         INFOPLIST_KEY_NSDocumentsFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
         INFOPLIST_KEY_NSDownloadsFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
+        # Bundled static libraries (leptonica, jbig2enc) for the Rung-2 bilevel scan pipeline.
+        # Built by scripts/build-leptonica.sh + scripts/build-jbig2enc.sh into a git-ignored
+        # tree, and linked INTO the app binary — nothing to bundle, nothing to resolve at
+        # runtime. jbig2enc is C++ and depends on leptonica, hence its position and -lc++.
+        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Sources/PDFToolbox/Native/PDFToolbox-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Resources/native/leptonica/include $(SRCROOT)/Resources/native/jbig2enc/include
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/Resources/native/leptonica/lib $(SRCROOT)/Resources/native/jbig2enc/lib
+        OTHER_LDFLAGS: -ljbig2enc -lleptonica -lc++
+        CLANG_CXX_LANGUAGE_STANDARD: c++17
+        CLANG_CXX_LIBRARY: libc++
 
   PDFToolboxTests:
     type: bundle.unit-test

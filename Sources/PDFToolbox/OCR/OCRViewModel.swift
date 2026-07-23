@@ -65,7 +65,10 @@ final class OCRViewModel: ObservableObject {
             // bounds memory while still overlapping I/O and recognition.
             await queue.run({ job, report in
                 let output = outputs[job.id] ?? FileNaming.output(for: job.url, suffix: "ocr", folder: nil)
-                return try await self.engine.ocr(job.url, to: output, options: chosen) { report($0) }
+                let outcome = try await self.engine.ocr(job.url, to: output, options: chosen) { report($0) }
+                // `.alreadySearchable` writes nothing — no new file to reveal.
+                if case .alreadySearchable = outcome { return JobResult(outcome) }
+                return JobResult(outcome, outputURL: output)
             }, maxConcurrent: 2)
             isRunning = false
         }

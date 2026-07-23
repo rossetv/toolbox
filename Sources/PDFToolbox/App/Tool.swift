@@ -9,13 +9,12 @@ import SwiftUI
 
 /// The tools hosted by the shell's sidebar.
 ///
-/// `compress` and `ocr` are live in v1; `merge` and `split` are shown as dimmed
-/// "Soon" placeholders (spec §7 — a fixed four-entry sidebar) and are not built.
+/// Only tools that actually exist are listed. The spec's four-entry sidebar carried `merge` and
+/// `split` as dimmed "Soon" placeholders; they were removed on the maintainer's instruction —
+/// advertising a control that does nothing is worse than not showing it.
 enum Tool: String, CaseIterable, Identifiable {
     case compress
     case ocr
-    case merge
-    case split
 
     var id: String { rawValue }
 
@@ -23,8 +22,6 @@ enum Tool: String, CaseIterable, Identifiable {
         switch self {
         case .compress: return "Compress"
         case .ocr: return "OCR"
-        case .merge: return "Merge"
-        case .split: return "Split"
         }
     }
 
@@ -32,8 +29,6 @@ enum Tool: String, CaseIterable, Identifiable {
         switch self {
         case .compress: return "arrow.down.right.and.arrow.up.left"
         case .ocr: return "text.viewfinder"
-        case .merge: return "square.stack.3d.up.fill"
-        case .split: return "square.split.2x1"
         }
     }
 
@@ -43,16 +38,6 @@ enum Tool: String, CaseIterable, Identifiable {
         switch self {
         case .compress: return Color(hex: 0xFF3B30)
         case .ocr: return Color(hex: 0x5856D6)
-        case .merge: return Color(hex: 0x0071E3)
-        case .split: return Color(hex: 0xFF9500)
-        }
-    }
-
-    /// Whether the tool is built and selectable in v1.
-    var isAvailable: Bool {
-        switch self {
-        case .compress, .ocr: return true
-        case .merge, .split: return false
         }
     }
 }

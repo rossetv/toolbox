@@ -35,7 +35,7 @@ final class ToolQueueTests: XCTestCase {
     func testAllJobsReachDone() async {
         let queue = ToolQueue()
         queue.add(urls(5, "done"))
-        await queue.run({ _, _ in .compressed(before: 10, after: 5) }, maxConcurrent: 2)
+        await queue.run({ _, _ in JobResult(.compressed(before: 10, after: 5)) }, maxConcurrent: 2)
 
         XCTAssertEqual(queue.jobs.count, 5)
         for job in queue.jobs {
@@ -62,7 +62,7 @@ final class ToolQueueTests: XCTestCase {
             await queue.run({ _, report in
                 report(0.5)
                 await gate.wait()             // suspend until the test has seen .running(0.5)
-                return .compressed(before: 10, after: 5)
+                return JobResult(.compressed(before: 10, after: 5))
             }, maxConcurrent: 1)
         }
 
@@ -86,7 +86,7 @@ final class ToolQueueTests: XCTestCase {
             if job.url == failURL {
                 throw NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "boom"])
             }
-            return .compressed(before: 10, after: 5)
+            return JobResult(.compressed(before: 10, after: 5))
         }, maxConcurrent: 2)
 
         let failed = queue.jobs.filter { if case .failed = $0.state { return true } else { return false } }
@@ -148,13 +148,13 @@ final class ToolQueueTests: XCTestCase {
                 let deadline = Date().addingTimeInterval(5)
                 while !Task.isCancelled, Date() < deadline { await Task.yield() }
                 if Task.isCancelled { throw CancellationError() }
-                return .compressed(before: 10, after: 5)
+                return JobResult(.compressed(before: 10, after: 5))
             }, maxConcurrent: 1)
         }
         await fulfillment(of: [started], timeout: 5)
 
         // Re-entry while the first batch is live: a no-op that returns at once.
-        await queue.run({ _, _ in .compressed(before: 10, after: 5) }, maxConcurrent: 1)
+        await queue.run({ _, _ in JobResult(.compressed(before: 10, after: 5)) }, maxConcurrent: 1)
         XCTAssertFalse(queue.jobs.contains { if case .done = $0.state { return true } else { return false } },
                        "a refused run must not process the queue behind the live batch's back")
 

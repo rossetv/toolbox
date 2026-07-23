@@ -7,9 +7,8 @@
 
 import SwiftUI
 
-/// The tool sidebar: four fixed entries (spec §7) under a "PDF Tools" group label, each an
-/// accent tile plus its name. Live tools are selectable; unavailable ones are dimmed and badged
-/// "Soon".
+/// The tool sidebar: one entry per built tool under a "PDF Tools" group label, each a coloured
+/// tile plus its name.
 ///
 /// Deliberately a plain `VStack` of buttons rather than a `List` inside `NavigationSplitView`.
 /// That combination laid itself out a titlebar's height too high — the first entries scrolled out
@@ -53,7 +52,6 @@ struct SidebarView: View {
 
             ForEach(Tool.allCases) { tool in
                 Button {
-                    guard tool.isAvailable else { return }
                     selection = tool
                 } label: {
                     row(for: tool)
@@ -62,7 +60,6 @@ struct SidebarView: View {
                 // Without this the row keeps a blue keyboard-focus ring after it is clicked, so
                 // the previously-chosen tool still looks selected alongside the real selection.
                 .focusEffectDisabled()
-                .disabled(!tool.isAvailable)
                 .pointingHandCursor()
             }
 
@@ -81,9 +78,6 @@ struct SidebarView: View {
                     .themeFont(.caption)
                     .foregroundStyle(Theme.Colors.text)
                 Spacer(minLength: Theme.Spacing.small)
-                if !tool.isAvailable {
-                    StatPill(text: "Soon", tone: .neutral)
-                }
             }
         }
         .padding(.horizontal, 10)
@@ -93,7 +87,6 @@ struct SidebarView: View {
                 .fill(isSelected ? Theme.Colors.text.opacity(0.10) : Color.clear)
         )
         .padding(.horizontal, 8)
-        .opacity(tool.isAvailable ? 1 : 0.45)
         .contentShape(Rectangle())
         .help(isCollapsed ? tool.title : "")
     }

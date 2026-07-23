@@ -188,3 +188,16 @@ because it fell outside that literal noun while sitting squarely inside the gate
 rule that can be satisfied on a technicality is not a gate.
 
 **Provenance:** adversarial review (opus) → monocratic fix (opus).
+
+## 2026-07-23 — Sidebar lists only built tools ("Soon" placeholders removed)
+
+Spec §7 pinned a fixed four-entry sidebar in which `merge` and `split` appeared as dimmed
+"Soon" placeholders. They are removed: the sidebar now lists only Compress and OCR.
+
+**Why:** the maintainer's instruction — "no point of having tools that don't exist there".
+Advertising a control that cannot do anything is worse than not showing it, and the placeholders
+carried real cost: an `isAvailable` flag threaded through the model, disabled-state handling and
+a `PlaceholderToolView`, all of it dead weight for features that do not exist.
+
+**Provenance:** human decision, which overrides the spec. `Tool` now has only the built cases and
+`isAvailable` is gone entirely; re-adding a tool means adding a case when it is actually built.

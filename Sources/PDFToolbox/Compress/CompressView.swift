@@ -72,7 +72,8 @@ struct CompressView: View {
                         FileRow(name: job.url.lastPathComponent,
                                 meta: meta(for: job),
                                 status: status(for: job),
-                                onRemove: canRemove(job) ? { model.remove(job) } : nil)
+                                onRemove: canRemove(job) ? { model.remove(job) } : nil,
+                                onOpen: { open(job) })
                     }
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {
@@ -152,9 +153,17 @@ struct CompressView: View {
     }
 
     private func revealOutputs() {
-        let urls = model.jobs.compactMap(\.resultURL)
+        // Fall back to the originals' folder when nothing new was written (every file was
+        // already optimised), so the button still does something sensible.
+        let outputs = model.jobs.compactMap(\.resultURL)
+        let urls = outputs.isEmpty ? model.jobs.map(\.url) : outputs
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
+    /// Open the compressed result if one was produced, otherwise the original.
+    private func open(_ job: ToolJob) {
+        NSWorkspace.shared.open(job.resultURL ?? job.url)
     }
 
     private var outputFolderRow: some View {
