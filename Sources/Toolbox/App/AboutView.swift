@@ -50,16 +50,17 @@ struct AboutView: View {
                 LinkButton(title: "Licence (AGPL-3.0)") { NSWorkspace.shared.open(Self.licenceURL) }
                 LinkButton(title: "Contact") { NSWorkspace.shared.open(Self.maintainerURL) }
             }
+            // The sheet hands keyboard focus to its first control, which drew a permanent
+            // focus ring around "GitHub". Links stay tabbable; only the ring is suppressed.
+            .focusEffectDisabled()
             .padding(.top, Theme.Spacing.small)
 
-            VStack(spacing: 2) {
-                Text("Maintained by Vilmar Rosset").themeFont(.micro)
-                Text("Copyright © 2026 Vilmar Rosset. Bundles Ghostscript (AGPL).").themeFont(.micro)
-            }
-            .foregroundStyle(Theme.Colors.textTertiary)
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, Theme.Spacing.small)
+            Text("Copyright © 2026 Vilmar Rosset (toolbox@rosset.ie)")
+                .themeFont(.micro)
+                .foregroundStyle(Theme.Colors.textTertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, Theme.Spacing.small)
 
             PrimaryButton(title: "Done") { dismiss() }
                 .padding(.top, Theme.Spacing.small)
