@@ -29,26 +29,26 @@ convenience.
 of its class before you close it. The `/Resources`-shadowing fix in `PDFWriter` handled
 the inheritance walk but left a page without `/Parent` to guess at what it inherits — the
 same bug, one branch over. The class was closed only when that sibling was found
-(`Sources/PDFToolbox/Services/PDFWriter.swift`, `inheritedResourcesEntry`, the
+(`Sources/Toolbox/Services/PDFWriter.swift`, `inheritedResourcesEntry`, the
 `depth > 0` guard).
 
 ## §2 Architectural boundaries
 
 **§2.1 — Ghostscript runs only through `GhostscriptRunner`, and always inside the
 sandbox.** No other code constructs a `Process`. Every invocation is wrapped in
-`sandbox-exec` with the profile from `Sources/PDFToolbox/Services/SeatbeltProfile.swift`
+`sandbox-exec` with the profile from `Sources/Toolbox/Services/SeatbeltProfile.swift`
 (`SeatbeltProfile.profile`): default-deny, no network, filesystem scoped to exactly the
 input, the output directory, gs's own directory and a per-run scratch dir. Input PDFs are
 untrusted and Ghostscript has a CVE history (`.claude/DECISIONS.md`, 2026-07-22). A
 profile change is proved by running gs under it
-(`Tests/PDFToolboxTests/SeatbeltRunTests.swift`) — a profile that merely reads plausibly
+(`Tests/ToolboxTests/SeatbeltRunTests.swift`) — a profile that merely reads plausibly
 has already failed once, for want of `(allow process-exec*)`.
 
 **§2.2 — A sandboxed child never touches a TCC-protected path.** A seatbelt-sandboxed
 child cannot inherit the app's TCC grant, so handing it a path under `~/Documents`,
 `~/Downloads` or `~/Desktop` hangs it on a consent prompt it can never answer. The parent
 app (which holds the grant) stages I/O through a private temp working directory and
-copies results back out (`Sources/PDFToolbox/Compress/CompressEngine.swift`, the `work`
+copies results back out (`Sources/Toolbox/Compress/CompressEngine.swift`, the `work`
 directory in `compress`).
 
 **§2.3 — Module dependencies point one way.** `Models` imports no other module; everyone
@@ -70,7 +70,7 @@ removal).
 
 **§3.1 — Never overwrite the input, and never race for an output name.** Output names
 are allocated up front, serially, before any concurrent work starts
-(`Sources/PDFToolbox/Shared/FileNaming.swift`,
+(`Sources/Toolbox/Shared/FileNaming.swift`,
 `output(for:suffix:folder:reserving:)`). A job that reaches the concurrent body with no
 reserved name fails loudly (`MissingOutputReservationError`) — re-deriving a name
 mid-batch reintroduces the check-then-use race the reservation exists to close.
@@ -88,7 +88,7 @@ called no-gain — otherwise a silent gs corruption that happens to be ≥ the i
 masquerades as "already optimised" (`CompressEngine.compress`, step 5).
 
 **§3.4 — Every output is validated before it is placed, and validation is bounded in both
-directions.** `Sources/PDFToolbox/Services/OutputValidator.swift` compares each sampled
+directions.** `Sources/Toolbox/Services/OutputValidator.swift` compares each sampled
 page's ink to the *same input page* — never to an absolute floor, which falsely rejects
 legitimately sparse pages — and rejects both below `minRetainedInk` and above
 `maxRetainedInk`. The ceiling exists because a one-sided floor passes the worst
@@ -96,7 +96,7 @@ corruption there is: an inverted or ink-flooded page measures near 1.0 and sails
 as a success.
 
 **§3.5 — OCR appends; it never rewrites.** The original file must be a byte-verbatim
-prefix of the output (`Sources/PDFToolbox/OCR/OCREngine.swift`, `hasVerbatimPrefix`,
+prefix of the output (`Sources/Toolbox/OCR/OCREngine.swift`, `hasVerbatimPrefix`,
 enforced in `validateOCROutput` before placement). This single invariant neutralises
 whole classes of writer bugs — known and unknown — by converting silent corruption into a
 visible per-file failure. Any change to `PDFWriter` that cannot keep this invariant is a
@@ -130,7 +130,7 @@ reduces the recognition render, never the user's document).
 **§4.1 — PDF is parsed as bytes, never as `Character`s or `String`s.** Swift collapses a
 CR byte followed by LF into one grapheme cluster that equals neither `"\r"` nor `"\n"`; a
 scanner built on characters fails to see the separator, misses its key, and the caller
-writes a duplicate key into the document. `Sources/PDFToolbox/Services/PDFSyntax.swift`
+writes a duplicate key into the document. `Sources/Toolbox/Services/PDFSyntax.swift`
 is the lexical layer, byte for byte; fragments are emitted through `latin1(_:)`
 (`Services/PDFWriter.swift`). Splicing a `String` into PDF bytes reintroduces the trap.
 
@@ -189,7 +189,7 @@ to the user gets the same treatment.
 accesses to `/private/var`; a seatbelt scope entry left as `/var/…` silently fails to
 match and the access is denied. Swift's `resolvingSymlinksInPath()` does *not* resolve
 `/var` → `/private/var` (verified); use `URL.canonical`
-(`Sources/PDFToolbox/Shared/CanonicalPath.swift`, C `realpath` underneath) on anything
+(`Sources/Toolbox/Shared/CanonicalPath.swift`, C `realpath` underneath) on anything
 that crosses the sandbox boundary or is compared by path.
 
 **§5.2 — Filename identity belongs to the filesystem, not to `String` or `URL`
@@ -270,21 +270,21 @@ without a failed state, are both defects.
 once reached a green build, green tests and a working launch with a completely
 non-functional UI — a "Choose Files…" button that did nothing, a window that opened
 smaller than its content minimum, a mis-laid-out split view. Only Compress has an
-automated end-to-end drive (`Sources/PDFToolbox/App/CompressSmoke.swift`, exercised by
+automated end-to-end drive (`Sources/Toolbox/App/CompressSmoke.swift`, exercised by
 `gate: packaged-app-compresses`); every other flow is verified by launching the app and
 clicking the thing. Say what you drove in the PR.
 
 **§8.2 — One owner per behaviour.** Two `.fileImporter` modifiers attached to the same
 view conflict on macOS and neither reliably presents — which is exactly how the dead
 button in §8.1 happened. File dialogs go through
-`Sources/PDFToolbox/Shared/FilePicker.swift`; when a mechanism exists, extend it rather
+`Sources/Toolbox/Shared/FilePicker.swift`; when a mechanism exists, extend it rather
 than attaching a second copy of the capability elsewhere.
 
 **§8.3 — Window behaviour is enforced on the `NSWindow`, in one place.** SwiftUI's
 `.frame(minWidth:minHeight:)` constrains the *content*, not the window, and
 `.defaultSize` is a hint that loses to content — a window restored too small simply
 clips, and the sidebar is the casualty. All window sizing, titling and focus rules live
-in `Sources/PDFToolbox/App/WindowConfigurator.swift` (`WindowSetup.applyMinimumSize`)
+in `Sources/Toolbox/App/WindowConfigurator.swift` (`WindowSetup.applyMinimumSize`)
 with each workaround's why documented beside it.
 
 **§8.4 — The visual language is `DESIGN.md`'s; divergence is recorded, never silent.**
@@ -297,7 +297,7 @@ bar or don't diverge.
 ## §9 Tests
 
 **§9.1 — Fixtures are synthetic, generated in-process, and deterministic.** All test
-content comes from `Tests/PDFToolboxTests/Fixtures.swift` — CoreGraphics/PDFKit
+content comes from `Tests/ToolboxTests/Fixtures.swift` — CoreGraphics/PDFKit
 generation, a deterministic PRNG (`Fixtures.RNG`), a fresh directory per fixture
 (`Fixtures.uniqueURL`). Nothing that identifies a maintainer's machine or private
 material ever enters the repository — no personal paths, account names, directory names,
@@ -309,7 +309,7 @@ and both times cost a history rewrite. Aggregated, anonymised measurements are f
 `XCTSkipIf` on an in-process fixture's size would silently retire the only test of a
 memory bound the first time the fixture happened to shrink. A fixture's size is an
 invariant we control, so it is asserted
-(`Tests/PDFToolboxTests/PDFWriterTests.swift`,
+(`Tests/ToolboxTests/PDFWriterTests.swift`,
 `testWriterDoesNotHoldWholeCopiesOfTheInput`). Skips are for genuinely environmental
 conditions only.
 
@@ -328,7 +328,7 @@ input size).
 **§9.5 — A bug fix ships with the regression test that fails without it.** The pattern
 throughout: the stale-progress fix landed with
 `testLateProgressReportCannotOverwriteDoneState`
-(`Tests/PDFToolboxTests/ToolQueueTests.swift`); the naming fixes landed with
+(`Tests/ToolboxTests/ToolQueueTests.swift`); the naming fixes landed with
 `FileNamingTests`. An untested fix is an assertion, not a fix.
 
 ## §10 Comments, contracts and licensing
