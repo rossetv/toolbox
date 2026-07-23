@@ -18,11 +18,11 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 
 | Doc | Purpose | Verified |
 |-----|---------|----------|
-| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-23 @ b585158 |
-| [DECISIONS](DECISIONS.md) | append-only decision log | 2026-07-23 @ 6887440 |
+| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-23 @ 0221782 |
+| [DECISIONS](DECISIONS.md) | append-only decision log | 2026-07-23 @ 0221782 |
 | [MEMORY](MEMORY.md) | project memory index — always injected | 2026-07-23 @ 55eb2d9 |
 | [GATES](GATES.md) | the gates that define "done" — Claude's runbook | 2026-07-23 @ 55eb2d9 |
-| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-23 @ 6887440 |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-23 @ 0221782 |
 
 ## Modules
 

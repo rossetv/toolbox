@@ -283,3 +283,20 @@ of reverse-DNS domain. The owner has now chosen: `com.pdftoolbox.app` → `com.t
 `bundleIdPrefix` → `com.toolbox` and the derived dispatch-queue label → `com.toolbox.gs.io`.
 Directed by the owner (mandated-by-human), closing the pending item. Known consequence, accepted:
 a bundle-identifier change resets the app's TCC grants and user defaults.
+
+## 2026-07-23 — Notify-only update check is a deliberate exception to "no network"
+
+**Decision:** Add a single on-launch network request — a GET to `api.github.com` for the
+latest release tag — solely to show an update banner. The app never downloads or installs
+the update; the banner's button only opens the GitHub release page in the browser.
+
+**Why:** Users need a way to learn about new versions with no auto-updater and no app
+store. Notify-only (never self-replacing) avoids the real risk of a self-update path: an
+unsigned self-replace would turn a compromised release channel into silent code execution
+on every user's machine. Any check failure (offline, rate-limited, malformed response)
+resolves to "no update" — a version check must never degrade the tools that work entirely
+offline.
+
+**Affects:** `Sources/Toolbox/App/UpdateChecker.swift`, `Sources/Toolbox/App/RootView.swift`
+(`UpdateBanner`), `README.md` ("Good to know"), `.claude/OVERVIEW.md` (System boundaries,
+no-network invariant).

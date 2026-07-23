@@ -20,8 +20,9 @@ window-minimum-size fix-up, and a headless self-test hook.
 
 | File | Role |
 |------|------|
-| `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` before any window opens |
-| `Sources/Toolbox/App/RootView.swift` | An explicit `HStack` split — sidebar + per-tool detail (`CompressView`/`OCRView`) |
+| `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` then `yieldToExistingInstance()` before any window opens |
+| `Sources/Toolbox/App/UpdateChecker.swift` | Notify-only GitHub Releases version check on launch — the app's only network request; never downloads or self-replaces |
+| `Sources/Toolbox/App/RootView.swift` | An explicit `HStack`/`VStack` split — update banner, sidebar + per-tool detail (`CompressView`/`OCRView`) |
 | `Sources/Toolbox/App/SidebarView.swift` | One collapsible-rail entry per built `Tool`, each a coloured tile (`Tool.tint`) plus its name; header uses `NSApp.applicationIconImage` for the real bundle icon; a bottom info button opens `AboutView` as a sheet |
 | `Sources/Toolbox/App/AboutView.swift` | The About sheet: bundle icon/name/version (read from `Bundle.main.infoDictionary`, never hard-coded), GitHub/licence/contact links, copyright |
 | `Sources/Toolbox/App/Tool.swift` | `enum Tool` — `compress`/`ocr`, each with `title`/`systemImage`/`tint` |
@@ -50,6 +51,18 @@ window-minimum-size fix-up, and a headless self-test hook.
 - `CompressSmoke` must run and exit **before** `WindowGroup` renders — it drives the
   real bundled-gs-under-sandbox path from the actual app process (xctest launches gs
   from a different context, which doesn't exercise the same `Bundle.main` resolution).
+- **`yieldToExistingInstance()` skips under XCTest** (`XCTestConfigurationFilePath` env
+  var check) — the hosted test runner launches the app as its test host while a real
+  user copy may legitimately be open; killing the host would kill the suite. Otherwise
+  it finds another running process with the same bundle ID, activates it, and calls
+  `exit(0)` — guards against two *copies* of the bundle (e.g. an old build plus a fresh
+  one) running concurrently and racing on the same output files, a case LaunchServices'
+  own single-launch dedup doesn't cover.
+- **`UpdateChecker` is the app's only network request** — a GET to
+  `api.github.com/repos/rossetv/toolbox/releases/latest`, notify-only: any failure
+  (offline, rate-limited, malformed) resolves to "no update", and the banner's button
+  only opens the release page in the browser — the app never downloads or replaces its
+  own binary.
 
 ## Gotchas
 

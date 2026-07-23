@@ -36,14 +36,19 @@ actually built (`Tool`), not placeholders for ones that aren't.
 | Bundled Ghostscript binary | invoke (subprocess) | `Sources/Toolbox/Services/GhostscriptRunner.swift`, confined by `SeatbeltProfile.swift` |
 | Apple Vision (on-device OCR) | read | `Sources/Toolbox/OCR/VisionOCR.swift` (`VNRecognizeTextRequest`) — no network |
 | Local filesystem (user-selected PDFs) | read/write | `Sources/Toolbox/Compress/CompressEngine.swift`, `Sources/Toolbox/OCR/OCREngine.swift` |
+| GitHub Releases API (`api.github.com`) | read (on launch) | `Sources/Toolbox/App/UpdateChecker.swift` — notify-only version check; never downloads or self-replaces |
 
-No network access anywhere in the app; the seatbelt profile explicitly denies it for gs.
+The seatbelt profile explicitly denies gs network access, and no PDF content ever leaves
+the Mac; the single exception is `UpdateChecker`'s on-launch GET to GitHub Releases (the
+app's only network request), which sends nothing about the user or their files.
 
 ## Process model
 
 1. One process. `ToolboxApp.init()` runs a headless self-test hook first
-   (`TOOLBOX_SMOKE=compress` — see `App/CompressSmoke.swift`), then launches the
-   SwiftUI `WindowGroup` (`RootView`).
+   (`TOOLBOX_SMOKE=compress` — see `App/CompressSmoke.swift`), then a single-instance
+   guard (`yieldToExistingInstance()` — activates and yields to an already-running copy
+   of the bundle, skipped under XCTest), then launches the SwiftUI `WindowGroup`
+   (`RootView`), which kicks off `UpdateChecker.check()` in a `.task`.
 2. Each Compress/OCR job spawns a **child process**: `/usr/bin/sandbox-exec` wrapping
    the bundled `gs` (Compress only — OCR never shells out, it calls Vision in-process).
 3. `ToolQueue` runs jobs with bounded concurrency (`SystemInfo.performanceCoreCount`
