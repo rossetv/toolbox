@@ -18,9 +18,9 @@ struct PDFToolboxApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .frame(minWidth: 900, minHeight: 620)
+                .frame(minWidth: 820, minHeight: 560)
         }
-        .defaultSize(width: 1040, height: 720)
+        .defaultSize(width: 900, height: 600)
         .windowResizability(.contentMinSize)
     }
 }

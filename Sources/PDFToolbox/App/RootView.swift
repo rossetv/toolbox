@@ -24,8 +24,8 @@ struct RootView: View {
             detail(for: selectedTool ?? .compress)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: sidebarCollapsed ? 736 : 900, minHeight: 620)
-        .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 900, height: 620)) }
+        .frame(minWidth: sidebarCollapsed ? 660 : 820, minHeight: 560)
+        .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 820, height: 560)) }
     }
 
     @ViewBuilder

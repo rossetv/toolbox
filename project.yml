@@ -32,20 +32,23 @@ targets:
       - path: Resources/ghostscript
         type: folder
         buildPhase: resources
+      # App icon. An asset catalog is used rather than a loose .icns because
+      # GENERATE_INFOPLIST_FILE offers no INFOPLIST_KEY_ for CFBundleIconFile, and switching to a
+      # hand-written Info.plist silently drops every INFOPLIST_KEY_ setting — including the TCC
+      # usage strings.
+      - path: Resources/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pdftoolbox.app
         PRODUCT_NAME: PDFToolbox
-        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_HARDENED_RUNTIME: YES
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
-        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie). Licensed under the GNU AGPL v3.0 or later."
-        # First-access TCC prompt copy for the user folders PDFs are selected from.
-        INFOPLIST_KEY_NSDesktopFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
-        INFOPLIST_KEY_NSDocumentsFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
-        INFOPLIST_KEY_NSDownloadsFolderUsageDescription: "PDF Toolbox needs access to compress PDFs you select from this folder."
+        # Keys live in Resources/Info.plist: CFBundleName drives the menu-bar name and Xcode
+        # derives it from PRODUCT_NAME unless an explicit plist is supplied. The bundle stays
+        # PDFToolbox.app — a space in the bundle path breaks TEST_HOST, schemes and scripts.
         # Bundled static libraries (leptonica, jbig2enc) for the Rung-2 bilevel scan pipeline.
         # Built by scripts/build-leptonica.sh + scripts/build-jbig2enc.sh into a git-ignored
         # tree, and linked INTO the app binary — nothing to bundle, nothing to resolve at
@@ -69,3 +72,18 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+
+# Declared explicitly rather than left to inference: renaming the product to "PDF Toolbox"
+# silently dropped the test action from the generated scheme, so `xcodebuild test` stopped
+# working while every other command still succeeded.
+schemes:
+  PDFToolbox:
+    build:
+      targets:
+        PDFToolbox: all
+        PDFToolboxTests: [test]
+    test:
+      targets:
+        - PDFToolboxTests
+    run:
+      config: Debug

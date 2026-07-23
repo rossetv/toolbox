@@ -32,7 +32,6 @@ struct CompressView: View {
         .background(Theme.Colors.surface)
         .animation(.easeInOut(duration: 0.2), value: model.isRunning)
         .animation(.easeInOut(duration: 0.2), value: model.allFinished)
-        .navigationTitle("Compress")
         .onDrop(of: [.pdf], isTargeted: $isTargeted) { providers in
             loadDroppedURLs(providers)
             return true

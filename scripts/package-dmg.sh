@@ -10,7 +10,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-Release}"
+# Three distinct names: the Xcode project/scheme (unchanged), the product as the user sees it
+# (spaces and all), and the DMG filename (kept space-free so URLs and CI globs stay simple).
+PROJECT="PDFToolbox"
 APP_NAME="PDFToolbox"
+DMG_NAME="PDFToolbox"
 VOL_NAME="PDF Toolbox"
 BUILD_DIR="build"
 DIST_DIR="dist"
@@ -27,7 +31,7 @@ xcodegen generate
 
 echo "==> Building $CONFIG"
 rm -rf "$BUILD_DIR" "$DIST_DIR"
-xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" \
+xcodebuild -project "$PROJECT.xcodeproj" -scheme "$PROJECT" \
   -configuration "$CONFIG" -derivedDataPath "$BUILD_DIR" \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
   build >/dev/null
@@ -50,8 +54,8 @@ ln -s /Applications "$DIST_DIR/stage/Applications"
 
 echo "==> Creating DMG"
 hdiutil create -volname "$VOL_NAME" -srcfolder "$DIST_DIR/stage" \
-  -ov -format UDZO "$DIST_DIR/$APP_NAME.dmg" >/dev/null
+  -ov -format UDZO "$DIST_DIR/$DMG_NAME.dmg" >/dev/null
 rm -rf "$DIST_DIR/stage"
 
-echo "==> Done: $DIST_DIR/$APP_NAME.dmg"
-ls -lh "$DIST_DIR/$APP_NAME.dmg" | awk '{print "    size:", $5}'
+echo "==> Done: $DIST_DIR/$DMG_NAME.dmg"
+ls -lh "$DIST_DIR/$DMG_NAME.dmg" | awk '{print "    size:", $5}'

@@ -42,7 +42,6 @@ struct OCRView: View {
             footerBar
         }
         .background(Theme.Colors.surface)
-        .navigationTitle("OCR")
         .onDrop(of: [.pdf], isTargeted: $isTargeted) { providers in
             loadDroppedURLs(providers)
             return true
