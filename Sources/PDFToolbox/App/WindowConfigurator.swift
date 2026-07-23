@@ -21,10 +21,35 @@ import AppKit
 /// titlebar's height. Reaching for the window directly has no layout effect at all.
 enum WindowSetup {
 
+    /// Size the window opens at when the user has never resized it.
+    ///
+    /// `.defaultSize` on the `WindowGroup` is only a hint and loses to the content: the detail pane
+    /// takes `maxHeight: .infinity`, so SwiftUI is happy to open a window most of the display tall.
+    /// Applying a frame here is the only way to make the initial size stick.
+    static let preferredSize = NSSize(width: 900, height: 640)
+
+    private static let autosaveName = "PDFToolboxMainWindow"
+
     static func applyMinimumSize(_ minSize: NSSize) {
         DispatchQueue.main.async {
             for window in NSApp.windows where window.contentView != nil && window.canBecomeMain {
                 window.minSize = minSize
+
+                // Adopt the user's remembered size if there is one, and otherwise open at
+                // `preferredSize` — once. Checking for the saved frame BEFORE naming the window is
+                // what keeps this from overriding a size the user chose themselves.
+                if window.frameAutosaveName != autosaveName {
+                    let key = "NSWindow Frame \(autosaveName)"
+                    let hasSavedFrame = UserDefaults.standard.string(forKey: key) != nil
+                    window.setFrameAutosaveName(autosaveName)
+                    if !hasSavedFrame {
+                        var initial = window.frame
+                        initial.origin.y += initial.height - preferredSize.height
+                        initial.size = preferredSize
+                        window.setFrame(initial, display: true, animate: false)
+                        window.center()
+                    }
+                }
                 // Name the window for the app, not the selected tool: the detail views used to
                 // set it and it read "Compress"/"OCR", which says nothing about what is running.
                 window.title = "PDF Toolbox"
