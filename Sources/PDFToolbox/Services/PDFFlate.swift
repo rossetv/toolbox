@@ -11,6 +11,12 @@ import Foundation
 /// `FlateDecode`, the one stream filter the writer has to read.
 enum PDFFlate {
 
+    /// How much larger than its permitted output a compressed body may be before `inflate`
+    /// refuses to copy it. Real Flate data is smaller than what it expands to; anything far above
+    /// this ratio is not worth decoding and is only a way to make us allocate.
+    static let maxCompressedToOutputRatio = 4
+
+
     /// Inflate a `FlateDecode` stream body, refusing to produce more than `limit` bytes.
     ///
     /// The limit is not a nicety. A stream's compressed size says nothing about its expanded
@@ -25,6 +31,12 @@ enum PDFFlate {
     static func inflate<C: RandomAccessCollection>(_ input: C, limit: Int) -> [UInt8]?
     where C.Element == UInt8, C.Index == Int {
         guard !input.isEmpty, limit > 0 else { return nil }
+        // `limit` bounds the OUTPUT. Without a bound on the input too, a two-gigabyte file that is
+        // one enormous object stream is copied whole into memory here — which would falsify
+        // `PDFWriter.appendTextLayer`'s promise to hold no full copy of the input, and two
+        // concurrent jobs would double it. Flate cannot reach `limit` output from more than
+        // `limit` input in any case worth decoding, so refuse beyond a small multiple.
+        guard input.count <= limit * Self.maxCompressedToOutputRatio else { return nil }
         var body = Array(input)
 
         if body.count >= 2 {

@@ -233,7 +233,14 @@ enum PDFSyntax {
         while true {
             i = skipSpace(b, from: i)
             guard i < b.endIndex else { return .unparseable }    // ran off the end before `>>`
-            if b[i] == 0x3E { return .absent }                   // `>>` — read the whole dict, no key
+            if b[i] == 0x3E {
+                // `>>` ends the dictionary — a LONE `>` does not. Accepting one as the end marker
+                // reports "key absent" for a dictionary we actually failed to read, which is
+                // exactly the conflation this type exists to prevent: the caller would then insert
+                // a key that is already present further along, past the malformed byte.
+                guard i + 1 < b.endIndex, b[i + 1] == 0x3E else { return .unparseable }
+                return .absent                                  // read the whole dict, no key
+            }
             guard b[i] == 0x2F else { return .unparseable }      // not a key where one must be
             var nameEnd = i + 1
             while nameEnd < b.endIndex, isRegular(b[nameEnd]) { nameEnd += 1 }

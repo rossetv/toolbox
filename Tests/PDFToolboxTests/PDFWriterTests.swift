@@ -154,7 +154,11 @@ final class PDFWriterTests: XCTestCase {
     func testStreamKeywordInsideAWordDoesNotHideLaterObjects() throws {
         let input = try Fixtures.rawPDF([
             Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
-            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>"),
+            // Kids names the PAGE (4), not the font (3). The font is here only to put the word
+            // "Bitstream" in the byte stream ahead of the page, which is what this test is about;
+            // pointing the page tree at it made the writer supersede a font dictionary as though
+            // it were a page, which is not a structure any real file has.
+            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 4 0 R ] /Count 1 >>"),
             Fixtures.rawObject(3, "<< /Type /Font /Subtype /Type1 /BaseFont /BitstreamVeraSans >>"),
             Fixtures.rawObject(4, "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
                                 + "/Contents 5 0 R /Resources << /Font << /F1 3 0 R >> >> >>"),
@@ -607,6 +611,87 @@ final class PDFWriterTests: XCTestCase {
                 return XCTFail("expected .unsupportedStructure, got \(error)")
             }
         }
+    }
+
+    /// A lone `>` is not `>>`. Reading it as end-of-dictionary reports "key absent" for a dict we
+    /// actually failed to parse, so `/Contents` gets inserted a second time even though the real
+    /// one is sitting right there past the malformed byte.
+    func testLoneAngleBracketIsUnparseableNotAbsent() throws {
+        let dict = Array("<< /Type /Page > /Contents 4 0 R >>".utf8)
+        guard case .unparseable = PDFSyntax.dictLookup(of: "Contents", in: dict, dictAt: 0) else {
+            return XCTFail("a lone `>` must report unparseable, never absent")
+        }
+    }
+
+    /// `/Parent` is required on a page (Table 30). Without it we cannot establish what the page
+    /// inherits, and inventing a page-level `/Resources` is how the shadowing bug happened.
+    func testPageWithoutAParentIsDeclined() throws {
+        let input = try Fixtures.rawPDF([
+            Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 "
+                                + "/Resources << /XObject << /Im0 5 0 R >> >> >>"),
+            Fixtures.rawObject(3, "<< /Type /Page /MediaBox [ 0 0 612 792 ] /Contents 4 0 R >>"),
+            Fixtures.rawStream(4, body: Data("q 612 0 0 792 0 0 cm /Im0 Do Q".utf8)),
+            Fixtures.rawStream(5, body: Data("stub".utf8)),
+        ], root: 1, name: "no-parent.pdf")
+        let output = try sibling(of: input, "no-parent-ocr.pdf")
+
+        XCTAssertThrowsError(try write(input, to: output)) { error in
+            guard case PDFWriterError.unsupportedStructure = error else {
+                return XCTFail("expected .unsupportedStructure, got \(error)")
+            }
+        }
+    }
+
+    /// `/Contents 7 0 R` is legal when object 7 is an ARRAY of streams. Wrapping that gives
+    /// `[ 7 0 R ours ]` — an array whose first element references an array, undefined in the
+    /// format — and the page still renders text, so no validator downstream can see it.
+    func testIndirectContentsArrayIsDeclinedNotDoubleWrapped() throws {
+        let input = try Fixtures.rawPDF([
+            Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>"),
+            Fixtures.rawObject(3, "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+                                + "/Contents 7 0 R /Resources << >> >>"),
+            Fixtures.rawObject(7, "[ 4 0 R ]"),
+            Fixtures.rawStream(4, body: Data("q Q".utf8)),
+        ], root: 1, name: "indirect-contents-array.pdf")
+        let output = try sibling(of: input, "indirect-contents-array-ocr.pdf")
+
+        XCTAssertThrowsError(try write(input, to: output)) { error in
+            guard case PDFWriterError.unsupportedStructure = error else {
+                return XCTFail("expected .unsupportedStructure, got \(error)")
+            }
+        }
+    }
+
+    /// CONTRACT ASSERTION, NOT A REGRESSION PROOF. An unterminated array makes `endOfValue` return
+    /// the end of the buffer while `dictLookup` still reports `.found`, and splicing it would eat
+    /// the enclosing dictionary's own bytes. This input is declined either way — an earlier check
+    /// catches it first — so the test passes with the guard removed. It is kept because it pins
+    /// the intended behaviour; it does not demonstrate the guard is load-bearing, and no input
+    /// that reaches the splice has been found.
+    func testUnterminatedContentsArrayIsDeclinedNotSpliced() throws {
+        let input = try Fixtures.rawOnePagePDF(
+            pageDict: "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+                    + "/Contents [ 4 0 R /Resources << >> >>",
+            name: "unterminated-array.pdf")
+        let output = try sibling(of: input, "unterminated-array-ocr.pdf")
+
+        XCTAssertThrowsError(try write(input, to: output)) { error in
+            guard case PDFWriterError.unsupportedStructure = error else {
+                return XCTFail("expected .unsupportedStructure, got \(error)")
+            }
+        }
+    }
+
+    /// CONTRACT ASSERTION, NOT A REGRESSION PROOF. `limit` bounds the output; without an input
+    /// bound too, one enormous object stream is copied whole into memory, falsifying the writer's
+    /// documented per-job memory bound. The defect is the allocation, not the return value — this
+    /// input returns nil either way — so the test cannot demonstrate the guard is load-bearing.
+    func testInflateRefusesAnAbsurdlyLargeCompressedBody() {
+        let oversized = [UInt8](repeating: 0x78, count: 4096)
+        XCTAssertNil(PDFFlate.inflate(oversized, limit: 16),
+                     "a body far larger than its permitted output must be refused, not copied")
     }
 
     private func fullIndex(_ bytes: [UInt8]) throws -> PDFWriter.ObjectIndex {

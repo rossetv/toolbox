@@ -436,10 +436,26 @@ struct PDFWriter {
             let value = Array(dict[range])
             let replacement: [UInt8]
             if value.first == 0x5B {                            // `[ a 0 R ]` → `[ a 0 R ours ]`
+                // Only splice once the terminator is in sight. `PDFSyntax.endOfValue` returns the
+                // end of the whole buffer for an unterminated array and still reports `.found`,
+                // and `dropLast()` would then eat the enclosing dictionary's own bytes.
+                guard value.last == 0x5D else { throw PDFWriterError.unsupportedStructure }
                 let inner = trimmed(Array(value.dropFirst().dropLast()))
                 replacement = latin1("[ ") + inner + latin1(" \(contentRef) ]")
-            } else {                                            // single ref → array of the two
+            } else if let ref = PDFSyntax.parseRef(value) {
+                // `/Contents 7 0 R` is legal when object 7 is a stream OR an array of streams.
+                // Wrapping the array case gives `[ 7 0 R ours ]` — an array whose first element
+                // references an array, a form the format does not define, and one no validator
+                // here can see because our own layer still makes the page render with text.
+                // A content stream resolves to a dictionary; anything else is the array case.
+                guard objectDict(bytes, objects: objects, objNum: ref.num) != nil else {
+                    throw PDFWriterError.unsupportedStructure
+                }
                 replacement = latin1("[ ") + value + latin1(" \(contentRef) ]")
+            } else {
+                // Neither an array nor a reference: `/Contents` cannot be a direct stream, so this
+                // is malformed and not something to guess at.
+                throw PDFWriterError.unsupportedStructure
             }
             dict.replaceSubrange(range, with: replacement)
         case .absent:
@@ -503,10 +519,17 @@ struct PDFWriter {
     where C.Element == UInt8, C.Index == Int {
         var node = pageDict
         // Bounded like every other tree walk here: a cyclic `/Parent` chain must not spin.
-        for _ in 0..<maxPageTreeDepth {
+        for depth in 0..<maxPageTreeDepth {
             guard case .found(let parentRange) = PDFSyntax.dictLookup(of: "Parent", in: node, dictAt: 0),
                   let parent = PDFSyntax.parseRef(Array(node[parentRange])) else {
-                // Nothing to inherit from — the page really does have no resources.
+                // Reaching the top of the tree without finding `/Resources` anywhere means there
+                // is genuinely nothing to inherit, so our own dictionary shadows nothing.
+                //
+                // A PAGE with no `/Parent` at all is a different animal. `/Parent` is required
+                // (Table 30), but the input is untrusted and a reader that descends through
+                // `/Kids` still resolves inherited resources for such a page — so we cannot prove
+                // what it inherits, and guessing is how the shadowing bug happened.
+                guard depth > 0 else { throw PDFWriterError.unsupportedStructure }
                 return latin1("/Resources << /Font << ") + fontEntry + latin1(" >> >>")
             }
             guard let ancestor = objectDict(bytes, objects: objects, objNum: parent.num) else {
@@ -561,6 +584,11 @@ struct PDFWriter {
         case .found(let range):
             let value = Array(res[range])
             if value.count >= 4, value[0] == 0x3C, value[1] == 0x3C {
+                // Same rule as the `/Contents` array: an unterminated dictionary still reports
+                // `.found`, and `dropLast(2)` would then consume the enclosing dict's own `>>`.
+                guard value.suffix(2).elementsEqual([0x3E, 0x3E]) else {
+                    throw PDFWriterError.unsupportedStructure
+                }
                 var r = res
                 let inner = trimmed(Array(value.dropFirst(2).dropLast(2)))
                 r.replaceSubrange(range, with: latin1("<< ") + inner + latin1(" ") + fontEntry + latin1(" >>"))
@@ -812,7 +840,10 @@ struct PDFWriter {
         // bound, so the budget is spent across the whole file.
         var budget = maxObjectStreamBytes
 
-        for (num, _) in topLevel where budget > 0 {
+        // Sorted, not dictionary order: Swift seeds its hasher per process, so once a file's
+        // object streams exceed the budget below, *which* ones get indexed would otherwise vary
+        // run to run — the same document would OCR on one launch and fail on the next.
+        for num in topLevel.keys.sorted() where budget > 0 {
             guard let obj = objectDict(b, objects: bare, objNum: num),
                   PDFSyntax.dictName(of: "Type", in: obj.bytes, dictAt: 0) == "ObjStm",
                   isPlainFlate(obj.bytes),
