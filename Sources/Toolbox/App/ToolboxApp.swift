@@ -28,8 +28,11 @@ struct ToolboxApp: App {
               let bundleID = Bundle.main.bundleIdentifier else { return }
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        // Two copies launched in the same instant can tie (both see each other and both
+        // yield, or neither is registered yet and both survive) — unhandled by design:
+        // launch-timing-only, no data at risk, a relaunch recovers.
         guard let existing = others.first else { return }
-        existing.activate(options: [.activateAllWindows])
+        existing.activate()
         exit(0)
     }
 

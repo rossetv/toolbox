@@ -42,7 +42,7 @@ struct AboutView: View {
                 .themeFont(.caption)
                 .foregroundStyle(Theme.Colors.textSecondary)
 
-            Text("Free, private PDF tools for your Mac.\nEverything runs on-device — nothing is uploaded.")
+            Text("Free, private PDF tools for your Mac.\nEverything runs on-device — nothing is uploaded.\nOn launch the app only checks GitHub for new versions.")
                 .themeFont(.caption)
                 .foregroundStyle(Theme.Colors.textSecondary)
                 .multilineTextAlignment(.center)

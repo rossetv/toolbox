@@ -50,6 +50,10 @@ struct RootView: View {
 /// Full-width accent strip — deliberately unmissable (the owner's requirement: users must
 /// not overlook updates). Notify-only: the button opens the release page; the app never
 /// downloads or replaces its own binary (see `UpdateChecker`).
+///
+/// The solid accent background is a recorded DESIGN.MD §7 exception (accent is otherwise
+/// reserved for interactive elements): unmissability is the point, and the whole strip is
+/// in service of one interaction. It appears at most once per release cycle.
 private struct UpdateBanner: View {
     let release: UpdateChecker.Release
 
