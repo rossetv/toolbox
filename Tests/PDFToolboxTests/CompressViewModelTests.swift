@@ -15,6 +15,35 @@ import XCTest
 @MainActor
 final class CompressViewModelTests: XCTestCase {
 
+    /// `compress()` reserves an output name for every job it snapshots, but several MainActor hops
+    /// separate that snapshot from the queue launching anything. A file added in that window would
+    /// be `.queued`, so the live batch would run it — with no reserved name, allocating from
+    /// inside a concurrent job body and racing the very collision the reservation prevents. Both
+    /// the "+ Add" button and the drop handler call `add` unconditionally, so the window is
+    /// reachable by an ordinary user dropping a file just as a batch starts.
+    func testAddIsIgnoredWhileABatchIsRunning() async throws {
+        let model = CompressViewModel()
+        XCTAssertNil(model.loadError)
+
+        let inputs = [try Fixtures.imagePDF(), try Fixtures.textImagePDF()]
+        model.outputFolder = inputs[0].deletingLastPathComponent()
+        model.add(inputs)
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+
+        model.compress()
+        XCTAssertTrue(model.isRunning)
+
+        // The drop that lands a moment too late.
+        model.add([try Fixtures.bornDigitalPDF()])
+        XCTAssertEqual(model.jobs.count, 2,
+                       "a file added mid-batch must not join the running batch unreserved")
+
+        try await waitUntil(timeout: 60) { !model.isRunning }
+        // And once the batch is over, adding works normally again.
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 3 }
+    }
+
     func testThreeFileSyntheticBatchCompressesEndToEnd() async throws {
         let model = CompressViewModel()
         XCTAssertNil(model.loadError, "Ghostscript should resolve from the test host bundle")
