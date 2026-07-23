@@ -8,10 +8,25 @@
 import CoreGraphics
 import Foundation
 
+/// The result of an MRC split: the 1-bit text mask plus the two colour layers it separates the
+/// page into. The foreground carries ink colour at `fgDownsample`× scale, the background carries
+/// paper/illustration at `bgDownsample`× scale; JPEG compresses both cheaply because each has had
+/// the other class's hard edges spread away.
+struct MRCSegmented {
+    let mask: BilevelBitmap
+    let foreground: CGImage
+    let background: CGImage
+}
+
 /// The MRC split: Sauvola-class local-threshold text mask (this file), plus fg/bg colour
 /// layers (Task 11). A port of the reference pipeline's approach, calibrated against the
 /// reference tool's outputs at the M2 gate — the spike proved the approach, not this port.
 enum MRCSegmenter {
+
+    /// The background layer is downsampled 2× and the foreground 3×: paper detail matters more
+    /// than ink detail (ink is carried sharply by the 1-bit mask), so the fg can be coarser.
+    static let bgDownsample = 2
+    static let fgDownsample = 3
 
     static let sauvolaWindow = 31
     static let sauvolaK = 0.3
@@ -55,6 +70,130 @@ enum MRCSegmenter {
         }
         removeSpecks(&ink, width: w, height: h)
         return packBits(ink, width: w, height: h)
+    }
+
+    /// The full MRC split of a page: the text mask plus a foreground (ink) and background (paper)
+    /// colour layer. Fails closed — any stage returning nil declines the whole page, so a caller
+    /// never sees a partial segmentation.
+    static func segment(_ image: CGImage) -> MRCSegmented? {
+        guard let mask = binarise(image),
+              let fg = colourLayer(of: image, mask: mask, factor: fgDownsample, wantInk: true),
+              let bg = colourLayer(of: image, mask: mask, factor: bgDownsample, wantInk: false)
+        else { return nil }
+        return MRCSegmented(mask: mask, foreground: fg, background: bg)
+    }
+
+    /// Build one colour layer at 1/factor scale. Each output block averages the input pixels of the
+    /// wanted class (ink for fg, paper for bg) inside its factor×factor footprint; blocks containing
+    /// none are filled by iterative neighbour spreading, so JPEG never encodes a hard edge where the
+    /// other class was cut out (the reference pipeline's fg/bg-spreading idea, block-granular).
+    static func colourLayer(of image: CGImage, mask: BilevelBitmap,
+                            factor: Int, wantInk: Bool) -> CGImage? {
+        // 1. Compact RGB buffer of `image`, row-addressed like greyBuffer (real width only, C1).
+        guard let rgb = rgbBuffer(of: image) else { return nil }
+        let w = rgb.width, h = rgb.height
+        let blocksWide = (w + factor - 1) / factor      // ceil(w / factor)
+        let blocksHigh = (h + factor - 1) / factor
+        let count = blocksWide * blocksHigh
+        var colour = [(r: Double, g: Double, b: Double)](repeating: (0, 0, 0), count: count)
+        var known = [Bool](repeating: false, count: count)
+
+        // 2. Block means over the wanted class (mask bit == wantInk; ink = bit 0).
+        for by in 0..<blocksHigh {
+            let y0 = by * factor, y1 = min(h, y0 + factor)
+            for bx in 0..<blocksWide {
+                let x0 = bx * factor, x1 = min(w, x0 + factor)
+                var sr = 0.0, sg = 0.0, sb = 0.0, n = 0
+                for y in y0..<y1 {
+                    for x in x0..<x1 where maskIsInk(mask, x, y) == wantInk {
+                        let o = (y * w + x) * 4
+                        sr += Double(rgb.pixels[o]); sg += Double(rgb.pixels[o + 1])
+                        sb += Double(rgb.pixels[o + 2]); n += 1
+                    }
+                }
+                if n > 0 {
+                    colour[by * blocksWide + bx] = (sr / Double(n), sg / Double(n), sb / Double(n))
+                    known[by * blocksWide + bx] = true
+                }
+            }
+        }
+
+        // 3. Spreading: each pass reads only the previous pass's knowledge (double-buffered), so an
+        //    unknown block takes the mean of its known 8-neighbours and turns known. Bounded by
+        //    (blocksWide + blocksHigh) passes — the longest a fill can have to travel.
+        for _ in 0..<(blocksWide + blocksHigh) where !known.allSatisfy({ $0 }) {
+            var nextColour = colour, nextKnown = known, changed = false
+            for by in 0..<blocksHigh {
+                for bx in 0..<blocksWide where !known[by * blocksWide + bx] {
+                    var sr = 0.0, sg = 0.0, sb = 0.0, n = 0
+                    for dy in -1...1 {
+                        for dx in -1...1 where !(dx == 0 && dy == 0) {
+                            let nx = bx + dx, ny = by + dy
+                            guard nx >= 0, nx < blocksWide, ny >= 0, ny < blocksHigh else { continue }
+                            let ni = ny * blocksWide + nx
+                            if known[ni] {
+                                sr += colour[ni].r; sg += colour[ni].g; sb += colour[ni].b; n += 1
+                            }
+                        }
+                    }
+                    if n > 0 {
+                        nextColour[by * blocksWide + bx] = (sr / Double(n), sg / Double(n), sb / Double(n))
+                        nextKnown[by * blocksWide + bx] = true
+                        changed = true
+                    }
+                }
+            }
+            colour = nextColour; known = nextKnown
+            if !changed { break }                       // an isolated island: nothing left to reach it
+        }
+
+        // Any block still unknown after the cap → global mean of the known blocks, else mid-grey.
+        if !known.allSatisfy({ $0 }) {
+            var sr = 0.0, sg = 0.0, sb = 0.0, n = 0
+            for i in 0..<count where known[i] { sr += colour[i].r; sg += colour[i].g; sb += colour[i].b; n += 1 }
+            let fill: (Double, Double, Double) = n > 0
+                ? (sr / Double(n), sg / Double(n), sb / Double(n)) : (128, 128, 128)
+            for i in 0..<count where !known[i] { colour[i] = fill }
+        }
+
+        // 4. Emit as an 8-bit DeviceRGB image, no alpha (24 bpp).
+        var bytes = [UInt8](repeating: 0, count: count * 3)
+        for i in 0..<count {
+            bytes[i * 3]     = UInt8(clamping: Int(colour[i].r.rounded()))
+            bytes[i * 3 + 1] = UInt8(clamping: Int(colour[i].g.rounded()))
+            bytes[i * 3 + 2] = UInt8(clamping: Int(colour[i].b.rounded()))
+        }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        return CGImage(width: blocksWide, height: blocksHigh, bitsPerComponent: 8, bitsPerPixel: 24,
+                       bytesPerRow: blocksWide * 3, space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
+    /// Whether the mask marks (x, y) as ink — BilevelBitmap's convention: MSB first, bit 0 = ink.
+    private static func maskIsInk(_ mask: BilevelBitmap, _ x: Int, _ y: Int) -> Bool {
+        mask.bits[y * mask.bytesPerRow + x / 8] & (UInt8(0x80) >> UInt8(x % 8)) == 0
+    }
+
+    /// 8-bit RGB copy of the image, row-compacted to 4 bytes/px (RGBX), mirroring greyBuffer: the
+    /// only other place raw CGImage rows are touched, and padding is never copied in (C1).
+    struct RGBBuffer { let width: Int; let height: Int; let pixels: [UInt8] }
+    static func rgbBuffer(of image: CGImage) -> RGBBuffer? {
+        let w = image.width, h = image.height
+        guard w > 0, h > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let base = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        let stride = ctx.bytesPerRow
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h {                       // row-addressed copy; padding never read (C1)
+            pixels.withUnsafeMutableBufferPointer { buf in
+                memcpy(buf.baseAddress! + y * w * 4, base + y * stride, w * 4)
+            }
+        }
+        return RGBBuffer(width: w, height: h, pixels: pixels)
     }
 
     /// 8-bit grey copy of the image, row-compacted (pixels[y*width + x]) — the ONE place raw

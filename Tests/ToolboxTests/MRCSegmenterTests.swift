@@ -6,6 +6,7 @@
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
 import CoreGraphics
+import Foundation
 import XCTest
 @testable import Toolbox
 
@@ -30,6 +31,19 @@ final class MRCSegmenterTests: XCTestCase {
     /// Whether the mask marks (x, y) as ink (bit 0 = black, MSB-first).
     private func isInk(_ bitmap: BilevelBitmap, _ x: Int, _ y: Int) -> Bool {
         bitmap.bits[y * bitmap.bytesPerRow + x / 8] & (UInt8(0x80) >> UInt8(x % 8)) == 0
+    }
+
+    /// The (r, g, b) of a colour-layer pixel, read back through a DeviceRGB context so the test is
+    /// independent of the layer's internal pixel format.
+    private func pixel(_ image: CGImage, _ x: Int, _ y: Int) throws -> (Int, Int, Int) {
+        let w = image.width, h = image.height
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                          bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let base = try XCTUnwrap(ctx.data).assumingMemoryBound(to: UInt8.self)
+        let o = y * ctx.bytesPerRow + x * 4
+        return (Int(base[o]), Int(base[o + 1]), Int(base[o + 2]))
     }
 
     // MARK: the mask
@@ -211,5 +225,104 @@ final class MRCSegmenterTests: XCTestCase {
         XCTAssertFalse(isInk(bitmap, 1, 0), "a non-ink pixel stays white")
         XCTAssertFalse(isInk(bitmap, 5, 1))
         XCTAssertNotNil(bitmap.cgImage, "the packed bitmap must form a valid 1-bit image")
+    }
+
+    // MARK: colour layers
+
+    /// A uniform ink colour drawn as vertical bars must survive into the foreground layer. The fg
+    /// block averages *only* the ink-masked pixels, so any block over a bar carries the drawn ink
+    /// colour to within Δ24/channel — and blocks with no ink at all inherit ink from their known
+    /// neighbours by spreading, so the fg layer never encodes paper where a glyph was cut out.
+    func testForegroundCarriesInkColour() throws {
+        let width = 120, height = 60, barWidth = 6, period = 12
+        let ink = (r: 30, g: 40, b: 110)
+        let image = try TestImages.rgb(width: width, height: height) { x, _ in
+            (x % period) < barWidth ? ink : (255, 255, 255)
+        }
+        let seg = try XCTUnwrap(MRCSegmenter.segment(image))
+        let fg = seg.foreground
+        let f = MRCSegmenter.fgDownsample
+
+        // Every fg block whose whole footprint lies inside a bar must read back as the ink colour.
+        var checked = 0
+        for by in 0..<fg.height {
+            for bx in 0..<fg.width {
+                let x0 = bx * f, x1 = min(width, x0 + f)
+                guard x1 > x0, (x0..<x1).allSatisfy({ ($0 % period) < barWidth }) else { continue }
+                let (r, g, b) = try pixel(fg, bx, by)
+                XCTAssertLessThanOrEqual(abs(r - ink.r), 24, "fg red off at block \(bx),\(by)")
+                XCTAssertLessThanOrEqual(abs(g - ink.g), 24, "fg green off at block \(bx),\(by)")
+                XCTAssertLessThanOrEqual(abs(b - ink.b), 24, "fg blue off at block \(bx),\(by)")
+                checked += 1
+            }
+        }
+        XCTAssertGreaterThan(checked, 0, "the fixture must contain fg blocks fully inside a bar")
+    }
+
+    /// The background layer at glyph positions must carry the *local* paper through, filled by
+    /// neighbour spreading — not ink, and not the page-wide mean. Built directly on a synthetic
+    /// mask so the test controls exactly which pixels are ink (no dependence on Sauvola coverage):
+    /// a horizontal paper gradient (red falls 250→131 across the width) with two full-height ink
+    /// bars. A bg block sitting entirely on a bar has no paper pixel, so it is filled by spreading
+    /// from its paper neighbours — and must take the paper colour *local to that bar*. The global
+    /// mean (red ≈ 190) would fail both bounds, so passing this test requires real spreading.
+    func testBackgroundCarriesPaperThroughGlyphs() throws {
+        let width = 120, height = 40
+        let ink = (30, 40, 110)
+        let inBar: (Int) -> Bool = { x in (x >= 20 && x < 26) || (x >= 94 && x < 100) }
+        let paperRed: (Int) -> Int = { x in 250 - x }        // 250 (left) … 131 (right)
+        let image = try TestImages.rgb(width: width, height: height) { x, _ in
+            inBar(x) ? ink : (paperRed(x), paperRed(x), 255)
+        }
+        var inkArray = [Bool](repeating: false, count: width * height)
+        for y in 0..<height {
+            for x in 0..<width where inBar(x) { inkArray[y * width + x] = true }
+        }
+        let mask = MRCSegmenter.packBits(inkArray, width: width, height: height)
+        let bg = try XCTUnwrap(MRCSegmenter.colourLayer(of: image, mask: mask,
+                                                        factor: MRCSegmenter.bgDownsample,
+                                                        wantInk: false))
+
+        // Interior blocks of each bar (bx = input-x / 2): the left bar's centre and the right bar's.
+        let (lr, lg, lb) = try pixel(bg, 22 / MRCSegmenter.bgDownsample, 0)
+        let (rr, _, rb) = try pixel(bg, 96 / MRCSegmenter.bgDownsample, 0)
+        XCTAssertGreaterThan(lb, 200, "the left glyph block must be paper, not ink")
+        XCTAssertGreaterThan(rb, 200, "the right glyph block must be paper, not ink")
+        XCTAssertGreaterThan(lr, 210, "the left glyph block must carry local (bright) paper, not the page mean")
+        XCTAssertLessThan(rr, 175, "the right glyph block must carry local (dark) paper, not the page mean")
+        _ = (lg)   // green tracks red on this fixture; red already discriminates local vs global.
+    }
+
+    /// Layer dimensions are `ceil(mask / factor)` on each side. An asymmetric page (91 × 100) also
+    /// pins that width and height are not transposed: fg (÷3) → 31 × 34, bg (÷2) → 46 × 50.
+    func testLayerDimensions() throws {
+        let width = 91, height = 100
+        let image = try grey(width: width, height: height) { x, _ in (x % 20) < 6 ? 0 : 255 }
+        let seg = try XCTUnwrap(MRCSegmenter.segment(image))
+
+        XCTAssertEqual(seg.foreground.width, 31, "fg width = ceil(91/3)")
+        XCTAssertEqual(seg.foreground.height, 34, "fg height = ceil(100/3)")
+        XCTAssertEqual(seg.background.width, 46, "bg width = ceil(91/2)")
+        XCTAssertEqual(seg.background.height, 50, "bg height = ceil(100/2)")
+    }
+
+    /// `segment` fails closed. Its only nil path is `binarise` → `greyBuffer` failing to build a
+    /// same-size DeviceGray context, which happens only for a zero-dimension image — and
+    /// CoreGraphics refuses to construct such an image at all, so no constructible CGImage can
+    /// reach the guard. This asserts that platform reality (as BilevelPDFComposer's refusal test
+    /// does) instead of leaving it a comment, and confirms the smallest valid page segments
+    /// without crashing rather than tripping an off-by-one in the ceil/spreading edge.
+    func testSegmentDeclinesOnUnbinarisablePage() throws {
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(repeating: 0, count: 16) as CFData))
+        let degenerate = CGImage(width: 0, height: 4, bitsPerComponent: 8, bitsPerPixel: 32,
+                                 bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                 bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                                 provider: provider, decode: nil, shouldInterpolate: false,
+                                 intent: .defaultIntent)
+        XCTAssertNil(degenerate,
+                     "CoreGraphics must refuse a zero-width image — segment's nil guard is defensive")
+
+        let tiny = try grey(width: 1, height: 1) { _, _ in 128 }
+        XCTAssertNotNil(MRCSegmenter.segment(tiny), "a 1×1 page must segment without crashing")
     }
 }
