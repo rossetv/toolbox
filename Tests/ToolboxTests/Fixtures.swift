@@ -9,6 +9,7 @@ import Compression
 import CoreGraphics
 import CoreText
 import Foundation
+import PDFKit
 @testable import Toolbox
 
 /// Synthetic PDF generators — all content is produced in-process via CoreGraphics/PDFKit
@@ -261,6 +262,158 @@ enum Fixtures {
         }
         let image = ctx.makeImage()!
         return try embedImagePDF(image, name: "grey-bilevel.pdf")
+    }
+
+    /// A colour text-scan lookalike: off-white tinted paper, rows of dark blue-black text-like
+    /// bars with per-glyph jitter, light scanner grain. Classifies `.scanColour`; every page
+    /// should pass the MRC classifier. `rotation` writes /Rotate on every page.
+    static func colourTextScanPDF(pages: Int = 2, rotation: Int = 0) throws -> URL {
+        let url = try uniqueURL("colour-text-scan.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        var rng = RNG()
+        for _ in 0..<max(1, pages) {
+            let image = try colourTextScanBitmap(width: 1700, height: 2200, rng: &rng)
+            ctx.beginPDFPage(nil)
+            ctx.draw(image, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
+        return try applyRotation(rotation, to: url)
+    }
+
+    /// A continuous-tone full-page colour image (smooth radial + linear gradients with grain —
+    /// photo-class, not text). Classifies `.scanColour`; every page should FAIL the MRC
+    /// classifier's envelope, and force-MRC'd pages must fail the verifier (the committed
+    /// smear regression, spec §9).
+    static func colourPhotoScanPDF(pages: Int = 1) throws -> URL {
+        let url = try uniqueURL("colour-photo-scan.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        var rng = RNG()
+        for _ in 0..<max(1, pages) {
+            let image = try colourPhotoBitmap(width: 1700, height: 2200, rng: &rng)
+            ctx.beginPDFPage(nil)
+            ctx.draw(image, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
+        return url.canonical
+    }
+
+    /// One document, first page text-class, second page photo-class — the mixed-eligibility
+    /// e2e fixture (spec §2 "4 of 12 documents are mixed").
+    static func mixedColourScanPDF() throws -> URL {
+        let url = try uniqueURL("mixed-colour-scan.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        var rng = RNG()
+        let textImage = try colourTextScanBitmap(width: 1700, height: 2200, rng: &rng)
+        ctx.beginPDFPage(nil)
+        ctx.draw(textImage, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+        ctx.endPDFPage()
+        let photoImage = try colourPhotoBitmap(width: 1700, height: 2200, rng: &rng)
+        ctx.beginPDFPage(nil)
+        ctx.draw(photoImage, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return url.canonical
+    }
+
+    /// One page's bitmap for `colourTextScanPDF`/`mixedColourScanPDF`: off-white paper, rows of
+    /// dark blue-black bars standing in for text (chromatic enough to fail the near-bilevel gate
+    /// — real ink is near-grey, this is deliberately blue-black), 2% grain.
+    private static func colourTextScanBitmap(width: Int, height: Int, rng: inout RNG) throws -> CGImage {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let bmp = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: cs,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            throw FixtureError.contextCreation
+        }
+        bmp.setFillColor(CGColor(red: 0.97, green: 0.96, blue: 0.92, alpha: 1))
+        bmp.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        bmp.setFillColor(CGColor(red: 0.05, green: 0.08, blue: 0.35, alpha: 1))
+        var y = Double(height) - 200
+        while y > 100 {
+            var x = 120.0
+            while x < Double(width) - 60 {
+                let jitterX = (rng.next() - 0.5) * 2   // ±1 px
+                let jitterY = (rng.next() - 0.5) * 2
+                let barWidth = 18.0 + rng.next() * 26.0
+                bmp.fill(CGRect(x: x + jitterX, y: y + jitterY, width: barWidth, height: 12))
+                x += barWidth + 8.0 + rng.next() * 6.0
+            }
+            y -= 84
+        }
+        return try grained(bmp, width: width, height: height, amount: 0.02, rng: &rng)
+    }
+
+    /// One page's bitmap for `colourPhotoScanPDF`/`mixedColourScanPDF`: two overlapping
+    /// gradients (continuous-tone, no two-tone structure) plus 3% grain.
+    private static func colourPhotoBitmap(width: Int, height: Int, rng: inout RNG) throws -> CGImage {
+        let cs = CGColorSpaceCreateDeviceRGB()
+        guard let bmp = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: cs,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            throw FixtureError.contextCreation
+        }
+        let diagonal = [CGColor(red: 0.85, green: 0.35, blue: 0.2, alpha: 1),
+                        CGColor(red: 0.15, green: 0.4, blue: 0.75, alpha: 1)] as CFArray
+        if let gradient = CGGradient(colorsSpace: cs, colors: diagonal, locations: [0, 1]) {
+            bmp.drawLinearGradient(gradient, start: .zero,
+                                   end: CGPoint(x: width, y: height), options: [])
+        }
+        let glow = [CGColor(red: 0.95, green: 0.85, blue: 0.3, alpha: 0.6),
+                   CGColor(red: 0.95, green: 0.85, blue: 0.3, alpha: 0)] as CFArray
+        if let gradient = CGGradient(colorsSpace: cs, colors: glow, locations: [0, 1]) {
+            let centre = CGPoint(x: width / 2, y: height / 2)
+            bmp.drawRadialGradient(gradient, startCenter: centre, startRadius: 0,
+                                   endCenter: centre, endRadius: CGFloat(width) / 1.2, options: [])
+        }
+        return try grained(bmp, width: width, height: height, amount: 0.03, rng: &rng)
+    }
+
+    /// Re-emit `bmp`'s rendered pixels with per-pixel grain of `amount` (fraction of full range),
+    /// same idiom as `greyscaleScanPDF` — a real 8-bit contone image, not exact flat values.
+    private static func grained(_ bmp: CGContext, width: Int, height: Int,
+                                amount: Double, rng: inout RNG) throws -> CGImage {
+        guard let image = bmp.makeImage(), let provider = image.dataProvider,
+              let raw = provider.data, let base = CFDataGetBytePtr(raw) else {
+            throw FixtureError.imageRender
+        }
+        let length = CFDataGetLength(raw)
+        var noisy = [UInt8](repeating: 0, count: length)
+        for i in 0..<length {
+            let noise = Int((rng.next() - 0.5) * 2 * amount * 255)
+            noisy[i] = UInt8(max(0, min(255, Int(base[i]) + noise)))
+        }
+        guard let noisyProvider = CGDataProvider(data: Data(noisy) as CFData),
+              let noisyImage = CGImage(width: width, height: height, bitsPerComponent: 8,
+                                       bitsPerPixel: 32, bytesPerRow: image.bytesPerRow,
+                                       space: CGColorSpaceCreateDeviceRGB(),
+                                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                                       provider: noisyProvider, decode: nil,
+                                       shouldInterpolate: false, intent: .defaultIntent) else {
+            throw FixtureError.imageRender
+        }
+        return noisyImage
+    }
+
+    /// Set `/Rotate` on every page via PDFKit and re-save; a no-op at `rotation == 0`.
+    private static func applyRotation(_ rotation: Int, to url: URL) throws -> URL {
+        guard rotation != 0 else { return url.canonical }
+        guard let doc = PDFDocument(url: url) else { throw FixtureError.contextCreation }
+        for i in 0..<doc.pageCount {
+            doc.page(at: i)?.rotation = rotation
+        }
+        guard doc.write(to: url) else { throw FixtureError.contextCreation }
+        return url.canonical
     }
 
     static func blankPDF(pages: Int = 1) throws -> URL {

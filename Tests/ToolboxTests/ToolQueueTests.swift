@@ -248,4 +248,19 @@ final class ToolQueueTests: XCTestCase {
                            "resultURL must be attributed to the job it belongs to")
         }
     }
+
+    /// A body returning an alternateURL must land it on the job, next to resultURL —
+    /// the Rung-3 runner-up channel.
+    func testAlternateURLFromJobResultLandsOnJob() async throws {
+        let queue = ToolQueue()
+        queue.add([URL(fileURLWithPath: "/tmp/a.pdf")])
+        let alt = URL(fileURLWithPath: "/tmp/alt.pdf")
+        await queue.run { _, _ in
+            JobResult(.compressedHeavy(before: 100, after: 40, runnerUpBytes: 60),
+                      outputURL: URL(fileURLWithPath: "/tmp/out.pdf"), alternateURL: alt)
+        }
+        XCTAssertEqual(queue.jobs.first?.alternateURL, alt)
+        XCTAssertEqual(queue.jobs.first?.state,
+                       .done(.compressedHeavy(before: 100, after: 40, runnerUpBytes: 60)))
+    }
 }

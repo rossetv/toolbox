@@ -71,7 +71,13 @@ struct CompressEngine {
     func compress(_ input: URL,
                   preset: CompressPreset,
                   to output: URL,
+                  alternateOutput: URL? = nil,
+                  mrcReport: ((MRCDocumentReport) -> Void)? = nil,
                   progress: @escaping (Double) -> Void) async throws -> JobOutcome {
+        // Task 4: both parameters are pass-through only — Rung 3 (Task 15) fills in the MRC
+        // attempt behind this already-present signature. Existing behaviour is byte-identical.
+        _ = alternateOutput
+        _ = mrcReport
         let fm = FileManager.default
         let input = input.canonical
         let output = output.canonical

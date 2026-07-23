@@ -14,6 +14,7 @@ struct ToolJob: Identifiable {
     let url: URL
     var state: JobState
     var resultURL: URL?
+    var alternateURL: URL?
     var estimate: SizeEstimate?
 
     init(url: URL) {
@@ -21,6 +22,7 @@ struct ToolJob: Identifiable {
         self.url = url
         self.state = .queued
         self.resultURL = nil
+        self.alternateURL = nil
         self.estimate = nil
     }
 }

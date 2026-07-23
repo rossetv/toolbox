@@ -271,6 +271,9 @@ struct CompressView: View {
             switch outcome {
             case .compressed(let before, let after):
                 return .done(originalBytes: before, newBytes: after)
+            // Task 4 stand-in mapping — replaced in Task 21 (the hybrid's before/after display).
+            case .compressedHeavy(let before, let after, _):
+                return .done(originalBytes: before, newBytes: after)
             case .noGain:
                 return .unchanged("Already optimised")
             case .ocrAdded, .alreadySearchable:

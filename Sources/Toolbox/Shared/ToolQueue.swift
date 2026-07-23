@@ -12,10 +12,13 @@ import Foundation
 struct JobResult {
     let outcome: JobOutcome
     let outputURL: URL?
+    /// The retained runner-up output (Rung-3's plain-gs alternative), if the body produced one.
+    let alternateURL: URL?
 
-    init(_ outcome: JobOutcome, outputURL: URL? = nil) {
+    init(_ outcome: JobOutcome, outputURL: URL? = nil, alternateURL: URL? = nil) {
         self.outcome = outcome
         self.outputURL = outputURL
+        self.alternateURL = alternateURL
     }
 }
 
@@ -122,6 +125,7 @@ final class ToolQueue: ObservableObject {
             let result = try await body(job, report)
             if let index = jobs.firstIndex(where: { $0.id == id }) {
                 jobs[index].resultURL = result.outputURL
+                jobs[index].alternateURL = result.alternateURL
             }
             setState(id, .done(result.outcome))
         } catch is CancellationError {
