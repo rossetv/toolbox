@@ -5,6 +5,7 @@
 // This file is part of PDF Toolbox, released under the GNU Affero General
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
+import Compression
 import CoreGraphics
 import CoreText
 import Foundation
@@ -280,6 +281,113 @@ enum Fixtures {
         let url = try uniqueURL(name)
         try out.write(to: url)
         return url.canonical
+    }
+
+    /// A PDF whose catalog, page-tree node and page all live **inside a compressed object
+    /// stream**, indexed by a cross-reference stream — the modern layout the writer used to
+    /// refuse outright, which excluded about a fifth of a representative corpus from OCR.
+    ///
+    /// Built here rather than by any framework because no Apple API emits this layout. Streams
+    /// themselves cannot be packed (PDF 32000-1 §7.5.7), so the content stream, the object stream
+    /// and the cross-reference stream stay top-level; objects 1–3 are packed.
+    static func objectStreamPDF(name: String = "objstm.pdf") throws -> URL {
+        let packedObjects: [(num: Int, body: String)] = [
+            (1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>"),
+            (3, "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+              + "/Contents 4 0 R /Resources << >> >>"),
+        ]
+        // The object stream's payload: a header of `objectNumber offset` pairs, then the bodies.
+        var bodies = Data()
+        var header = ""
+        for object in packedObjects {
+            header += "\(object.num) \(bodies.count) "
+            bodies.append(Data(object.body.utf8))
+            bodies.append(0x20)
+        }
+        var payload = Data(header.utf8)
+        let first = payload.count
+        payload.append(bodies)
+        let compressed = try zlibCompress(payload)
+
+        let content = Data("0.9 0.9 0.9 rg 72 72 468 648 re f".utf8)
+        var out = Data("%PDF-1.5\n".utf8)
+        out.append(Data([0x25, 0xE2, 0xE3, 0xCF, 0xD3]))
+        out.append(0x0A)
+
+        var offsets: [Int: Int] = [:]
+        func appendObject(_ num: Int, _ body: Data) {
+            offsets[num] = out.count
+            out.append(Data("\(num) 0 obj\n".utf8))
+            out.append(body)
+            out.append(Data("\nendobj\n".utf8))
+        }
+
+        var contentObject = Data("<< /Length \(content.count) >>\nstream\n".utf8)
+        contentObject.append(content)
+        contentObject.append(Data("\nendstream".utf8))
+        appendObject(4, contentObject)
+
+        let streamHeader = "<< /Type /ObjStm /N \(packedObjects.count) /First \(first) "
+            + "/Length \(compressed.count) /Filter /FlateDecode >>\nstream\n"
+        var streamObject = Data(streamHeader.utf8)
+        streamObject.append(compressed)
+        streamObject.append(Data("\nendstream".utf8))
+        appendObject(5, streamObject)
+
+        // The cross-reference stream. /W [1 2 2]: type, then two fields. Type 2 entries name the
+        // containing object stream and the index within it; type 1 entries are offset + generation.
+        let xrefOffset = out.count
+        var table = Data()
+        func entry(_ type: UInt8, _ field2: Int, _ field3: Int) {
+            table.append(type)
+            table.append(UInt8((field2 >> 8) & 0xFF)); table.append(UInt8(field2 & 0xFF))
+            table.append(UInt8((field3 >> 8) & 0xFF)); table.append(UInt8(field3 & 0xFF))
+        }
+        entry(0, 0, 0xFFFF)                                          // object 0, free
+        for (i, object) in packedObjects.enumerated() { _ = object; entry(2, 5, i) }
+        entry(1, offsets[4]!, 0)
+        entry(1, offsets[5]!, 0)
+        entry(1, xrefOffset, 0)                                      // object 6 is this stream
+
+        let xrefHeader = "<< /Type /XRef /Size 7 /W [ 1 2 2 ] /Root 1 0 R "
+            + "/Length \(table.count) >>\nstream\n"
+        var xrefObject = Data(xrefHeader.utf8)
+        xrefObject.append(table)
+        xrefObject.append(Data("\nendstream".utf8))
+        appendObject(6, xrefObject)
+
+        out.append(Data("startxref\n\(xrefOffset)\n%%EOF\n".utf8))
+
+        let url = try uniqueURL(name)
+        try out.write(to: url)
+        return url.canonical
+    }
+
+    /// zlib (RFC 1950) — the two-byte header, raw DEFLATE, and the Adler-32 trailer that a real
+    /// PDF producer emits for `/FlateDecode`.
+    static func zlibCompress(_ input: Data) throws -> Data {
+        var out = Data([0x78, 0x9C])
+        let capacity = input.count + 64 * 1024
+        let destination = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
+        defer { destination.deallocate() }
+        let written = input.withUnsafeBytes { source in
+            compression_encode_buffer(destination, capacity,
+                                      source.bindMemory(to: UInt8.self).baseAddress!, input.count,
+                                      nil, COMPRESSION_ZLIB)
+        }
+        guard written > 0 else { throw FixtureError.contextCreation }
+        out.append(destination, count: written)
+
+        var a: UInt32 = 1, b: UInt32 = 0
+        for byte in input {
+            a = (a + UInt32(byte)) % 65521
+            b = (b + a) % 65521
+        }
+        let adler = b << 16 | a
+        out.append(contentsOf: [UInt8(adler >> 24 & 0xFF), UInt8(adler >> 16 & 0xFF),
+                                UInt8(adler >> 8 & 0xFF), UInt8(adler & 0xFF)])
+        return out
     }
 
     static func rawObject(_ num: Int, _ body: String) -> (num: Int, body: Data) {

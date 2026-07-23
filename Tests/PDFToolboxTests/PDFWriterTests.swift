@@ -190,7 +190,7 @@ final class PDFWriterTests: XCTestCase {
         ], root: 1, name: "planted.pdf")
 
         let bytes = [UInt8](try Data(contentsOf: input))
-        let index = try PDFWriter.indexTopLevelObjects(bytes)
+        let index = try fullIndex(bytes)
         let page = try XCTUnwrap(PDFWriter.objectDict(bytes, objects: index, objNum: 4))
         let text = String(decoding: page.bytes, as: UTF8.self)
         XCTAssertTrue(text.contains("/MediaBox"), "object 4 must still be the real page, got: \(text)")
@@ -261,8 +261,8 @@ final class PDFWriterTests: XCTestCase {
         ], root: 1, name: "non-dict.pdf")
 
         let bytes = [UInt8](try Data(contentsOf: input))
-        let index = try PDFWriter.indexTopLevelObjects(bytes)
-        XCTAssertNotNil(index[4], "the array object is still indexed")
+        let index = try fullIndex(bytes)
+        XCTAssertNotNil(index.topLevel[4], "the array object is still indexed")
         XCTAssertNil(PDFWriter.objectDict(bytes, objects: index, objNum: 4),
                      "an array object has no dictionary — borrowing object 5's is the defect")
     }
@@ -297,7 +297,7 @@ final class PDFWriterTests: XCTestCase {
         let input = try Fixtures.rawPDF(objects, root: 1, name: "deep-tree.pdf")
 
         let bytes = [UInt8](try Data(contentsOf: input))
-        let index = try PDFWriter.indexTopLevelObjects(bytes)
+        let index = try fullIndex(bytes)
         XCTAssertThrowsError(try PDFWriter.orderedPageObjects(bytes, objects: index, root: (num: 1, gen: 0))) {
             XCTAssertEqual($0 as? PDFWriterError, .malformedPDF)
         }
@@ -316,9 +316,118 @@ final class PDFWriterTests: XCTestCase {
         ], root: 1, name: "page-order.pdf")
 
         let bytes = [UInt8](try Data(contentsOf: input))
-        let index = try PDFWriter.indexTopLevelObjects(bytes)
+        let index = try fullIndex(bytes)
         XCTAssertEqual(try PDFWriter.orderedPageObjects(bytes, objects: index, root: (num: 1, gen: 0)),
                        [4, 5, 6])
+    }
+
+    // MARK: - Compressed object streams
+
+    /// The fixture must genuinely be the layout under test before any of this means anything:
+    /// no top-level `1 0 obj`, and PDFKit opens it as a one-page document.
+    func testObjectStreamFixtureIsTheLayoutUnderTest() throws {
+        let input = try Fixtures.objectStreamPDF()
+        let raw = try Data(contentsOf: input)
+        XCTAssertNil(String(decoding: raw, as: UTF8.self).range(of: "1 0 obj"),
+                     "the catalog must be packed, not top-level")
+        XCTAssertEqual(try XCTUnwrap(PDFDocument(url: input)).pageCount, 1)
+
+        let bytes = [UInt8](raw)
+        let topLevel = try PDFWriter.indexTopLevelObjects(bytes)
+        XCTAssertEqual(Set(topLevel.keys), [4, 5, 6], "only the three streams are top-level")
+
+        let packed = PDFWriter.indexObjectStreams(bytes, topLevel: topLevel)
+        XCTAssertEqual(Set(packed.keys), [1, 2, 3], "the catalog, page tree and page are packed")
+        XCTAssertTrue(String(decoding: packed[3]!, as: UTF8.self).contains("/MediaBox"))
+    }
+
+    /// The feature: a document whose page lives in an object stream used to be refused outright
+    /// with `.unsupportedStructure`. It must now resolve, OCR, and stay readable.
+    func testPackedPageIsFoundAndSuperseded() throws {
+        let input = try Fixtures.objectStreamPDF()
+        let bytes = [UInt8](try Data(contentsOf: input))
+        let topLevel = try PDFWriter.indexTopLevelObjects(bytes)
+        let index = PDFWriter.ObjectIndex(topLevel: topLevel,
+                                          packed: PDFWriter.indexObjectStreams(bytes, topLevel: topLevel))
+
+        let root = try PDFWriter.findRoot(bytes, objects: index)
+        XCTAssertEqual(root.num, 1)
+        XCTAssertEqual(try PDFWriter.orderedPageObjects(bytes, objects: index, root: root), [3])
+
+        let output = try sibling(of: input, "objstm-ocr.pdf")
+        try write(input, to: output)
+
+        // The superseding object 3 is an ordinary uncompressed top-level object — no need to
+        // rewrite or re-compress the object stream itself.
+        let dict = try supersededPageDict(in: output, objNum: 3)
+        XCTAssertTrue(dict.contains("/MediaBox"), "the packed dictionary was carried over: \(dict)")
+        XCTAssertEqual(dict.components(separatedBy: "/Contents").count - 1, 1)
+        XCTAssertTrue(dict.contains("/PDFTBox"), "our font resource was added: \(dict)")
+    }
+
+    /// End to end, and the check the whole design rests on: a classic xref section appended to a
+    /// cross-reference-stream file, with `/Prev` pointing at that stream, must still be readable —
+    /// and the original bytes must remain the verbatim prefix.
+    func testObjectStreamDocumentSurvivesTheAppendAndStaysReadable() throws {
+        let input = try Fixtures.objectStreamPDF()
+        let output = try sibling(of: input, "objstm-readable.pdf")
+        let before = try Data(contentsOf: input)
+        try write(input, to: output)
+
+        let after = try Data(contentsOf: output)
+        XCTAssertEqual(after.prefix(before.count), before, "incremental update: verbatim prefix")
+
+        let doc = try XCTUnwrap(PDFDocument(url: output), "the appended document must still open")
+        XCTAssertEqual(doc.pageCount, 1)
+        XCTAssertTrue((doc.page(at: 0)?.string ?? "").contains("HELLO"),
+                      "the OCR layer must be extractable, got: "
+                      + (doc.page(at: 0)?.string ?? "").debugDescription)
+
+        // The same gates the real pipeline applies before an output is ever placed.
+        XCTAssertTrue(try OutputValidator().validate(input: input, output: output))
+        XCTAssertTrue(try OCREngine.hasVerbatimPrefix(of: input, in: output))
+    }
+
+    /// The appended section must match the file's existing cross-reference form — a stream here,
+    /// a classic table for a classic file.
+    func testCrossReferenceFormMatchesTheInput() throws {
+        let stream = try Fixtures.objectStreamPDF(name: "form-stream.pdf")
+        let streamOut = try sibling(of: stream, "form-stream-ocr.pdf")
+        try write(stream, to: streamOut)
+        let appendedToStream = try Data(contentsOf: streamOut).dropFirst(try Data(contentsOf: stream).count)
+        XCTAssertNotNil(String(decoding: appendedToStream, as: UTF8.self).range(of: "/Type /XRef"))
+
+        let classic = try Fixtures.rawOnePagePDF(pageDict: Fixtures.plainPageDict, name: "form-classic.pdf")
+        let classicOut = try sibling(of: classic, "form-classic-ocr.pdf")
+        try write(classic, to: classicOut)
+        let appendedToClassic = try Data(contentsOf: classicOut).dropFirst(try Data(contentsOf: classic).count)
+        let text = String(decoding: appendedToClassic, as: UTF8.self)
+        XCTAssertNotNil(text.range(of: "\nxref\n"))
+        XCTAssertNotNil(text.range(of: "trailer"))
+    }
+
+    /// An object stream this writer cannot decode must fail loud, not guess. A predictor in
+    /// `/DecodeParms` is the realistic case.
+    func testUndecodableObjectStreamFailsLoudRatherThanSilently() throws {
+        let input = try Fixtures.objectStreamPDF()
+        var raw = try Data(contentsOf: input)
+        guard let range = raw.range(of: Data("/Filter /FlateDecode".utf8)) else {
+            return XCTFail("fixture shape changed")
+        }
+        // Same byte count, so every recorded offset stays valid.
+        raw.replaceSubrange(range, with: Data("/Filter /Bespoke1234".utf8))
+        let armed = try sibling(of: input, "objstm-unreadable.pdf")
+        try raw.write(to: armed)
+
+        let bytes = [UInt8](raw)
+        let topLevel = try PDFWriter.indexTopLevelObjects(bytes)
+        XCTAssertTrue(PDFWriter.indexObjectStreams(bytes, topLevel: topLevel).isEmpty,
+                      "an unsupported filter must be refused, never mis-decoded")
+
+        let output = try sibling(of: input, "objstm-unreadable-ocr.pdf")
+        XCTAssertThrowsError(try write(armed, to: output)) {
+            XCTAssertEqual($0 as? PDFWriterError, .unsupportedStructure)
+        }
     }
 
     // MARK: - Per-job memory bound (M6 / S12)
@@ -372,6 +481,14 @@ final class PDFWriterTests: XCTestCase {
 
     // MARK: - helpers
 
+    /// The writer's full view of a file: top-level objects plus anything packed into an
+    /// `/ObjStm`.
+    private func fullIndex(_ bytes: [UInt8]) throws -> PDFWriter.ObjectIndex {
+        let topLevel = try PDFWriter.indexTopLevelObjects(bytes)
+        return PDFWriter.ObjectIndex(topLevel: topLevel,
+                                     packed: PDFWriter.indexObjectStreams(bytes, topLevel: topLevel))
+    }
+
     /// Run the writer over `input`, putting one text run on page 0.
     private func write(_ input: URL, to output: URL) throws {
         try PDFWriter().appendTextLayer(
@@ -385,8 +502,7 @@ final class PDFWriterTests: XCTestCase {
     /// that object number wins, which is what a reader sees.
     private func supersededPageDict(in output: URL, objNum: Int) throws -> String {
         let bytes = [UInt8](try Data(contentsOf: output))
-        let index = try PDFWriter.indexTopLevelObjects(bytes)
-        let dict = try XCTUnwrap(PDFWriter.objectDict(bytes, objects: index, objNum: objNum))
+        let dict = try XCTUnwrap(PDFWriter.objectDict(bytes, objects: try fullIndex(bytes), objNum: objNum))
         return String(decoding: dict.bytes, as: UTF8.self)
     }
 

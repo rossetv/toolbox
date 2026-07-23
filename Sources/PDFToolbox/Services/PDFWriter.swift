@@ -158,7 +158,9 @@ struct PDFWriter {
         geometry: [Int: PageGeometry]) throws -> Data
     where C.Element == UInt8, C.Index == Int {
 
-        let index = try indexTopLevelObjects(bytes)
+        let topLevel = try indexTopLevelObjects(bytes)
+        let index = ObjectIndex(topLevel: topLevel,
+                                packed: indexObjectStreams(bytes, topLevel: topLevel))
         let root = try findRoot(bytes, objects: index)
         let pageObjs = try orderedPageObjects(bytes, objects: index, root: root)
 
@@ -166,7 +168,7 @@ struct PDFWriter {
         // the scan failed to reach, which the trailer's `/Size` still accounts for. Allocating
         // into a number that already exists would make the appended xref silently replace a
         // live object.
-        var maxObj = max(index.keys.max() ?? 0, (trailerSize(bytes, objects: index) ?? 1) - 1)
+        var maxObj = max(index.highestObjectNumber, (trailerSize(bytes, objects: index) ?? 1) - 1)
         // Every object number reaching this point came through `PDFSyntax.parseInt`, which
         // refuses anything above `maxPlausibleInteger`; the check makes the invariant explicit
         // so `allocate()` can never trap on overflow.
@@ -223,15 +225,85 @@ struct PDFWriter {
             emit(objNum: objNum, gen: page.gen, body: newPageDict)
         }
 
-        // New classic xref section + trailer with /Prev → the previous startxref.
+        // The new cross-reference section must be **the same form the file already uses**. A
+        // classic table appended to a cross-reference-stream document is not readable: PDFKit
+        // refuses the result outright (verified against an object-stream fixture), so such a
+        // document gets a cross-reference stream back.
         let prev = try lastStartxref(bytes)
         let xrefOffset = baseLength + appended.count
-        appended.append(contentsOf: latin1(xrefSection(offsets: offsets)))
-        let size = (offsets.keys.max() ?? maxObj) + 1
-        let trailer = "trailer\n<< /Size \(size) /Root \(root.num) \(root.gen) R /Prev \(prev) >>\n"
-            + "startxref\n\(xrefOffset)\n%%EOF\n"
-        appended.append(contentsOf: latin1(trailer))
+
+        if usesCrossReferenceStream(bytes, lastXref: prev) {
+            // The stream is itself an indirect object, so it appears in its own table.
+            let xrefObj = allocate()
+            offsets[xrefObj] = (xrefOffset, 0)
+            appended.append(contentsOf: crossReferenceStream(objNum: xrefObj, offsets: offsets,
+                                                             root: root, prev: prev,
+                                                             size: max(xrefObj, maxObj) + 1))
+        } else {
+            appended.append(contentsOf: latin1(xrefSection(offsets: offsets)))
+            let size = (offsets.keys.max() ?? maxObj) + 1
+            appended.append(contentsOf: latin1(
+                "trailer\n<< /Size \(size) /Root \(root.num) \(root.gen) R /Prev \(prev) >>\n"))
+        }
+        appended.append(contentsOf: latin1("startxref\n\(xrefOffset)\n%%EOF\n"))
         return appended
+    }
+
+    /// Whether the file's most recent cross-reference section is a stream rather than a classic
+    /// `xref` table.
+    ///
+    /// Decided by looking at the section `startxref` actually points at, which is the only
+    /// authoritative answer: a hybrid-reference file contains both forms, and only the one the
+    /// trailer chain leads to says which the producer meant.
+    static func usesCrossReferenceStream<C: RandomAccessCollection>(_ b: C, lastXref: Int) -> Bool
+    where C.Element == UInt8, C.Index == Int {
+        guard lastXref >= b.startIndex, lastXref < b.endIndex else { return false }
+        return !PDFSyntax.isKeyword(b, at: PDFSyntax.skipSpace(b, from: lastXref), Array("xref".utf8))
+    }
+
+    /// A cross-reference **stream** (PDF 32000-1 §7.5.8) covering the appended objects, carrying
+    /// the trailer fields in its own dictionary.
+    ///
+    /// Left uncompressed: a `/Filter` is optional here, the table is a few dozen bytes, and one
+    /// less encoded thing in the output is one less thing to get wrong.
+    private static func crossReferenceStream(objNum: Int,
+                                             offsets: [Int: (offset: Int, gen: Int)],
+                                             root: (num: Int, gen: Int),
+                                             prev: Int,
+                                             size: Int) -> [UInt8] {
+        let nums = offsets.keys.sorted()
+
+        // Field 2 holds a byte offset, so it must be wide enough for the largest one.
+        let largest = offsets.values.map(\.offset).max() ?? 0
+        var offsetWidth = 1
+        while offsetWidth < 8, largest >= (1 << (8 * offsetWidth)) { offsetWidth += 1 }
+
+        var index = ""
+        var table: [UInt8] = []
+        var i = 0
+        while i < nums.count {
+            var j = i
+            while j + 1 < nums.count, nums[j + 1] == nums[j] + 1 { j += 1 }
+            index += "\(nums[i]) \(j - i + 1) "
+            for k in i...j {
+                let entry = offsets[nums[k]]!
+                table.append(1)                                    // type 1: in use, at an offset
+                for shift in stride(from: offsetWidth - 1, through: 0, by: -1) {
+                    table.append(UInt8((entry.offset >> (8 * shift)) & 0xFF))
+                }
+                table.append(UInt8((entry.gen >> 8) & 0xFF))
+                table.append(UInt8(entry.gen & 0xFF))
+            }
+            i = j + 1
+        }
+
+        var out = latin1("\(objNum) 0 obj\n")
+        out += latin1("<< /Type /XRef /Size \(size) /Root \(root.num) \(root.gen) R /Prev \(prev)"
+                    + " /W [ 1 \(offsetWidth) 2 ] /Index [ \(index.trimmingCharacters(in: .whitespaces)) ]"
+                    + " /Length \(table.count) >>\nstream\n")
+        out += table
+        out += latin1("\nendstream\nendobj\n")
+        return out
     }
 
     // MARK: - Coordinate transform (PDFWriter owns it)
@@ -346,7 +418,7 @@ struct PDFWriter {
         fontResource: String,
         fontObj: Int,
         bytes: C,
-        objects: [Int: IndexedObject],
+        objects: ObjectIndex,
         emit: (Int, Int, [UInt8]) -> Void) throws -> [UInt8]
     where C.Element == UInt8, C.Index == Int {
         var dict = pageDict
@@ -430,6 +502,18 @@ struct PDFWriter {
         let bodyStart: Int
         /// First byte of the closing `endobj` keyword.
         let bodyEnd: Int
+    }
+
+    /// Everything an object number can resolve against — the two places an object can live.
+    struct ObjectIndex {
+        /// Objects written as `N G obj … endobj` in the file itself.
+        let topLevel: [Int: IndexedObject]
+        /// Objects packed into a compressed object stream, as their dictionary bytes. A packed
+        /// object always has generation 0 (PDF 32000-1 §7.5.7).
+        let packed: [Int: [UInt8]]
+
+        /// The highest object number the file uses, from either place.
+        var highestObjectNumber: Int { max(topLevel.keys.max() ?? 0, packed.keys.max() ?? 0) }
     }
 
     private static let objKW = Array("obj".utf8)
@@ -563,23 +647,159 @@ struct PDFWriter {
         return (num.value, gen.value, num.start)
     }
 
-    /// The dictionary bytes and generation of an indexed object, or nil when the object's value
-    /// is not a dictionary.
+    /// The dictionary bytes and generation of an object, from wherever it lives.
     ///
-    /// Bounded to the object's own `obj … endobj` extent, and required to *start* there: an
-    /// unbounded forward search for `<<` runs straight into the next object and returns that
-    /// object's dictionary attributed to this object number — from which a non-page object gets
-    /// superseded with a page-shaped dictionary, or a bogus `/Root` is taken as the catalog.
+    /// A top-level definition wins outright: it can only be *later* in the file than the object
+    /// stream's copy, and the newest definition of an object number is the live one.
+    ///
+    /// The top-level scan is bounded to the object's own `obj … endobj` extent, and required to
+    /// *start* there: an unbounded forward search for `<<` runs straight into the next object and
+    /// returns that object's dictionary attributed to this object number — from which a non-page
+    /// object gets superseded with a page-shaped dictionary, or a bogus `/Root` is taken as the
+    /// catalog.
     static func objectDict<C: RandomAccessCollection>(
-        _ b: C, objects: [Int: IndexedObject], objNum: Int) -> (bytes: [UInt8], gen: Int)?
+        _ b: C, objects: ObjectIndex, objNum: Int) -> (bytes: [UInt8], gen: Int)?
     where C.Element == UInt8, C.Index == Int {
-        guard let info = objects[objNum] else { return nil }
-        let start = PDFSyntax.skipSpace(b, from: info.bodyStart)
-        guard start + 1 < info.bodyEnd, b[start] == 0x3C, b[start + 1] == 0x3C,
-              let end = PDFSyntax.endOfDictionary(b, from: start), end <= info.bodyEnd else {
-            return nil
+        if let info = objects.topLevel[objNum] {
+            let start = PDFSyntax.skipSpace(b, from: info.bodyStart)
+            guard start + 1 < info.bodyEnd, b[start] == 0x3C, b[start + 1] == 0x3C,
+                  let end = PDFSyntax.endOfDictionary(b, from: start), end <= info.bodyEnd else {
+                return nil
+            }
+            return (Array(b[start..<end]), info.gen)
         }
-        return (Array(b[start..<end]), info.gen)
+        guard let packed = objects.packed[objNum] else { return nil }
+        return (packed, 0)
+    }
+
+    // MARK: - Compressed object streams
+
+    /// Most bytes one `/ObjStm` may inflate to. A stream's compressed size says nothing about
+    /// its expanded size, and the file is untrusted.
+    static let maxObjectStreamBytes = 64 << 20        // 64 MiB
+
+    /// Every object packed into an `/ObjStm`, keyed by object number.
+    ///
+    /// A compressed object stream holds whole objects, so a page or catalog living in one is not
+    /// a top-level `N G obj` and the scan above cannot see it — which is why such files used to be
+    /// refused outright, excluding about a fifth of a representative corpus from OCR.
+    ///
+    /// Superseding a packed object needs **no re-compression**: an uncompressed top-level
+    /// `N 0 obj` in the appended section overrides the packed copy, because the newest
+    /// cross-reference entry for an object number is the live one (PDF 32000-1 §7.5.6). Rewriting
+    /// the object stream would be strictly harder and riskier for no benefit.
+    ///
+    /// Object streams this cannot read — an unsupported filter, a predictor, a truncated body —
+    /// are skipped rather than fatal. If the skipped stream held an object the writer actually
+    /// needed, that surfaces at the point of use as `.unsupportedStructure`; if it did not, the
+    /// file OCRs fine and there is nothing to report.
+    static func indexObjectStreams<C: RandomAccessCollection>(
+        _ b: C, topLevel: [Int: IndexedObject]) -> [Int: [UInt8]]
+    where C.Element == UInt8, C.Index == Int {
+        var packed: [Int: [UInt8]] = [:]
+        let bare = ObjectIndex(topLevel: topLevel, packed: [:])
+        // A per-stream cap alone still lets a file with many object streams inflate without
+        // bound, so the budget is spent across the whole file.
+        var budget = maxObjectStreamBytes
+
+        for (num, _) in topLevel where budget > 0 {
+            guard let obj = objectDict(b, objects: bare, objNum: num),
+                  PDFSyntax.dictName(of: "Type", in: obj.bytes, dictAt: 0) == "ObjStm",
+                  isPlainFlate(obj.bytes),
+                  let count = PDFSyntax.dictInt(of: "N", in: obj.bytes, dictAt: 0),
+                  let first = PDFSyntax.dictInt(of: "First", in: obj.bytes, dictAt: 0),
+                  count > 0, count <= maxObjects,
+                  let body = streamBody(b, topLevel: topLevel, objNum: num),
+                  let inflated = PDFFlate.inflate(b[body], limit: budget),
+                  first <= inflated.count else { continue }
+            budget -= inflated.count
+
+            // The header is `N` pairs of `objectNumber offsetFromFirst`.
+            var entries: [(num: Int, offset: Int)] = []
+            var cursor = 0
+            for _ in 0..<count {
+                guard let numTok = PDFSyntax.readToken(inflated, from: cursor),
+                      let packedNum = PDFSyntax.parseInt(numTok.bytes),
+                      let offTok = PDFSyntax.readToken(inflated, from: numTok.end),
+                      let offset = PDFSyntax.parseInt(offTok.bytes),
+                      first + offset <= inflated.count else { break }
+                entries.append((packedNum, first + offset))
+                cursor = offTok.end
+            }
+            guard cursor <= first else { continue }   // the header must stay inside /First
+
+            // Extents come from the *next* object's offset, so sort by offset first — nothing
+            // requires the header to list them in order.
+            entries.sort { $0.offset < $1.offset }
+            for (i, entry) in entries.enumerated() {
+                let end = i + 1 < entries.count ? entries[i + 1].offset : inflated.count
+                let start = PDFSyntax.skipSpace(inflated, from: entry.offset)
+                guard start + 1 < end, inflated[start] == 0x3C, inflated[start + 1] == 0x3C,
+                      let dictEnd = PDFSyntax.endOfDictionary(inflated, from: start),
+                      dictEnd <= end else { continue }        // not a dictionary — nothing to use
+                packed[entry.num] = Array(inflated[start..<dictEnd])
+            }
+        }
+        return packed
+    }
+
+    /// `/Filter /FlateDecode` with no `/DecodeParms` predictor. Anything else — an unimplemented
+    /// filter, a filter chain, a PNG/TIFF predictor — is refused rather than mis-decoded.
+    private static func isPlainFlate(_ dict: [UInt8]) -> Bool {
+        guard PDFSyntax.dictName(of: "Filter", in: dict, dictAt: 0) == "FlateDecode" else { return false }
+        guard let parms = PDFSyntax.dictValue(of: "DecodeParms", in: dict, dictAt: 0) else { return true }
+        let inner = Array(dict[parms])
+        guard inner.first == 0x3C else { return false }        // an indirect /DecodeParms: refuse
+        let predictor = PDFSyntax.dictInt(of: "Predictor", in: inner, dictAt: 0) ?? 1
+        return predictor <= 1
+    }
+
+    /// The byte range of a stream object's body, `/Length` preferred and verified.
+    static func streamBody<C: RandomAccessCollection>(
+        _ b: C, topLevel: [Int: IndexedObject], objNum: Int) -> Range<Int>?
+    where C.Element == UInt8, C.Index == Int {
+        guard let info = topLevel[objNum] else { return nil }
+        let dictStart = PDFSyntax.skipSpace(b, from: info.bodyStart)
+        guard dictStart + 1 < info.bodyEnd, b[dictStart] == 0x3C, b[dictStart + 1] == 0x3C,
+              let dictEnd = PDFSyntax.endOfDictionary(b, from: dictStart) else { return nil }
+        let keyword = PDFSyntax.skipSpace(b, from: dictEnd)
+        guard PDFSyntax.isKeyword(b, at: keyword, streamKW) else { return nil }
+
+        var start = keyword + streamKW.count
+        guard start < b.endIndex, b[start] == 0x0D || b[start] == 0x0A else { return nil }
+        if b[start] == 0x0D { start += 1 }
+        if start < b.endIndex, b[start] == 0x0A { start += 1 }
+
+        if let length = resolveLength(b, topLevel: topLevel, dictAt: dictStart),
+           let end = addingWithinBounds(start, length, limit: b.endIndex),
+           PDFSyntax.isKeyword(b, at: PDFSyntax.skipSpace(b, from: end), endstreamKW) {
+            return start..<end
+        }
+        // A wrong or indirect-and-unresolvable `/Length` happens in the wild; recover by finding
+        // the keyword, and drop the EOL the producer put before it.
+        var j = start
+        while j < b.endIndex {
+            if b[j] == 0x65, PDFSyntax.isKeyword(b, at: j, endstreamKW) {
+                var end = j
+                if end > start, b[end - 1] == 0x0A { end -= 1 }
+                if end > start, b[end - 1] == 0x0D { end -= 1 }
+                return start..<end
+            }
+            j += 1
+        }
+        return nil
+    }
+
+    /// `/Length`, following one level of indirect reference.
+    private static func resolveLength<C: RandomAccessCollection>(
+        _ b: C, topLevel: [Int: IndexedObject], dictAt: Int) -> Int?
+    where C.Element == UInt8, C.Index == Int {
+        if let direct = PDFSyntax.dictInt(of: "Length", in: b, dictAt: dictAt) { return direct }
+        guard let ref = PDFSyntax.dictRef(of: "Length", in: b, dictAt: dictAt),
+              let info = topLevel[ref.num],
+              let token = PDFSyntax.readToken(b, from: info.bodyStart),
+              token.end <= info.bodyEnd else { return nil }
+        return PDFSyntax.parseInt(token.bytes)
     }
 
     // MARK: - Document structure
@@ -587,7 +807,7 @@ struct PDFWriter {
     /// The `/Root` reference: from the last classic `trailer`, else the latest `/Type /XRef`
     /// stream dict, else a scan for `/Type /Catalog`.
     static func findRoot<C: RandomAccessCollection>(
-        _ b: C, objects: [Int: IndexedObject]) throws -> (num: Int, gen: Int)
+        _ b: C, objects: ObjectIndex) throws -> (num: Int, gen: Int)
     where C.Element == UInt8, C.Index == Int {
         if let dictAt = lastTrailerDict(b), let ref = PDFSyntax.dictRef(of: "Root", in: b, dictAt: dictAt) {
             return ref
@@ -597,16 +817,21 @@ struct PDFWriter {
            let ref = PDFSyntax.dictRef(of: "Root", in: xref.dict, dictAt: 0) {
             return ref
         }
-        // Last resort: the catalog object itself.
+        // Last resort: the catalog object itself, which may be packed in an object stream.
         if let catalog = latestObject(b, objects: objects, ofType: "Catalog") {
             return (catalog.num, catalog.gen)
+        }
+        if let packed = objects.packed.first(where: {
+            PDFSyntax.dictName(of: "Type", in: $0.value, dictAt: 0) == "Catalog"
+        }) {
+            return (packed.key, 0)
         }
         throw PDFWriterError.malformedPDF
     }
 
     /// `/Size` from the last classic trailer, else from the latest `/Type /XRef` stream dict.
     static func trailerSize<C: RandomAccessCollection>(
-        _ b: C, objects: [Int: IndexedObject]) -> Int?
+        _ b: C, objects: ObjectIndex) -> Int?
     where C.Element == UInt8, C.Index == Int {
         if let dictAt = lastTrailerDict(b), let size = PDFSyntax.dictInt(of: "Size", in: b, dictAt: dictAt) {
             return size
@@ -633,11 +858,11 @@ struct PDFWriter {
 
     /// The latest-defined object whose dictionary declares `/Type /<type>`.
     private static func latestObject<C: RandomAccessCollection>(
-        _ b: C, objects: [Int: IndexedObject], ofType type: String) -> (num: Int, gen: Int, dict: [UInt8])?
+        _ b: C, objects: ObjectIndex, ofType type: String) -> (num: Int, gen: Int, dict: [UInt8])?
     where C.Element == UInt8, C.Index == Int {
         var best: (num: Int, gen: Int, dict: [UInt8])?
         var bestOffset = -1
-        for (num, info) in objects where info.headerStart > bestOffset {
+        for (num, info) in objects.topLevel where info.headerStart > bestOffset {
             guard let obj = objectDict(b, objects: objects, objNum: num),
                   PDFSyntax.dictName(of: "Type", in: obj.bytes, dictAt: 0) == type else { continue }
             best = (num, obj.gen, obj.bytes)
@@ -652,10 +877,15 @@ struct PDFWriter {
     /// structurally valid PDF and a few megabytes long, and recursing it once per level overflows
     /// the stack and kills the process — taking every other job in the batch with it.
     static func orderedPageObjects<C: RandomAccessCollection>(
-        _ b: C, objects: [Int: IndexedObject], root: (num: Int, gen: Int)) throws -> [Int]
+        _ b: C, objects: ObjectIndex, root: (num: Int, gen: Int)) throws -> [Int]
     where C.Element == UInt8, C.Index == Int {
-        guard let catalog = objectDict(b, objects: objects, objNum: root.num),
-              let pagesRef = PDFSyntax.dictRef(of: "Pages", in: catalog.bytes, dictAt: 0) else {
+        // A catalog that resolves *nowhere* is a structure this writer could not read — an
+        // object stream it had to skip — not a malformed file. The distinction is what the user
+        // is told, so keep it honest.
+        guard let catalog = objectDict(b, objects: objects, objNum: root.num) else {
+            throw PDFWriterError.unsupportedStructure
+        }
+        guard let pagesRef = PDFSyntax.dictRef(of: "Pages", in: catalog.bytes, dictAt: 0) else {
             throw PDFWriterError.malformedPDF
         }
         var pages: [Int] = []
