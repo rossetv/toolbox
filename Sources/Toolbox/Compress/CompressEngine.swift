@@ -153,7 +153,8 @@ struct CompressEngine {
         }
 
         // 4. Otherwise run gs sandboxed, scoped to the work dir only (Rung 1).
-        let arguments = preset.gsArguments() + ["-sOutputFile=\(workOut.path)", workIn.path]
+        let arguments = preset.gsArguments()
+            + ["-sOutputFile=\(workOut.path)", "-c", preset.gsDistillerParams(), "-f", workIn.path]
         let result = try await runner.run(
             arguments: arguments,
             readPaths: [workIn],

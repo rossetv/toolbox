@@ -243,6 +243,47 @@ final class CompressEngineTests: XCTestCase {
         }
     }
 
+    // MARK: Distiller params wired into the gs argv
+
+    /// Ordering is load-bearing: `-c` ends option parsing, so `-sOutputFile` must precede it
+    /// and the input must arrive via `-f`, else gs writes nothing (measured, not theoretical).
+    func testGsInvocationPlacesDistillerParamsAfterOutputAndInputAfterDashF() async throws {
+        let input = try Fixtures.imagePDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("out.pdf")
+        let runner = RecordingRunner(bytes: smallValidPDFData())  // reuse existing helper making a tiny real PDF
+        _ = try? await CompressEngine(runner: runner).compress(input, preset: .balanced, to: output) { _ in }
+        let args = runner.seenArguments
+        let outIdx = try XCTUnwrap(args.firstIndex(where: { $0.hasPrefix("-sOutputFile=") }))
+        let cIdx = try XCTUnwrap(args.firstIndex(of: "-c"))
+        let fIdx = try XCTUnwrap(args.firstIndex(of: "-f"))
+        XCTAssertLessThan(outIdx, cIdx)
+        XCTAssertEqual(args[cIdx + 1], CompressPreset.balanced.gsDistillerParams())
+        XCTAssertEqual(fIdx, cIdx + 2)
+        XCTAssertEqual(args.last, args[fIdx + 1])   // input path is the final element
+    }
+
+}
+
+/// A small, real, valid PDF's bytes — used where a `RecordingRunner`/`StubRunner` needs to write
+/// something that passes output validation.
+private func smallValidPDFData() -> Data {
+    try! Data(contentsOf: Fixtures.blankPDF(pages: 1))
+}
+
+/// Records the argv it was invoked with so argument-assembly can be asserted.
+private final class RecordingRunner: GhostscriptRunning, @unchecked Sendable {
+    var seenArguments: [String] = []
+    let bytes: Data
+    init(bytes: Data) { self.bytes = bytes }
+    func run(arguments: [String], readPaths: [URL], writePaths: [URL],
+             onProgress: ((Int) -> Void)?) async throws -> ProcessResult {
+        seenArguments = arguments
+        if let out = arguments.first(where: { $0.hasPrefix("-sOutputFile=") })
+            .map({ URL(fileURLWithPath: String($0.dropFirst("-sOutputFile=".count))) }) {
+            try bytes.write(to: out)
+        }
+        return ProcessResult(exitCode: 0, stdout: "", stderr: "")
+    }
 }
 
 /// Deterministic handshake: lets the test cancel exactly while the "gs run" is in flight, with no
