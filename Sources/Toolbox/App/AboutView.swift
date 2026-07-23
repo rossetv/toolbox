@@ -78,12 +78,44 @@ struct AboutView: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, Theme.Spacing.small)
 
-            PrimaryButton(title: "Done") { dismiss() }
-                .padding(.top, Theme.Spacing.small)
         }
         .padding(Theme.Spacing.large)
+        .padding(.top, Theme.Spacing.small)
         .frame(width: 340)
         .background(Theme.Colors.surface)
+        .overlay(alignment: .topTrailing) {
+            CloseButton { dismiss() }
+                .padding(10)
+        }
+    }
+}
+
+/// The modal close affordance: a quiet circular ✕ that brightens on hover, per DESIGN.md's
+/// dark-modal close-button hover token. Esc closes too (`cancelAction`).
+private struct CloseButton: View {
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(isHovering ? Theme.Colors.text : Theme.Colors.textSecondary)
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle().fill(Theme.Colors.text.opacity(isHovering ? 0.32 : 0.08))
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .pointingHandCursor()
+        .keyboardShortcut(.cancelAction)
+        .help("Close")
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
+        }
+        .accessibilityLabel("Close")
     }
 }
 
