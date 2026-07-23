@@ -118,7 +118,7 @@ final class CompressViewModel: ObservableObject {
         // run starts — so two same-basename inputs from different folders can't both claim the same
         // target and fail the second job's atomic rename (a purely on-disk check races under
         // concurrency). Each job then looks up its pre-reserved, guaranteed-unique destination.
-        var reserved = Set<URL>()
+        var reserved = Set<String>()
         var outputs: [ToolJob.ID: URL] = [:]
         for job in queue.jobs {
             outputs[job.id] = FileNaming.output(for: job.url, suffix: "compressed",

@@ -51,12 +51,33 @@ final class FileNamingTests: XCTestCase {
         let inputA = folderA.appendingPathComponent("image.pdf")
         let inputB = folderB.appendingPathComponent("image.pdf")   // same basename, different folder
 
-        var reserved = Set<URL>()
+        var reserved = Set<String>()
         let outA = FileNaming.output(for: inputA, suffix: "compressed", folder: outDir, reserving: &reserved)
         let outB = FileNaming.output(for: inputB, suffix: "compressed", folder: outDir, reserving: &reserved)
 
         XCTAssertNotEqual(outA, outB, "same-basename batch inputs must get distinct outputs")
         XCTAssertEqual(outA.lastPathComponent, "image-compressed.pdf")
         XCTAssertEqual(outB.lastPathComponent, "image-compressed-1.pdf")
+    }
+
+    /// MAJOR 1 regression: APFS is case-insensitive by default, so `Report.pdf` and `report.pdf`
+    /// resolve to the SAME file on disk even though they're different basenames. A byte-exact
+    /// `Set<URL>` reservation would let both "reserve" distinct candidates that later collide at
+    /// `moveItem`; the reservation must be keyed case- (and normalisation-) insensitively.
+    func testBatchReservationIsCaseInsensitive() throws {
+        let folderA = try uniqueDir()
+        let folderB = try uniqueDir()
+        let outDir = try uniqueDir()
+        let inputA = folderA.appendingPathComponent("Report.pdf")
+        let inputB = folderB.appendingPathComponent("report.pdf")   // same name, different case
+
+        var reserved = Set<String>()
+        let outA = FileNaming.output(for: inputA, suffix: "compressed", folder: outDir, reserving: &reserved)
+        let outB = FileNaming.output(for: inputB, suffix: "compressed", folder: outDir, reserving: &reserved)
+
+        XCTAssertNotEqual(outA.path.lowercased(), outB.path.lowercased(),
+                           "case-differing batch inputs must not resolve to the same on-disk path")
+        XCTAssertEqual(outA.lastPathComponent, "Report-compressed.pdf")
+        XCTAssertEqual(outB.lastPathComponent, "report-compressed-1.pdf")
     }
 }

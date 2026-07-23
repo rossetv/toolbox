@@ -54,7 +54,7 @@ final class OCRViewModel: ObservableObject {
         // sharing a basename would otherwise both claim `<name>-ocr.pdf` and the second job's
         // atomic rename would fail (a purely on-disk check races under concurrency). Matches
         // CompressViewModel; each job then looks up its pre-reserved, unique destination.
-        var reserved = Set<URL>()
+        var reserved = Set<String>()
         var outputs: [ToolJob.ID: URL] = [:]
         for job in queue.jobs {
             outputs[job.id] = FileNaming.output(for: job.url, suffix: "ocr", folder: nil, reserving: &reserved)
