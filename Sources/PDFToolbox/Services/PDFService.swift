@@ -57,13 +57,21 @@ struct PDFService {
         return .scanColour
     }
 
+    /// Whether a page already carries extractable text.
+    ///
+    /// Takes the page, not the document: a caller iterating a document holds each `PDFPage`
+    /// already, and re-deriving it from the URL costs a full re-parse of the whole file per page
+    /// — quadratic on exactly the thousand-page scans this tool exists for.
+    func pageHasText(_ page: PDFPage) -> Bool {
+        !(page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func pageHasText(_ url: URL, index: Int) throws -> Bool {
         guard let doc = PDFDocument(url: url) else { throw PDFServiceError.cannotOpen }
         guard index >= 0, index < doc.pageCount, let page = doc.page(at: index) else {
             throw PDFServiceError.pageOutOfRange
         }
-        let text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return !text.isEmpty
+        return pageHasText(page)
     }
 
     /// Render a sample of `pages` pages (first, last and evenly spaced), one at a time.

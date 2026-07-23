@@ -80,7 +80,7 @@ struct OCREngine {
             guard let page = doc.page(at: i) else { continue }
             geometry[i] = PageGeometry(mediaBox: page.bounds(for: .mediaBox), rotation: page.rotation)
 
-            if try service.pageHasText(input, index: i) {
+            if service.pageHasText(page) {
                 skipped += 1                                   // already searchable — leave it (spec §6)
             } else {
                 ocrPages += 1
