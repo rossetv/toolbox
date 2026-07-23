@@ -7,7 +7,9 @@
 **The PDF utilities your Mac is missing.**
 
 Shrink huge PDFs. Make scans searchable. All on your Mac — nothing ever leaves it.
+**Free forever. No subscriptions, no fees, no catch.**
 
+![Free forever](https://img.shields.io/badge/free-forever-success)
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-blue)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-native-black)
 ![100%25 on-device](https://img.shields.io/badge/privacy-100%25%20on--device-brightgreen)
@@ -23,8 +25,8 @@ Every "free PDF compressor" on the web wants you to **upload your documents to s
 
 Toolbox is different:
 
-- 🔒 **Private by design.** Everything runs on your Mac. The app makes no network connections — your files stay yours.
-- 🆓 **Free and open source.** No subscription, no account, no watermark, no page limit.
+- 🔒 **Private by design.** Everything runs on your Mac. The app makes no network connections — your documents are never uploaded, analysed, or seen by anyone but you.
+- 🆓 **Free forever.** No subscriptions, no fees, no "pro" tier, nothing to pay — ever. No account, no watermark, no page limit. Open source, so it stays that way.
 - 🍎 **A real Mac app.** Native, fast, built for Apple Silicon. Drag files in, press one button.
 - 🛡️ **Your originals are sacred.** Toolbox never touches the source file. Results are saved alongside as new files.
 
