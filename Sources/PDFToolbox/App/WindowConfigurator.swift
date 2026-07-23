@@ -34,6 +34,13 @@ enum WindowSetup {
                 window.styleMask.remove(.fullSizeContentView)
                 window.titlebarAppearsTransparent = false
 
+                // Start with nothing focused. The first focusable control is the sidebar's
+                // collapse toggle, whose hit area is the whole header row, so auto-focusing it on
+                // launch draws a keyboard focus ring around the "PDF Toolbox" title — which reads
+                // as a stray selected box, not as focus. Keyboard users are unaffected: Tab still
+                // moves focus and every control still shows its ring, per DESIGN.md.
+                window.makeFirstResponder(nil)
+
                 var frame = window.frame
                 guard frame.width < minSize.width || frame.height < minSize.height else { continue }
                 let grown = NSSize(width: max(frame.width, minSize.width),
