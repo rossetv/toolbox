@@ -198,7 +198,13 @@ struct PDFWriter {
              body: latin1("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"))
 
         for pageIndex in targets {
-            guard let objNum = pageObjs[safe: pageIndex] else { continue }
+            // The byte-level page walk must agree with the indices recognition produced. Skipping
+            // a missing one would silently discard that page's text — and if the walk merely
+            // ORDERED pages differently, the text would land on the wrong page — while the job
+            // still reported success. Decline the file so the caller can fall back instead.
+            guard let objNum = pageObjs[safe: pageIndex] else {
+                throw PDFWriterError.unsupportedStructure
+            }
             guard let geo = geometry[pageIndex] else { throw PDFWriterError.malformedPDF }
             let boxes = pageText[pageIndex] ?? []
 
@@ -425,7 +431,8 @@ struct PDFWriter {
 
         // --- /Contents: make it an array ending in our content ref. ---
         let contentRef = "\(contentObj) 0 R"
-        if let range = PDFSyntax.dictValue(of: "Contents", in: dict, dictAt: 0) {
+        switch PDFSyntax.dictLookup(of: "Contents", in: dict, dictAt: 0) {
+        case .found(let range):
             let value = Array(dict[range])
             let replacement: [UInt8]
             if value.first == 0x5B {                            // `[ a 0 R ]` → `[ a 0 R ours ]`
@@ -435,45 +442,148 @@ struct PDFWriter {
                 replacement = latin1("[ ") + value + latin1(" \(contentRef) ]")
             }
             dict.replaceSubrange(range, with: replacement)
-        } else {
+        case .absent:
             dict = insertIntoDict(dict, entry: latin1("/Contents [ \(contentRef) ]"))
+        case .unparseable:
+            // Inserting a key into a dictionary we could not read risks duplicating a `/Contents`
+            // that sits further along, past whatever defeated the scanner. A first-wins reader
+            // then draws only our invisible layer and the page's real content vanishes.
+            throw PDFWriterError.unsupportedStructure
         }
 
         // --- /Resources: ensure /Font << /<res> fontObj 0 R >>. ---
         let fontEntry = latin1("/\(fontResource) \(fontObj) 0 R")
-        if let range = PDFSyntax.dictValue(of: "Resources", in: dict, dictAt: 0) {
+        switch PDFSyntax.dictLookup(of: "Resources", in: dict, dictAt: 0) {
+        case .found(let range):
             let value = Array(dict[range])
             if value.first == 0x3C {
-                let merged = insertFont(intoResources: value, fontEntry: fontEntry)
+                let merged = try insertFont(intoResources: value, fontEntry: fontEntry,
+                                            bytes: bytes, objects: objects, emit: emit)
                 dict.replaceSubrange(range, with: merged)
             } else if let ref = PDFSyntax.parseRef(value) {
                 // Supersede the shared resources object, adding our font.
                 guard let res = objectDict(bytes, objects: objects, objNum: ref.num) else {
                     throw PDFWriterError.malformedPDF
                 }
-                emit(ref.num, res.gen, insertFont(intoResources: res.bytes, fontEntry: fontEntry))
+                emit(ref.num, res.gen,
+                     try insertFont(intoResources: res.bytes, fontEntry: fontEntry,
+                                    bytes: bytes, objects: objects, emit: emit))
                 // page keeps its /Resources ref → nothing else to change
             } else {
                 throw PDFWriterError.malformedPDF
             }
-        } else {
-            dict = insertIntoDict(dict, entry: latin1("/Resources << /Font << ") + fontEntry + latin1(" >> >>"))
+        case .absent:
+            if let entry = try inheritedResourcesEntry(pageDict: pageDict, fontEntry: fontEntry,
+                                                       bytes: bytes, objects: objects, emit: emit) {
+                dict = insertIntoDict(dict, entry: entry)
+            }
+        case .unparseable:
+            throw PDFWriterError.unsupportedStructure
         }
         return dict
     }
 
-    /// Add `fontEntry` to a `<< … >>` resources dict, merging into an existing inline `/Font`.
-    private static func insertFont(intoResources res: [UInt8], fontEntry: [UInt8]) -> [UInt8] {
-        if let range = PDFSyntax.dictValue(of: "Font", in: res, dictAt: 0), res[range.lowerBound] == 0x3C,
-           range.lowerBound + 1 < res.count, res[range.lowerBound + 1] == 0x3C {
-            var r = res
-            let inner = trimmed(Array(res[range].dropFirst(2).dropLast(2)))
-            r.replaceSubrange(range, with: latin1("<< ") + inner + latin1(" ") + fontEntry + latin1(" >>"))
-            return r
+    /// Place our font for a page that carries no `/Resources` of its own.
+    ///
+    /// `/Resources` is an **inheritable** page attribute (PDF 32000-1 Table 30): a page omitting it
+    /// inherits the nearest ancestor's. Writing a page-level `/Resources` holding only our font
+    /// would shadow that inherited dictionary, so every `/XObject`, `/Font` and `/ColorSpace` the
+    /// page's own content stream names would stop resolving — the scan renders blank while OCR
+    /// reports success. That is the worst failure this writer can have: silent, and it passes
+    /// validation.
+    ///
+    /// Returns the entry to insert into the page dict, or nil when the font was instead added to
+    /// the shared resources object the page already inherits.
+    private static func inheritedResourcesEntry<C: RandomAccessCollection>(
+        pageDict: [UInt8],
+        fontEntry: [UInt8],
+        bytes: C,
+        objects: ObjectIndex,
+        emit: (Int, Int, [UInt8]) -> Void) throws -> [UInt8]?
+    where C.Element == UInt8, C.Index == Int {
+        var node = pageDict
+        // Bounded like every other tree walk here: a cyclic `/Parent` chain must not spin.
+        for _ in 0..<maxPageTreeDepth {
+            guard case .found(let parentRange) = PDFSyntax.dictLookup(of: "Parent", in: node, dictAt: 0),
+                  let parent = PDFSyntax.parseRef(Array(node[parentRange])) else {
+                // Nothing to inherit from — the page really does have no resources.
+                return latin1("/Resources << /Font << ") + fontEntry + latin1(" >> >>")
+            }
+            guard let ancestor = objectDict(bytes, objects: objects, objNum: parent.num) else {
+                throw PDFWriterError.unsupportedStructure
+            }
+            switch PDFSyntax.dictLookup(of: "Resources", in: ancestor.bytes, dictAt: 0) {
+            case .found(let range):
+                let value = Array(ancestor.bytes[range])
+                if value.first == 0x3C {
+                    // Inherited as an inline dict: give the page its own copy with ours merged in.
+                    // A page-level dict overrides the inherited one, and this copy carries
+                    // everything the inherited one carried.
+                    let merged = try insertFont(intoResources: value, fontEntry: fontEntry,
+                                                bytes: bytes, objects: objects, emit: emit)
+                    return latin1("/Resources ") + merged
+                }
+                if let ref = PDFSyntax.parseRef(value) {
+                    // Inherited by reference: add our font to the shared object itself, so every
+                    // page inheriting it keeps exactly the resources it already had.
+                    guard let res = objectDict(bytes, objects: objects, objNum: ref.num) else {
+                        throw PDFWriterError.unsupportedStructure
+                    }
+                    emit(ref.num, res.gen,
+                         try insertFont(intoResources: res.bytes, fontEntry: fontEntry,
+                                        bytes: bytes, objects: objects, emit: emit))
+                    return nil
+                }
+                throw PDFWriterError.unsupportedStructure
+            case .absent:
+                node = ancestor.bytes                          // keep walking up the tree
+            case .unparseable:
+                throw PDFWriterError.unsupportedStructure
+            }
         }
-        // No inline /Font (image-only scans, the common case) — or /Font is a ref we leave be
-        // and simply add ours alongside under the same key namespace.
-        return insertIntoDict(res, entry: latin1("/Font << ") + fontEntry + latin1(" >>"))
+        throw PDFWriterError.unsupportedStructure
+    }
+
+    /// Add `fontEntry` to a `<< … >>` resources dict, merging into an existing `/Font`.
+    ///
+    /// `/Font` may be inline or an indirect reference. Adding a second `/Font` key alongside an
+    /// existing one leaves the dictionary with duplicate keys, which PDF 32000-1 §7.3.7 forbids
+    /// and readers resolve arbitrarily — a first-wins reader would see only our Helvetica and lose
+    /// every font the page actually uses, so its visible text stops rendering.
+    private static func insertFont<C: RandomAccessCollection>(
+        intoResources res: [UInt8],
+        fontEntry: [UInt8],
+        bytes: C,
+        objects: ObjectIndex,
+        emit: (Int, Int, [UInt8]) -> Void) throws -> [UInt8]
+    where C.Element == UInt8, C.Index == Int {
+        switch PDFSyntax.dictLookup(of: "Font", in: res, dictAt: 0) {
+        case .found(let range):
+            let value = Array(res[range])
+            if value.count >= 4, value[0] == 0x3C, value[1] == 0x3C {
+                var r = res
+                let inner = trimmed(Array(value.dropFirst(2).dropLast(2)))
+                r.replaceSubrange(range, with: latin1("<< ") + inner + latin1(" ") + fontEntry + latin1(" >>"))
+                return r
+            }
+            if let ref = PDFSyntax.parseRef(value) {
+                // Indirect /Font: supersede the referenced dictionary with ours added, leaving the
+                // resources dict pointing at the same object number.
+                guard let font = objectDict(bytes, objects: objects, objNum: ref.num),
+                      font.bytes.count >= 4, font.bytes[0] == 0x3C, font.bytes[1] == 0x3C else {
+                    throw PDFWriterError.unsupportedStructure
+                }
+                let inner = trimmed(Array(font.bytes.dropFirst(2).dropLast(2)))
+                emit(ref.num, font.gen, latin1("<< ") + inner + latin1(" ") + fontEntry + latin1(" >>"))
+                return res
+            }
+            throw PDFWriterError.unsupportedStructure
+        case .absent:
+            // No /Font at all — the common case for an image-only scan.
+            return insertIntoDict(res, entry: latin1("/Font << ") + fontEntry + latin1(" >>"))
+        case .unparseable:
+            throw PDFWriterError.unsupportedStructure
+        }
     }
 
     /// Insert `entry` immediately after the opening `<<` of a dict.

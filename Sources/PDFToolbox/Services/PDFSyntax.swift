@@ -213,25 +213,47 @@ enum PDFSyntax {
     /// Walks the dictionary strictly as key/value pairs rather than hunting for the key's bytes:
     /// a name that appears as a *value* (`/Type /Contents`) must not be mistaken for the key of
     /// the pair that follows it.
-    static func dictValue<C: RandomAccessCollection>(of key: String, in b: C, dictAt: Int) -> Range<Int>?
+    /// The outcome of looking a key up in a dictionary.
+    ///
+    /// `absent` and `unparseable` must never be conflated. A caller that treats "I could not read
+    /// this dictionary" as "the key is not there" will happily insert a second copy of a key that
+    /// was already present further along — and a duplicate key makes the whole dictionary's
+    /// meaning undefined (PDF 32000-1 §7.3.7).
+    enum DictLookup {
+        case found(Range<Int>)
+        case absent
+        case unparseable
+    }
+
+    static func dictLookup<C: RandomAccessCollection>(of key: String, in b: C, dictAt: Int) -> DictLookup
     where C.Element == UInt8, C.Index == Int {
-        guard dictAt + 1 < b.endIndex, b[dictAt] == 0x3C, b[dictAt + 1] == 0x3C else { return nil }
+        guard dictAt + 1 < b.endIndex, b[dictAt] == 0x3C, b[dictAt + 1] == 0x3C else { return .unparseable }
         let target = Array(key.utf8)
         var i = dictAt + 2
         while true {
             i = skipSpace(b, from: i)
-            guard i < b.endIndex else { return nil }
-            if b[i] == 0x3E { return nil }                       // `>>` — end of the dictionary
-            guard b[i] == 0x2F else { return nil }               // not a key: malformed, stop
+            guard i < b.endIndex else { return .unparseable }    // ran off the end before `>>`
+            if b[i] == 0x3E { return .absent }                   // `>>` — read the whole dict, no key
+            guard b[i] == 0x2F else { return .unparseable }      // not a key where one must be
             var nameEnd = i + 1
             while nameEnd < b.endIndex, isRegular(b[nameEnd]) { nameEnd += 1 }
             let name = decodeName(Array(b[(i + 1)..<nameEnd]))
             let valueStart = skipSpace(b, from: nameEnd)
             let valueEnd = endOfValue(b, from: valueStart)
-            guard valueEnd > valueStart else { return nil }      // no value: malformed, stop
-            if name == target { return valueStart..<valueEnd }
+            guard valueEnd > valueStart else { return .unparseable }   // value could not be bounded
+            if name == target { return .found(valueStart..<valueEnd) }
             i = valueEnd
         }
+    }
+
+    /// The range of `/key`'s value, or nil if it is absent **or** the dictionary is unreadable.
+    ///
+    /// Callers that go on to *modify* the dictionary must use `dictLookup` instead and treat
+    /// `unparseable` as an error — see `DictLookup`.
+    static func dictValue<C: RandomAccessCollection>(of key: String, in b: C, dictAt: Int) -> Range<Int>?
+    where C.Element == UInt8, C.Index == Int {
+        if case .found(let range) = dictLookup(of: key, in: b, dictAt: dictAt) { return range }
+        return nil
     }
 
     /// The value of `/key` as a name (`/Page` → `"Page"`), or nil if absent or not a name.

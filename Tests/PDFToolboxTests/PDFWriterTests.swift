@@ -518,6 +518,93 @@ final class PDFWriterTests: XCTestCase {
 
     /// The writer's full view of a file: top-level objects plus anything packed into an
     /// `/ObjStm`.
+    /// `/Resources` is inheritable (PDF 32000-1 Table 30). Giving a page that omits it a
+    /// page-level `/Resources` holding only our OCR font SHADOWS the inherited dictionary, so the
+    /// page's own image stops resolving — it renders blank while OCR reports success.
+    func testInheritedResourcesAreNotShadowed() throws {
+        let input = try Fixtures.rawPDF([
+            Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 "
+                                + "/Resources << /XObject << /Im0 5 0 R >> >> >>"),
+            // Deliberately no /Resources on the page — it inherits object 2's.
+            Fixtures.rawObject(3, "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+                                + "/Contents 4 0 R >>"),
+            Fixtures.rawStream(4, body: Data("q 612 0 0 792 0 0 cm /Im0 Do Q".utf8)),
+            Fixtures.rawStream(5, body: Data("stub-image-bytes".utf8)),
+        ], root: 1, name: "inherited-res.pdf")
+        let output = try sibling(of: input, "inherited-res-ocr.pdf")
+        try write(input, to: output)
+
+        let dict = try supersededPageDict(in: output, objNum: 3)
+        XCTAssertTrue(dict.contains("/Im0"),
+                      "the inherited /XObject must still reach the page — otherwise the scan's own "
+                      + "image no longer resolves and the page renders blank: \(dict)")
+        XCTAssertTrue(dict.contains("PDFTBox"), "our font must also be present: \(dict)")
+        XCTAssertNotNil(PDFDocument(url: output))
+    }
+
+    /// A resources dict may hold `/Font` as an indirect reference. Adding a second `/Font` key
+    /// alongside it is invalid PDF (§7.3.7); a first-wins reader then sees only our Helvetica and
+    /// every font the page actually uses disappears.
+    func testIndirectFontIsMergedNotDuplicated() throws {
+        let input = try Fixtures.rawPDF([
+            Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>"),
+            Fixtures.rawObject(3, "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+                                + "/Contents 4 0 R /Resources << /Font 5 0 R >> >>"),
+            Fixtures.rawStream(4, body: Data("BT ET".utf8)),
+            Fixtures.rawObject(5, "<< /F1 6 0 R >>"),
+            Fixtures.rawObject(6, "<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>"),
+        ], root: 1, name: "indirect-font.pdf")
+        let output = try sibling(of: input, "indirect-font-ocr.pdf")
+        try write(input, to: output)
+
+        let page = try supersededPageDict(in: output, objNum: 3)
+        XCTAssertEqual(page.components(separatedBy: "/Font").count - 1, 1,
+                       "exactly one /Font key — a duplicate makes the dict's meaning undefined: \(page)")
+
+        let fonts = try supersededPageDict(in: output, objNum: 5)
+        XCTAssertTrue(fonts.contains("/F1"), "the page's real font must survive: \(fonts)")
+        XCTAssertTrue(fonts.contains("PDFTBox"), "our font must be merged in beside it: \(fonts)")
+    }
+
+    /// A dictionary the scanner cannot read must not be treated as "the key is absent". Here the
+    /// real `/Contents` is swallowed as `/Bad`'s value, so a nil-means-absent writer inserts a
+    /// second `/Contents` and a first-wins reader draws only our invisible layer.
+    func testUnreadablePageDictIsDeclinedRatherThanDuplicated() throws {
+        let input = try Fixtures.rawOnePagePDF(
+            pageDict: "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+                    + "/Bad /Contents 4 0 R /Resources << >> >>",
+            name: "unreadable-dict.pdf")
+        let output = try sibling(of: input, "unreadable-dict-ocr.pdf")
+
+        XCTAssertThrowsError(try write(input, to: output)) { error in
+            guard case PDFWriterError.unsupportedStructure = error else {
+                return XCTFail("expected .unsupportedStructure, got \(error)")
+            }
+        }
+    }
+
+    /// If the byte-level page walk disagrees with the page indices recognition produced, skipping
+    /// the missing one silently discards that page's text — and a merely reordered walk would put
+    /// it on the wrong page — while the job still reports success.
+    func testTextForAPageTheWalkCannotFindIsRefusedNotDropped() throws {
+        let input = try Fixtures.rawOnePagePDF(pageDict: Fixtures.plainPageDict, name: "page-mismatch.pdf")
+        let bytes = [UInt8](try Data(contentsOf: input))
+
+        XCTAssertThrowsError(try PDFWriter.buildIncrementalSection(
+            bytes,
+            baseLength: bytes.count,
+            targets: [1],                    // the file has exactly one page, at index 0
+            pageText: [1: [PositionedText(text: "LOST",
+                                          boundingBox: CGRect(x: 0.1, y: 0.5, width: 0.3, height: 0.05))]],
+            geometry: [1: PageGeometry(mediaBox: letter, rotation: 0)])) { error in
+            guard case PDFWriterError.unsupportedStructure = error else {
+                return XCTFail("expected .unsupportedStructure, got \(error)")
+            }
+        }
+    }
+
     private func fullIndex(_ bytes: [UInt8]) throws -> PDFWriter.ObjectIndex {
         let topLevel = try PDFWriter.indexTopLevelObjects(bytes)
         return PDFWriter.ObjectIndex(topLevel: topLevel,
