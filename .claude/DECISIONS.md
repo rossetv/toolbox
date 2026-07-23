@@ -230,3 +230,22 @@ than introducing a first departure. `DESIGN.md` is human-owned (`.claude/CLAUDE.
 Consistency) — reconciling its single-accent rule with per-tool tile colours is the owner's
 amendment to make; Claude does not edit `DESIGN.md` unasked.
 **Affects:** docs/modules/app.md, docs/modules/design-system.md
+
+## 2026-07-23 — PDFWriter now indexes and supersedes objects packed in `/ObjStm` streams
+
+**Decision:** `PDFWriter` no longer fails loud on every object-stream PDF. It indexes every object
+packed into a compressed object stream (`PDFSyntax` + `PDFFlate.inflate`, budget-bounded) and
+supersedes one by emitting an **uncompressed top-level object of the same number** in the appended
+section — the newest cross-reference entry for an object number wins (PDF 32000-1 §7.5.6), so the
+object stream itself is never rewritten. `.unsupportedStructure` now fires only when a page or the
+catalog it must supersede sits in an object stream the writer cannot read (an unsupported filter, a
+`/DecodeParms` predictor, a truncated body) or otherwise cannot be resolved.
+**Why:** The blanket refusal excluded a meaningful share of a representative corpus from OCR
+entirely (Acrobat routinely packs the catalog/page tree into object streams). `PDFSyntax`'s
+byte-level scanner and `PDFFlate`'s bounded zlib inflate make reading them safely for this purpose.
+The verbatim-prefix incremental-update guarantee is unaffected — appended objects still just append.
+**Spec:** .claude/specs/20260722-pdf-toolbox-v1.md
+**Affects:** docs/modules/services.md
+**Supersedes:** 2026-07-22 — PDFWriter fails loud on object-stream (`/ObjStm`) PDFs — that entry's
+blanket refusal is replaced by the parse described above; `.unsupportedStructure` remains the
+fail-loud outcome only for streams the writer genuinely cannot read.
