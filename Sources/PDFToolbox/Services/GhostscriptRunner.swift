@@ -38,6 +38,37 @@ protocol GhostscriptRunning {
              onProgress: ((Int) -> Void)?) async throws -> ProcessResult
 }
 
+/// Shared, lock-guarded handle on the launched gs child.
+///
+/// Task cancellation arrives on a different thread from the one parked in `waitUntilExit()`,
+/// so the two need a rendezvous: the cancellation handler terminates whatever child is running
+/// (or, if none has launched yet, records the cancellation so the launcher terminates it the
+/// moment it appears). `Process.terminate()` raises if the process was never launched, which is
+/// why the child is only adopted *after* `run()` succeeds.
+private final class RunControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    /// Publish the just-launched child; terminates it at once if cancellation already arrived.
+    func adopt(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        self.process = process
+        if cancelled, process.isRunning { process.terminate() }
+    }
+
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        cancelled = true
+        if let process, process.isRunning { process.terminate() }
+    }
+
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return cancelled
+    }
+}
+
 /// Runs the bundled Ghostscript **only ever** inside a seatbelt sandbox (never a bare
 /// `Process`). Locates gs, wraps the call in `sandbox-exec -p <profile>` with `-dSAFER`,
 /// gives gs a private in-scope scratch directory (via `TMPDIR`) that gs's `pdfwrite`
@@ -79,6 +110,10 @@ struct GhostscriptRunner {
     /// `async` and **non-blocking for the caller**: the blocking process wait runs on a global
     /// dispatch thread and the caller *suspends* (bridged via a continuation), so many
     /// concurrent compressions under `ToolQueue` never starve the Swift cooperative pool.
+    ///
+    /// **Cancellation terminates the child.** Cancelling the calling task signals the running gs
+    /// process, and the call then throws `CancellationError` — so a cancelled job stops burning a
+    /// core immediately and its caller can discard the output before it is ever placed.
     /// - Parameters:
     ///   - readPaths: extra readable paths (typically the input PDF).
     ///   - writePaths: writable paths (typically the output directory).
@@ -87,23 +122,31 @@ struct GhostscriptRunner {
              readPaths: [URL],
              writePaths: [URL],
              onProgress: ((Int) -> Void)? = nil) async throws -> ProcessResult {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let result = try self.runBlocking(arguments: arguments, readPaths: readPaths,
-                                                      writePaths: writePaths, onProgress: onProgress)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
+        let control = RunControl()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let result = try self.runBlocking(arguments: arguments, readPaths: readPaths,
+                                                          writePaths: writePaths, onProgress: onProgress,
+                                                          control: control)
+                        continuation.resume(returning: result)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+        } onCancel: {
+            control.cancel()
         }
     }
 
     private func runBlocking(arguments: [String],
                              readPaths: [URL],
                              writePaths: [URL],
-                             onProgress: ((Int) -> Void)?) throws -> ProcessResult {
+                             onProgress: ((Int) -> Void)?,
+                             control: RunControl) throws -> ProcessResult {
         let fm = FileManager.default
 
         // gs's pdfwrite device writes scratch temp files to $TMPDIR; under (deny default) the
@@ -149,6 +192,9 @@ struct GhostscriptRunner {
         } catch {
             throw GhostscriptError.launchFailed(error.localizedDescription)
         }
+        // Hand the child to the cancellation handler only now: `terminate()` raises on a process
+        // that was never launched, and a cancel that arrived during launch is honoured here.
+        control.adopt(process)
 
         // Wall-clock cap without a busy-wait: a watchdog terminates a runaway/hung gs; otherwise
         // `waitUntilExit` blocks this (global-queue) thread until gs exits. When the watchdog
@@ -166,6 +212,10 @@ struct GhostscriptRunner {
         process.waitUntilExit()
         watchdog.cancel()
         ioGroup.wait()
+
+        // A cancelled run is a cancellation, never a timeout or a result: the child was signalled,
+        // so whatever it left behind is partial and the caller must place none of it.
+        if control.isCancelled { throw CancellationError() }
 
         // Distinguish a genuine timeout from a job that finished on the wire: a process that
         // exited cleanly (status 0) at the deadline is a success, never a timeout — so require a

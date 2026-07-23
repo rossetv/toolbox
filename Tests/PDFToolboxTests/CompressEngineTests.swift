@@ -131,6 +131,100 @@ final class CompressEngineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
                        "no output file should be written for an invalid output")
     }
+
+    // MARK: M1 — a cancelled compression delivers nothing
+
+    /// Cancel while gs is running. The stub's output is a **deliverable** one — valid, smaller,
+    /// same page count, and (the input being blank) it passes `OutputValidator` — so without the
+    /// engine's cancellation checks this run would place a file in the user's folder, which is
+    /// exactly the reported defect. The assertions are therefore both discriminating.
+    func testCancelDuringGhostscriptRunDeliversNoOutput() async throws {
+        let input = try Fixtures.blankPDF(pages: 1)
+        let output = input.deletingLastPathComponent().appendingPathComponent("cancelled-compressed.pdf")
+
+        let smaller = Self.minimalBlankPDF()
+        XCTAssertNotNil(PDFDocument(data: smaller), "the stub output must be a valid PDF")
+        XCTAssertLessThan(smaller.count, TestSupport.fileSize(input),
+                          "the stub output must be a genuine gain, or the engine would return .noGain")
+
+        let entered = XCTestExpectation(description: "gs run entered")
+        let gate = Gate()
+        let engine = CompressEngine(runner: GatedRunner(bytes: smaller, entered: entered, release: gate))
+
+        let handle = Task {
+            try await engine.compress(input, preset: .balanced, to: output) { _ in }
+        }
+        await fulfillment(of: [entered], timeout: 5)
+        handle.cancel()
+        await gate.open()
+
+        do {
+            let outcome = try await handle.value
+            XCTFail("expected the cancelled compression to throw, got \(outcome)")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "a cancelled job must leave no output file")
+    }
+
+    /// A hand-built one-page PDF (~350 bytes) — smaller than anything CoreGraphics or PDFKit
+    /// emits, so a stub "compression" of a blank fixture is a genuine size gain. Offsets are
+    /// computed, never hand-counted, so the xref is correct by construction.
+    private static func minimalBlankPDF() -> Data {
+        let bodies = ["<< /Type /Catalog /Pages 2 0 R >>",
+                      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"]
+        var pdf = "%PDF-1.4\n"
+        var offsets: [Int] = []
+        for (i, body) in bodies.enumerated() {
+            offsets.append(pdf.utf8.count)
+            pdf += "\(i + 1) 0 obj\n\(body)\nendobj\n"
+        }
+        let xrefOffset = pdf.utf8.count
+        pdf += "xref\n0 \(bodies.count + 1)\n0000000000 65535 f \n"
+        for offset in offsets { pdf += String(format: "%010d 00000 n \n", offset) }
+        pdf += "trailer\n<< /Size \(bodies.count + 1) /Root 1 0 R >>\n"
+            + "startxref\n\(xrefOffset)\n%%EOF\n"
+        return Data(pdf.utf8)
+    }
+}
+
+/// Deterministic handshake: lets the test cancel exactly while the "gs run" is in flight, with no
+/// ordering race (open-before-wait returns immediately).
+private actor Gate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func open() {
+        opened = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+/// A stub runner that parks mid-run until the test releases it, then writes a valid, smaller
+/// output — i.e. a run that *would* be delivered if cancellation were ignored.
+private struct GatedRunner: GhostscriptRunning {
+    let bytes: Data
+    let entered: XCTestExpectation
+    let release: Gate
+
+    func run(arguments: [String],
+             readPaths: [URL],
+             writePaths: [URL],
+             onProgress: ((Int) -> Void)?) async throws -> ProcessResult {
+        entered.fulfill()
+        await release.wait()
+        if let path = arguments.first(where: { $0.hasPrefix("-sOutputFile=") })
+            .map({ String($0.dropFirst("-sOutputFile=".count)) }) {
+            try? bytes.write(to: URL(fileURLWithPath: path))
+        }
+        return ProcessResult(exitCode: 0, stdout: "", stderr: "")
+    }
 }
 
 /// A test double for the gs runner. Simulates outcomes the real binary can't be forced to

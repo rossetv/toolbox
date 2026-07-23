@@ -95,6 +95,9 @@ struct CompressEngine {
             onProgress: { page in
                 if pageCount > 0 { progress(min(1.0, Double(page) / Double(pageCount))) }
             })
+        // A cancel that landed while gs was running (or just as it finished) must produce nothing:
+        // the work dir's `defer` discards the staged output and the job returns to `.queued`.
+        try Task.checkCancellation()
         guard result.exitCode == 0 else {
             throw CompressError.ghostscriptFailed(result.stderr.isEmpty ? "exit \(result.exitCode)" : result.stderr)
         }
@@ -126,6 +129,9 @@ struct CompressEngine {
         var placed = false
         defer { if !placed { try? fm.removeItem(at: destTemp) } }
         try fm.copyItem(at: workOut, to: destTemp)
+        // Last gate before the file becomes visible: a cancel that lands during validation still
+        // leaves no delivered output (`placed` stays false, so the `defer` removes the temp).
+        try Task.checkCancellation()
         try fm.moveItem(at: destTemp, to: output)
         placed = true
 
