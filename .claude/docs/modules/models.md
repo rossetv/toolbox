@@ -19,11 +19,11 @@ presets, content classification, and size estimates. No behaviour, no I/O.
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/Models/ToolJob.swift` | `ToolJob` — one queued file: id, url, `state`, `resultURL`, `estimate` |
-| `Sources/PDFToolbox/Models/JobOutcome.swift` | `JobOutcome` (compressed/noGain/ocrAdded/alreadySearchable) + `JobState` (queued/analysing/running/done/failed) |
-| `Sources/PDFToolbox/Models/CompressPreset.swift` | `CompressPreset` (maximumQuality/balanced/smallestSize) — `gsArguments()` builds the tuned gs flag set |
-| `Sources/PDFToolbox/Models/PDFContentType.swift` | `PDFContentType` (bornDigital/mixedColour/scanColour/scanBilevel) |
-| `Sources/PDFToolbox/Models/SizeEstimate.swift` | `SizeEstimate` (predictedBytes, `Confidence`, isFallback) |
+| `Sources/Toolbox/Models/ToolJob.swift` | `ToolJob` — one queued file: id, url, `state`, `resultURL`, `estimate` |
+| `Sources/Toolbox/Models/JobOutcome.swift` | `JobOutcome` (compressed/noGain/ocrAdded/alreadySearchable) + `JobState` (queued/analysing/running/done/failed) |
+| `Sources/Toolbox/Models/CompressPreset.swift` | `CompressPreset` (maximumQuality/balanced/smallestSize) — `gsArguments()` builds the tuned gs flag set |
+| `Sources/Toolbox/Models/PDFContentType.swift` | `PDFContentType` (bornDigital/mixedColour/scanColour/scanBilevel) |
+| `Sources/Toolbox/Models/SizeEstimate.swift` | `SizeEstimate` (predictedBytes, `Confidence`, isFallback) |
 
 ## Invariants
 

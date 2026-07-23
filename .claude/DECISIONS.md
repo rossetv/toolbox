@@ -175,7 +175,7 @@ convened (same precedent as the stanza-grammar entry above).
   Previously, if the binary was **absent**, `otool` produced nothing, the `grep -qv` found no
   offending line, and the gate reported **green on a missing binary**.
 - `gate: packaged-app-compresses` — now stages into `mktemp -d` under a `trap … EXIT` that
-  detaches the mount and removes the directory. Previously it used a fixed `/tmp/PDFToolbox.app`:
+  detaches the mount and removes the directory. Previously it used a fixed `/tmp/Toolbox.app`:
   on a shared machine a directory owned by another user cannot be removed (`/tmp` is sticky), the
   `rm` would fail silently and `cp -R` would land beside a stale bundle — a false green.
 - `gate: no-personal-corpus-references` (semantic) — assertion broadened from "the private PDF
@@ -249,3 +249,22 @@ The verbatim-prefix incremental-update guarantee is unaffected — appended obje
 **Supersedes:** 2026-07-22 — PDFWriter fails loud on object-stream (`/ObjStm`) PDFs — that entry's
 blanket refusal is replaced by the parse described above; `.unsupportedStructure` remains the
 fail-loud outcome only for streams the writer genuinely cannot read.
+
+## 2026-07-23 — The app is renamed to Toolbox, and `gate: packaged-app-compresses` follows it
+
+The product is now **Toolbox** everywhere: bundle and display name, window title, TCC prompts,
+licence headers, module and directory names, the scheme, the DMG (`Toolbox.dmg`, volume `Toolbox`)
+and the smoke-test environment key (`TOOLBOX_SMOKE`). Decided by the repo owner, who asked for
+"every mention of PDF Toolbox to Toolbox as the app name … Everything."
+
+`gate: packaged-app-compresses` hard-codes the DMG volume name, the app path and the environment
+key, so the rename could not land without editing a gate. **The edit tracks the rename and changes
+nothing the gate asserts** — it still packages the DMG, mounts it, copies the shipped bundle out and
+requires the packaged app to really compress a PDF. Recorded here because gate edits are never a
+single Claude's call; the authority is the owner's instruction above. All six gates were re-run
+green after the rename, this one included.
+
+**Not renamed:** `PRODUCT_BUNDLE_IDENTIFIER` (`com.pdftoolbox.app`), its `bundleIdPrefix`, and the
+dispatch-queue label derived from it. A bundle identifier is an identity rather than a name —
+changing it resets TCC grants and user defaults, and the replacement should be a reverse-DNS domain
+the owner controls, which is theirs to choose. Left pending that decision.

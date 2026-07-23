@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PDF Toolbox
+# Toolbox
 # Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #

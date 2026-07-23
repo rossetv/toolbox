@@ -21,13 +21,13 @@ size before running and drives the batch UI. Rung 3 (MRC, colour scans) is not b
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/Compress/CompressEngine.swift` | `CompressEngine.compress(_:preset:to:progress:)` — stage/run/validate/atomically-place one file; routes `.scanBilevel` documents through Rung 2 first (`bilevelCompress`) |
-| `Sources/PDFToolbox/Compress/BilevelScan.swift` | `BilevelScan.binarise(_:)` — near-bilevel gate (`isNearBilevel`) + Otsu-threshold reduction to 1-bit `/DeviceGray` |
-| `Sources/PDFToolbox/Compress/CCITTEncoder.swift` | `CCITTEncoder.encode(_:)` — CCITT Group 4 via an in-memory TIFF (ImageIO), strip lifted back out for `/CCITTFaxDecode` |
-| `Sources/PDFToolbox/Compress/BilevelPDFComposer.swift` | `BilevelPDFComposer.compose(pages:)` — builds a fresh classic-xref PDF whose pages are CCITT image XObjects |
-| `Sources/PDFToolbox/Compress/CompressEstimator.swift` | `CompressEstimator.estimate(_:preset:)` — time-boxed, parse-only pre-run size prediction |
-| `Sources/PDFToolbox/Compress/CompressViewModel.swift` | `@MainActor` state: queue, preset, output folder, per-job estimate overlay |
-| `Sources/PDFToolbox/Compress/CompressView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel |
+| `Sources/Toolbox/Compress/CompressEngine.swift` | `CompressEngine.compress(_:preset:to:progress:)` — stage/run/validate/atomically-place one file; routes `.scanBilevel` documents through Rung 2 first (`bilevelCompress`) |
+| `Sources/Toolbox/Compress/BilevelScan.swift` | `BilevelScan.binarise(_:)` — near-bilevel gate (`isNearBilevel`) + Otsu-threshold reduction to 1-bit `/DeviceGray` |
+| `Sources/Toolbox/Compress/CCITTEncoder.swift` | `CCITTEncoder.encode(_:)` — CCITT Group 4 via an in-memory TIFF (ImageIO), strip lifted back out for `/CCITTFaxDecode` |
+| `Sources/Toolbox/Compress/BilevelPDFComposer.swift` | `BilevelPDFComposer.compose(pages:)` — builds a fresh classic-xref PDF whose pages are CCITT image XObjects |
+| `Sources/Toolbox/Compress/CompressEstimator.swift` | `CompressEstimator.estimate(_:preset:)` — time-boxed, parse-only pre-run size prediction |
+| `Sources/Toolbox/Compress/CompressViewModel.swift` | `@MainActor` state: queue, preset, output folder, per-job estimate overlay |
+| `Sources/Toolbox/Compress/CompressView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel |
 
 ## Invariants
 

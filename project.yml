@@ -1,4 +1,4 @@
-name: PDFToolbox
+name: Toolbox
 
 options:
   bundleIdPrefix: com.pdftoolbox
@@ -21,12 +21,12 @@ settings:
     DEVELOPMENT_TEAM: ""
 
 targets:
-  PDFToolbox:
+  Toolbox:
     type: application
     platform: macOS
     # Glob/directory source discovery — Phase-1 tracks add files without editing project.yml.
     sources:
-      - path: Sources/PDFToolbox
+      - path: Sources/Toolbox
       # Blue folder reference — the whole built Ghostscript tree is copied verbatim into
       # the app bundle at Contents/Resources/ghostscript/. Git-ignored; present at build time.
       - path: Resources/ghostscript
@@ -40,7 +40,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.pdftoolbox.app
-        PRODUCT_NAME: PDFToolbox
+        PRODUCT_NAME: Toolbox
         INFOPLIST_FILE: Resources/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         MARKETING_VERSION: "0.1.0"
@@ -48,36 +48,36 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         # Keys live in Resources/Info.plist: CFBundleName drives the menu-bar name and Xcode
         # derives it from PRODUCT_NAME unless an explicit plist is supplied. The bundle stays
-        # PDFToolbox.app — a space in the bundle path breaks TEST_HOST, schemes and scripts.
+        # Toolbox.app — a space in the bundle path breaks TEST_HOST, schemes and scripts.
         # Rung 2 encodes CCITT G4 through ImageIO and needs no native library, so the app links
         # nothing beyond the system frameworks. An earlier jbig2enc/leptonica attempt left build
         # settings pointing at a git-ignored tree, which built only on the machine that happened
         # to have it — see .claude/DECISIONS.md.
 
-  PDFToolboxTests:
+  ToolboxTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - path: Tests/PDFToolboxTests
+      - path: Tests/ToolboxTests
     # Depending on the app target makes this a HOSTED unit-test bundle (XcodeGen wires
-    # TEST_HOST + BUNDLE_LOADER), so `@testable import PDFToolbox` resolves the app's symbols.
+    # TEST_HOST + BUNDLE_LOADER), so `@testable import Toolbox` resolves the app's symbols.
     dependencies:
-      - target: PDFToolbox
+      - target: Toolbox
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
 
-# Declared explicitly rather than left to inference: renaming the product to "PDF Toolbox"
+# Declared explicitly rather than left to inference: renaming the product to "Toolbox"
 # silently dropped the test action from the generated scheme, so `xcodebuild test` stopped
 # working while every other command still succeeded.
 schemes:
-  PDFToolbox:
+  Toolbox:
     build:
       targets:
-        PDFToolbox: all
-        PDFToolboxTests: [test]
+        Toolbox: all
+        ToolboxTests: [test]
     test:
       targets:
-        - PDFToolboxTests
+        - ToolboxTests
     run:
       config: Debug

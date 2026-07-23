@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build PDF Toolbox as a Release .app, sign it, and wrap it in a distributable DMG.
+# Build Toolbox as a Release .app, sign it, and wrap it in a distributable DMG.
 #
 # Signing: this script ad-hoc signs (`--sign -`) because that is all an unprovisioned machine
 # can do. Ad-hoc signing is enough to RUN a locally built app, but it is NOT enough for
@@ -13,8 +13,8 @@ CONFIG="${CONFIG:-Release}"
 # The Xcode project/scheme, the built .app, and the DMG filename all share this one name (kept
 # space-free so URLs, CI globs and Finder paths stay simple). Only the DMG's *volume* name
 # (shown once it's mounted) carries the display spacing.
-NAME="PDFToolbox"
-VOL_NAME="PDF Toolbox"
+NAME="Toolbox"
+VOL_NAME="Toolbox"
 BUILD_DIR="build"
 DIST_DIR="dist"
 SIGN_ID="${DEVELOPER_ID:--}"          # "-" = ad-hoc

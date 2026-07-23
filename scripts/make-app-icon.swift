@@ -1,8 +1,8 @@
-// PDF Toolbox
+// Toolbox
 // Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// This file is part of PDF Toolbox, released under the GNU Affero General
+// This file is part of Toolbox, released under the GNU Affero General
 // Public License v3.0 or later. See the LICENSE file in the project root.
 //
 // Draws the app icon and writes an .iconset for `iconutil`. Run via scripts/make-app-icon.sh.

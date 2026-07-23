@@ -4,7 +4,7 @@ before it is written here; a gate that has never been run is not a gate.
 NEVER cite a line number. Cite a file plus a stable, greppable anchor. -->
 ↑ [INDEX](INDEX.md)
 
-# Gates — PDF Toolbox
+# Gates — Toolbox
 
 <!-- An operator's RUNBOOK: how to CHECK the work and confirm it passes. -->
 
@@ -66,7 +66,7 @@ added: 2026-07-23 — monocratic (opus)
 mandated-by-human: no
 
 ```sh
-xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox -configuration Debug build
+xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug build
 ```
 
 ### gate: tests
@@ -76,7 +76,7 @@ added: 2026-07-23 — monocratic (opus)
 mandated-by-human: no
 
 ```sh
-xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox -configuration Debug test
+xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test
 ```
 
 ### gate: packaged-app-compresses
@@ -86,7 +86,7 @@ added: 2026-07-23 — monocratic (opus)
 mandated-by-human: no
 
 ```sh
-D="$(mktemp -d)"; trap 'hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; rm -rf "$D"' EXIT; hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; set -e; scripts/package-dmg.sh; hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet; cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" "$D/"; PDFTOOLBOX_SMOKE=compress "$D/PDFToolbox.app/Contents/MacOS/PDFToolbox" | grep -q "SMOKE PASS"
+D="$(mktemp -d)"; trap 'hdiutil detach "/Volumes/Toolbox" -quiet 2>/dev/null; rm -rf "$D"' EXIT; hdiutil detach "/Volumes/Toolbox" -quiet 2>/dev/null; set -e; scripts/package-dmg.sh; hdiutil attach dist/Toolbox.dmg -nobrowse -quiet; cp -R "/Volumes/Toolbox/Toolbox.app" "$D/"; TOOLBOX_SMOKE=compress "$D/Toolbox.app/Contents/MacOS/Toolbox" | grep -q "SMOKE PASS"
 ```
 
 ## Semantic gates

@@ -1,4 +1,4 @@
-# PDF Toolbox — Design Handover Brief
+# Toolbox — Design Handover Brief
 
 **For: Claude Design.** **From: the engineer who'll implement your output in SwiftUI.**
 **Companion file:** `mockup.html` (my rough layout/state draft — translate it to macOS-native, don't copy it literally).
@@ -7,7 +7,7 @@
 
 ## 1. What you're designing
 
-A **native macOS desktop app** (SwiftUI, macOS 14+, Apple Silicon). Named **PDF Toolbox** — an extensible toolbox of PDF utilities. **v1 ships one tool: Compress** (shrink large PDFs a lot while preserving quality). The sidebar must read as "room for more tools", but you only design **Compress** now (Merge/Split appear as dimmed "Soon" placeholders only).
+A **native macOS desktop app** (SwiftUI, macOS 14+, Apple Silicon). Named **Toolbox** — an extensible toolbox of PDF utilities. **v1 ships one tool: Compress** (shrink large PDFs a lot while preserving quality). The sidebar must read as "room for more tools", but you only design **Compress** now (Merge/Split appear as dimmed "Soon" placeholders only).
 
 **Critical framing:** this is a **Mac app, not a web page**. Design in macOS idioms — a real resizable window, a source-list sidebar (`NavigationSplitView`), native controls, **SF Symbols**, system **materials/vibrancy**, standard macOS toolbar and spacing. `mockup.html` is HTML only because that's my drafting medium; give me the **macOS-native** version.
 
@@ -22,7 +22,7 @@ Follow `DESIGN.md` (Apple design language) in the repo **exactly**. Non-negotiab
 
 ## 3. Structure & navigation
 
-- **Sidebar** (translucent/vibrant source list): app title "PDF Toolbox", a "Tools" section, **Compress** (selected/active in Apple Blue), then **Merge** and **Split** dimmed with a "Soon" pill. Sidebar collapsible per macOS norms.
+- **Sidebar** (translucent/vibrant source list): app title "Toolbox", a "Tools" section, **Compress** (selected/active in Apple Blue), then **Merge** and **Split** dimmed with a "Soon" pill. Sidebar collapsible per macOS norms.
 - **Detail pane:** the Compress tool (header + working area).
 
 ## 4. Screens & states to design (Compress) — the core deliverable

@@ -19,12 +19,12 @@ avoidance, path canonicalisation, performance-core count, and logging categories
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/Shared/ToolQueue.swift` | `ToolQueue` — `@MainActor` batch runner: per-job state machine, bounded concurrency, cancellation |
-| `Sources/PDFToolbox/Shared/FileNaming.swift` | `FileNaming.output(for:suffix:folder:reserving:)` — collision-free `<name>-<suffix>.pdf` naming |
-| `Sources/PDFToolbox/Shared/CanonicalPath.swift` | `URL.canonical` / `URL.canonicalPath` — C `realpath`-based canonicalisation |
-| `Sources/PDFToolbox/Shared/SystemInfo.swift` | `SystemInfo.performanceCoreCount` — `hw.perflevel0.logicalcpu` via `sysctlbyname` |
-| `Sources/PDFToolbox/Shared/Log.swift` | `Log.compress`/`.ocr`/`.queue`/`.general` — unified-logging `Logger` categories |
-| `Sources/PDFToolbox/Shared/FilePicker.swift` | `FilePicker.choosePDFs()` / `.chooseFolder()` — `NSOpenPanel`-based file/folder selection |
+| `Sources/Toolbox/Shared/ToolQueue.swift` | `ToolQueue` — `@MainActor` batch runner: per-job state machine, bounded concurrency, cancellation |
+| `Sources/Toolbox/Shared/FileNaming.swift` | `FileNaming.output(for:suffix:folder:reserving:)` — collision-free `<name>-<suffix>.pdf` naming |
+| `Sources/Toolbox/Shared/CanonicalPath.swift` | `URL.canonical` / `URL.canonicalPath` — C `realpath`-based canonicalisation |
+| `Sources/Toolbox/Shared/SystemInfo.swift` | `SystemInfo.performanceCoreCount` — `hw.perflevel0.logicalcpu` via `sysctlbyname` |
+| `Sources/Toolbox/Shared/Log.swift` | `Log.compress`/`.ocr`/`.queue`/`.general` — unified-logging `Logger` categories |
+| `Sources/Toolbox/Shared/FilePicker.swift` | `FilePicker.choosePDFs()` / `.chooseFolder()` — `NSOpenPanel`-based file/folder selection |
 
 ## Invariants
 

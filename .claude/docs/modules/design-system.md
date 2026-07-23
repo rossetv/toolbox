@@ -20,8 +20,8 @@ than styling inline.
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography; `Color(light:dark:)` / `NSColor(hex:)` helpers |
-| `Sources/PDFToolbox/DesignSystem/Components.swift` | `PrimaryButton`, `LinkButton`, `Card`, `DropZone`, `StatPill`, `SegmentedPreset`(Option), `FileRow`, `ToolIconTile`, `SectionLabel`, `ToolHeader` |
+| `Sources/Toolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography; `Color(light:dark:)` / `NSColor(hex:)` helpers |
+| `Sources/Toolbox/DesignSystem/Components.swift` | `PrimaryButton`, `LinkButton`, `Card`, `DropZone`, `StatPill`, `SegmentedPreset`(Option), `FileRow`, `ToolIconTile`, `SectionLabel`, `ToolHeader` |
 
 ## Invariants
 

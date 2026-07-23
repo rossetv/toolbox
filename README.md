@@ -1,4 +1,4 @@
-# PDF Toolbox
+# Toolbox
 
 A native macOS app that makes PDFs smaller and makes scans searchable — without touching your originals.
 
@@ -15,12 +15,12 @@ Everything runs on your Mac. Nothing is uploaded.
 ## Install
 
 1. Download the DMG from [Releases](../../releases).
-2. Open it and drag **PDF Toolbox** to Applications.
+2. Open it and drag **Toolbox** to Applications.
 
 The app isn't notarised yet, so macOS will warn you the first time. Right-click it and choose **Open**, or run:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/PDFToolbox.app
+xattr -dr com.apple.quarantine /Applications/Toolbox.app
 ```
 
 ## How to use it
@@ -50,8 +50,8 @@ Requires Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 ```sh
 scripts/build-ghostscript.sh
 xcodegen generate
-xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox -configuration Debug test
-scripts/package-dmg.sh         # → dist/PDFToolbox.dmg
+xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test
+scripts/package-dmg.sh         # → dist/Toolbox.dmg
 ```
 
 ## Licence

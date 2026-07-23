@@ -14,13 +14,13 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 
 | Module | Responsibility | Entrypoint | Doc |
 |--------|----------------|-----------|-----|
-| App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/PDFToolbox/App/PDFToolboxApp.swift` | [→](modules/app.md) |
-| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) compression, estimate, batch UI | `Sources/PDFToolbox/Compress/CompressEngine.swift` | [→](modules/compress.md) |
-| OCR | Vision-based invisible text layer, batch UI | `Sources/PDFToolbox/OCR/OCREngine.swift` | [→](modules/ocr.md) |
-| Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/PDFToolbox/Services/GhostscriptRunner.swift` | [→](modules/services.md) |
-| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/PDFToolbox/Shared/ToolQueue.swift` | [→](modules/shared.md) |
-| Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/PDFToolbox/Models/ToolJob.swift` | [→](modules/models.md) |
-| DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/PDFToolbox/DesignSystem/Theme.swift` | [→](modules/design-system.md) |
+| App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/Toolbox/App/ToolboxApp.swift` | [→](modules/app.md) |
+| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) compression, estimate, batch UI | `Sources/Toolbox/Compress/CompressEngine.swift` | [→](modules/compress.md) |
+| OCR | Vision-based invisible text layer, batch UI | `Sources/Toolbox/OCR/OCREngine.swift` | [→](modules/ocr.md) |
+| Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/Toolbox/Services/GhostscriptRunner.swift` | [→](modules/services.md) |
+| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/Toolbox/Shared/ToolQueue.swift` | [→](modules/shared.md) |
+| Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/Toolbox/Models/ToolJob.swift` | [→](modules/models.md) |
+| DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/Toolbox/DesignSystem/Theme.swift` | [→](modules/design-system.md) |
 
 ## Key flows
 
@@ -36,8 +36,8 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
    pre-allocates output names → `ToolQueue.run` (capped at 2) → `OCREngine.ocr` → `OpenGuard.inspect`
    → per page: `PDFService.pageHasText` (skip) or render-upright + `VisionOCR.recognise` →
    `PDFWriter.appendTextLayer` (incremental update) → `OutputValidator.validate` → atomic rename.
-3. **App smoke test**: `PDFToolboxApp.init()` → `CompressSmoke.runIfRequested()` (only when
-   `PDFTOOLBOX_SMOKE=compress`) → synthetic in-process fixture → real `CompressEngine.compress`
+3. **App smoke test**: `ToolboxApp.init()` → `CompressSmoke.runIfRequested()` (only when
+   `TOOLBOX_SMOKE=compress`) → synthetic in-process fixture → real `CompressEngine.compress`
    through the bundled gs under the sandbox → prints `SMOKE PASS`/`SMOKE FAIL` → exits before any
    window opens. Exercised end-to-end from the packaged DMG in CI (`.github/workflows/build.yml`).
 

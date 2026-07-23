@@ -1,4 +1,4 @@
-# PDF Toolbox — build report
+# Toolbox — build report
 
 *What was built, what was verified first-hand, what is deliberately not done, and what needs you.*
 
@@ -58,7 +58,7 @@ coverage across a mixed sample has not been re-measured since.)
 literal strings and CRLF, bounded object scans, an integer-overflow guard, streaming I/O with a
 per-job memory bound, and a cap on page rasters.
 
-**Polish**: generated app icon, "PDF Toolbox" throughout macOS, smaller default window, hand cursors
+**Polish**: generated app icon, "Toolbox" throughout macOS, smaller default window, hand cursors
 on controls, page counts, predicted-saving badges, and the mockup's progress and completion states.
 
 ## Deliberately not done
@@ -85,14 +85,14 @@ on controls, page counts, predicted-saving badges, and the mockup's progress and
 Built locally, so it carries no quarantine flag and should open directly:
 
 ```sh
-open dist/PDFToolbox.dmg
-# drag PDF Toolbox to Applications, then launch it
+open dist/Toolbox.dmg
+# drag Toolbox to Applications, then launch it
 ```
 
 For a copy downloaded from a GitHub Release instead:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/PDFToolbox.app
+xattr -dr com.apple.quarantine /Applications/Toolbox.app
 ```
 
 ## Process notes worth keeping
