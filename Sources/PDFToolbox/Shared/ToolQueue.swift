@@ -131,6 +131,18 @@ final class ToolQueue: ObservableObject {
 
     private func setState(_ id: UUID, _ state: JobState) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        // A progress tick is a separate, untracked `Task` (see `report` in `process`) and can land
+        // after the job already reached `.done`/`.failed` — e.g. `OCREngine.ocr` calls
+        // `progress(1.0)` immediately before returning, immediately before `process` sets `.done`.
+        // Applying it anyway would resurrect a finished job back to `.running`, and since
+        // `removeCompleted()` only matches `.done`/`.failed`, that job would then be stranded
+        // forever. Only apply `.running` while the job is still `.queued` or already `.running`.
+        if case .running = state {
+            switch jobs[index].state {
+            case .queued, .running: break
+            default: return
+            }
+        }
         jobs[index].state = state
     }
 }

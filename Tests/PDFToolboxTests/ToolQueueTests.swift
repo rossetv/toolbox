@@ -166,4 +166,34 @@ final class ToolQueueTests: XCTestCase {
         }
         watcher.cancel()
     }
+
+    /// MAJOR 2 — a progress tick is a separate, untracked `Task` and can land after the job
+    /// already reached `.done` (exactly what `OCREngine.ocr`'s `progress(1.0)` immediately before
+    /// return can do). It must not resurrect the job back to `.running`, or the job is stranded
+    /// forever: `removeCompleted()` only matches `.done`/`.failed`, so it could never be cleared.
+    func testLateProgressReportCannotOverwriteDoneState() async {
+        let queue = ToolQueue()
+        queue.add(urls(1, "late-progress"))
+
+        final class ReportBox: @unchecked Sendable {
+            var report: ((Double) -> Void)?
+        }
+        let box = ReportBox()
+
+        await queue.run({ _, report in
+            // Capture the report closure instead of calling it now — we call it below, AFTER the
+            // job has already reached `.done`, to simulate the late-tick race deterministically.
+            box.report = report
+            return JobResult(.compressed(before: 10, after: 5))
+        }, maxConcurrent: 1)
+
+        XCTAssertEqual(queue.jobs.first?.state, .done(.compressed(before: 10, after: 5)))
+
+        box.report?(0.75)
+        // The report closure hops via `Task { @MainActor in ... }`; give it a moment to actually run.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(queue.jobs.first?.state, .done(.compressed(before: 10, after: 5)),
+                       "a late progress report must not overwrite a terminal state")
+    }
 }
