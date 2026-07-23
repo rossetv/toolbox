@@ -25,6 +25,9 @@ struct AboutView: View {
     }
 
     var body: some View {
+        // Centre alignment throughout is a deliberate DESIGN.md §7 exception: this is the
+        // macOS About-panel idiom (the system's own About windows centre icon, name,
+        // version and copyright), not body copy.
         VStack(spacing: Theme.Spacing.small) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
