@@ -135,6 +135,13 @@ struct OCREngine {
         }
         try validateOCROutput(input: input, output: tempURL,
                               textPages: Set(pageText.keys), pageCount: count)
+        // Last thing before the file becomes visible to the user. The only other check is inside
+        // the recognition loop, and everything between it and here — writing the incremental
+        // update, then two validation passes that re-render pages — is slow enough to cover a
+        // whole cancellation. Cancellation is cooperative: unobserved, it does not throw, so
+        // without this the user cancels and the output is delivered anyway. `renamed` stays false
+        // on the throw, so the `defer` removes the temp and nothing is left behind.
+        try Task.checkCancellation()
         try FileManager.default.moveItem(at: tempURL, to: output)
         renamed = true
         progress(1.0)
