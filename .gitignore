@@ -29,3 +29,7 @@ Resources/ghostscript/
 
 # Coverage artefacts from running instrumented binaries directly
 *.profraw
+
+# Build + packaging output
+build/
+dist/
