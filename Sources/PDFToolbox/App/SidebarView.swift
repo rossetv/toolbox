@@ -19,6 +19,12 @@ struct SidebarView: View {
     @Binding var selection: Tool?
     @Binding var isCollapsed: Bool
 
+    // Bound to each tool row below and deliberately cleared right after a mouse click (see the
+    // ForEach) so a click never leaves a row showing a stale focus ring next to the real
+    // selection. Tab/arrow-key navigation is untouched by that reset — it drives this same state
+    // from the other direction and still shows the system focus ring.
+    @FocusState private var focusedTool: Tool?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
@@ -36,7 +42,6 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .focusEffectDisabled()
             .pointingHandCursor()
             .help(isCollapsed ? "Show sidebar" : "Hide sidebar")
             .padding(.horizontal, isCollapsed ? 17 : 16)
@@ -53,13 +58,17 @@ struct SidebarView: View {
             ForEach(Tool.allCases) { tool in
                 Button {
                     selection = tool
+                    // A click both selects and focuses this row by default, which is what left
+                    // the previous fix's blue focus ring on the previously-chosen tool: focus
+                    // and selection could disagree. Clearing focus here means a mouse click is
+                    // shown solely by the row's own "selected" fill; Tab/arrow-key navigation
+                    // sets `focusedTool` from the other direction and still shows the ring.
+                    focusedTool = nil
                 } label: {
                     row(for: tool)
                 }
                 .buttonStyle(.plain)
-                // Without this the row keeps a blue keyboard-focus ring after it is clicked, so
-                // the previously-chosen tool still looks selected alongside the real selection.
-                .focusEffectDisabled()
+                .focused($focusedTool, equals: tool)
                 .pointingHandCursor()
             }
 

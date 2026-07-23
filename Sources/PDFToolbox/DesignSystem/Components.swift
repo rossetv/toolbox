@@ -92,7 +92,6 @@ struct LinkButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
         .pointingHandCursor()
     }
 }
