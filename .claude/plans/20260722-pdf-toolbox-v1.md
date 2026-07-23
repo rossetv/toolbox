@@ -197,7 +197,7 @@ This is the fix for the R1 root cause: the whole §4 shared layer lands here, be
 ### Task D.1: Theme (full) + Components from DESIGN.md + Claude Design output
 **Depends:** 0.1
 
-**Interfaces — Produces:** `enum Theme` (full tokens from `DESIGN.md`: bg `#f5f5f7`, text `#1d1d1f`/`#000`, accent `#0071e3`, pill radius 980, SF Pro Display ≥20 / Text <20, soft sparse shadow; light + dark). `Components.swift` — `PrimaryButton`(pill), `Card`, `DropZone`, `StatPill`, `SegmentedPreset`, `FileRow` — rebuilt faithfully (not pixel-copied) from the Claude Design output at the Claude Design mockup (kept outside this repository) `[m16]`; §7 deviations: 4-entry sidebar, stats widget cut for v1.
+**Interfaces — Produces:** `enum Theme` (full tokens from `DESIGN.md`: bg `#f5f5f7`, text `#1d1d1f`/`#000`, accent `#0071e3`, pill radius 980, SF Pro Display ≥20 / Text <20, soft sparse shadow; light + dark). `Components.swift` — `PrimaryButton`(pill), `Card`, `DropZone`, `StatPill`, `SegmentedPreset`, `FileRow` — rebuilt faithfully (not pixel-copied) from the Claude Design mockup (kept outside this repository) `[m16]`; §7 deviations: 4-entry sidebar, stats widget cut for v1.
 
 - [ ] Step 1: Implement `Theme` + `Components` with light+dark SwiftUI previews; verify via preview render/screenshot.
 - [ ] Step 2: Commit `feat: design system tokens + reusable components (Apple DESIGN.md)`.

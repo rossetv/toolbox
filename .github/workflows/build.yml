@@ -64,13 +64,17 @@ jobs:
       - name: Package DMG
         run: scripts/package-dmg.sh
 
+      # Kept in step with `gate: packaged-app-compresses` in .claude/GATES.md — a private temp
+      # dir (never a fixed /tmp path, which a stale bundle could make falsely green) and a trap
+      # that always detaches the mount.
       - name: Smoke — the packaged app really compresses a PDF
         run: |
+          set -o pipefail
+          D="$(mktemp -d)"
+          trap 'hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; rm -rf "$D"' EXIT
           hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet
-          cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" /tmp/
-          hdiutil detach "/Volumes/PDF Toolbox" -quiet
-          PDFTOOLBOX_SMOKE=compress /tmp/PDFToolbox.app/Contents/MacOS/PDFToolbox | tee /tmp/smoke.txt
-          grep -q "SMOKE PASS" /tmp/smoke.txt
+          cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" "$D/"
+          PDFTOOLBOX_SMOKE=compress "$D/PDFToolbox.app/Contents/MacOS/PDFToolbox" | grep -q "SMOKE PASS"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
