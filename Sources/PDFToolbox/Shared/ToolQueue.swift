@@ -1,5 +1,5 @@
 // PDF Toolbox
-// Copyright (C) 2026 PDF Toolbox authors
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of PDF Toolbox, released under the GNU Affero General
@@ -27,6 +27,13 @@ final class ToolQueue: ObservableObject {
 
     func add(_ urls: [URL]) {
         jobs.append(contentsOf: urls.map(ToolJob.init(url:)))
+    }
+
+    /// Remove one job. Only a job that has not started is removable — pulling a running job out
+    /// from under its engine would orphan the work in flight.
+    func remove(_ id: ToolJob.ID) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        if case .queued = jobs[i].state { jobs.remove(at: i) }
     }
 
     func removeCompleted() {

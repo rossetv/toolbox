@@ -1,5 +1,5 @@
 // PDF Toolbox
-// Copyright (C) 2026 PDF Toolbox authors
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of PDF Toolbox, released under the GNU Affero General
@@ -26,6 +26,8 @@ final class CompressViewModel: ObservableObject {
     }
     @Published var outputFolder: URL?
     @Published private(set) var jobs: [ToolJob] = []
+    /// Page count per job, resolved off the main actor as files are added.
+    @Published private(set) var pageCounts: [ToolJob.ID: Int] = [:]
     @Published private(set) var isRunning = false
     @Published private(set) var loadError: String?
 
@@ -81,10 +83,30 @@ final class CompressViewModel: ObservableObject {
         for job in queue.jobs where !beforeIDs.contains(job.id) {
             scheduleEstimate(for: job)
         }
+        resolvePageCounts()
     }
+
+    func remove(_ job: ToolJob) { queue.remove(job.id) }
 
     func clearFinished() {
         queue.removeCompleted()
+    }
+
+    var allFinished: Bool { !jobs.isEmpty && !isRunning && jobs.allSatisfy { if case .done = $0.state { return true }; if case .failed = $0.state { return true }; return false } }
+
+    /// Page count for a job, once resolved.
+    func pageCount(for job: ToolJob) -> Int? { pageCounts[job.id] }
+
+    private func resolvePageCounts() {
+        let pending = queue.jobs.filter { pageCounts[$0.id] == nil }
+        guard !pending.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            let service = PDFService()
+            for job in pending {
+                guard let count = try? service.pageCount(job.url) else { continue }
+                await MainActor.run { self.pageCounts[job.id] = count }
+            }
+        }
     }
 
     func compress() {

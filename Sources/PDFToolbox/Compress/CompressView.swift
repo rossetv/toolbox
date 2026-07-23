@@ -1,10 +1,11 @@
 // PDF Toolbox
-// Copyright (C) 2026 PDF Toolbox authors
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of PDF Toolbox, released under the GNU Affero General
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -29,6 +30,8 @@ struct CompressView: View {
             footerBar
         }
         .background(Theme.Colors.surface)
+        .animation(.easeInOut(duration: 0.2), value: model.isRunning)
+        .animation(.easeInOut(duration: 0.2), value: model.allFinished)
         .navigationTitle("Compress")
         .onDrop(of: [.pdf], isTargeted: $isTargeted) { providers in
             loadDroppedURLs(providers)
@@ -57,12 +60,19 @@ struct CompressView: View {
     private var queue: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.large) {
+                if model.isRunning {
+                    runningBar
+                } else if model.allFinished {
+                    SuccessBanner(headline: savedHeadline, detail: savedDetail)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
                 summaryRow
                 VStack(spacing: Theme.Spacing.small) {
                     ForEach(model.jobs) { job in
                         FileRow(name: job.url.lastPathComponent,
                                 meta: meta(for: job),
-                                status: status(for: job))
+                                status: status(for: job),
+                                onRemove: canRemove(job) ? { model.remove(job) } : nil)
                     }
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {
@@ -78,6 +88,56 @@ struct CompressView: View {
         }
     }
 
+    /// Batch progress with a live count, mirroring the mockup's "Compressing 2 of 3…" bar.
+    private var runningBar: some View {
+        HStack(spacing: Theme.Spacing.medium) {
+            LinearProgress(fraction: overallProgress)
+            Text("Compressing \(finishedCount + 1) of \(model.jobs.count)…")
+                .themeFont(.caption)
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .fixedSize()
+            LinkButton(title: "Cancel") { model.cancel() }
+        }
+    }
+
+    private var overallProgress: Double {
+        guard !model.jobs.isEmpty else { return 0 }
+        let total = model.jobs.reduce(0.0) { sum, job in
+            switch job.state {
+            case .done, .failed: return sum + 1
+            case .running(let f): return sum + f
+            default: return sum
+            }
+        }
+        return total / Double(model.jobs.count)
+    }
+
+    private func canRemove(_ job: ToolJob) -> Bool {
+        if case .queued = job.state { return !model.isRunning }
+        return false
+    }
+
+    private var savedBytes: Int {
+        model.jobs.reduce(0) { sum, job in
+            if case .done(let outcome) = job.state, case .compressed(let before, let after) = outcome {
+                return sum + max(0, before - after)
+            }
+            return sum
+        }
+    }
+
+    private var savedHeadline: String { "Saved \(byteString(savedBytes))" }
+
+    private var savedDetail: String {
+        var before = 0, after = 0
+        for job in model.jobs {
+            if case .done(let outcome) = job.state, case .compressed(let b, let a) = outcome { before += b; after += a }
+        }
+        let pct = before > 0 ? Int(((Double(before - after) / Double(before)) * 100).rounded()) : 0
+        let n = model.jobs.count
+        return "\(n) PDF\(n == 1 ? "" : "s") · \(byteString(before)) → \(byteString(after)) · \(pct)% smaller"
+    }
+
     private var summaryRow: some View {
         HStack(spacing: Theme.Spacing.medium) {
             Text(queueSummary).themeFont(.captionBold).foregroundStyle(Theme.Colors.text)
@@ -91,6 +151,12 @@ struct CompressView: View {
         }
     }
 
+    private func revealOutputs() {
+        let urls = model.jobs.compactMap(\.resultURL)
+        guard !urls.isEmpty else { return }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
+    }
+
     private var outputFolderRow: some View {
         HStack(spacing: Theme.Spacing.small) {
             Text("Save to").themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
@@ -99,6 +165,9 @@ struct CompressView: View {
                 .foregroundStyle(Theme.Colors.text)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            Text("· Name-compressed.pdf")
+                .themeFont(.caption)
+                .foregroundStyle(Theme.Colors.textSecondary)
             Spacer(minLength: Theme.Spacing.small)
             if model.outputFolder != nil {
                 LinkButton(title: "Use original location") { model.outputFolder = nil }
@@ -117,11 +186,16 @@ struct CompressView: View {
         HStack(spacing: Theme.Spacing.medium) {
             Text(footerNote).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
             Spacer(minLength: Theme.Spacing.small)
-            if model.isRunning {
-                ProgressView().controlSize(.small)
-                LinkButton(title: "Cancel") { model.cancel() }
+            if model.allFinished {
+                LinkButton(title: "Reveal in Finder ›") { revealOutputs() }
+                Spacer(minLength: Theme.Spacing.small)
+                PrimaryButton(title: "Compress More", isEnabled: true) {
+                    model.add(FilePicker.choosePDFs())
+                }
+            } else {
+                if model.isRunning { ProgressView().controlSize(.small) }
+                PrimaryButton(title: actionTitle, isEnabled: model.canCompress) { model.compress() }
             }
-            PrimaryButton(title: actionTitle, isEnabled: model.canCompress) { model.compress() }
         }
         .padding(.horizontal, Theme.Spacing.large)
         .padding(.vertical, Theme.Spacing.medium)
@@ -191,29 +265,30 @@ struct CompressView: View {
     }
 
     private func meta(for job: ToolJob) -> String {
-        inputSize(of: job).map(byteString) ?? job.url.deletingLastPathComponent().lastPathComponent
+        let size = inputSize(of: job).map(byteString)
+        let pages = model.pageCount(for: job).map { "\($0) page\($0 == 1 ? "" : "s")" }
+        return [size, pages].compactMap { $0 }.joined(separator: " · ")
     }
 
     // MARK: derived copy
 
     private var presetOptions: [SegmentedPresetOption] {
-        // An exhaustive switch, so a new preset can't silently ship without its blurb. The
-        // hints stay non-numeric on purpose: the presets' real DPI figures are retuned against
-        // the corpus in Task S.2, and a hard-coded "~150 DPI" here would quietly go stale.
+        // An exhaustive switch, so a new preset can't silently ship without its blurb. The hint
+        // states the preset's real target DPI, read from the preset itself so it cannot go stale.
         CompressPreset.allCases.map { preset in
             switch preset {
             case .maximumQuality:
                 return SegmentedPresetOption(id: preset.id, title: preset.title,
                                              subtitle: "Light touch, keeps fine detail.",
-                                             hint: "Highest image resolution")
+                                             hint: "~\(preset.imageDPI) DPI images")
             case .balanced:
                 return SegmentedPresetOption(id: preset.id, title: preset.title,
                                              subtitle: "Great size, near-original look.",
-                                             hint: "Recommended for most PDFs")
+                                             hint: "~\(preset.imageDPI) DPI images")
             case .smallestSize:
                 return SegmentedPresetOption(id: preset.id, title: preset.title,
                                              subtitle: "Maximum shrink for email & upload.",
-                                             hint: "Lowest image resolution")
+                                             hint: "~\(preset.imageDPI) DPI images")
             }
         }
     }

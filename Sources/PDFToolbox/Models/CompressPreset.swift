@@ -1,5 +1,5 @@
 // PDF Toolbox
-// Copyright (C) 2026 PDF Toolbox authors
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of PDF Toolbox, released under the GNU Affero General
@@ -17,17 +17,18 @@ import Foundation
 /// CMYK is converted to RGB on the two smaller presets and preserved on `maximumQuality`
 /// (avoids colour shift / broken print intent).
 enum CompressPreset: String, CaseIterable, Identifiable {
-    case maximumQuality
-    case balanced
+    // Ordered smallest-to-largest output, matching the design mockup's left-to-right reading.
     case smallestSize
+    case balanced
+    case maximumQuality
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .maximumQuality: return "High Quality"
+        case .maximumQuality: return "High quality"
         case .balanced: return "Balanced"
-        case .smallestSize: return "Smallest Size"
+        case .smallestSize: return "Smallest"
         }
     }
 
@@ -41,6 +42,9 @@ enum CompressPreset: String, CaseIterable, Identifiable {
     }
 
     /// Target resolution for colour/grey image downsampling.
+    /// Target DPI for colour/grey images — surfaced in the UI so the trade-off is concrete.
+    var imageDPI: Int { colourDPI }
+
     private var colourDPI: Int {
         switch self {
         case .maximumQuality: return 300

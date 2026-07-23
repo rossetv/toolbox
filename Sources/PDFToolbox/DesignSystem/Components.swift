@@ -1,10 +1,11 @@
 // PDF Toolbox
-// Copyright (C) 2026 PDF Toolbox authors
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of PDF Toolbox, released under the GNU Affero General
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
+import AppKit
 import SwiftUI
 
 /// Reusable components built on `Theme`, rebuilt from the Claude Design mockup
@@ -326,6 +327,7 @@ struct SegmentedPreset: View {
         .contentShape(Rectangle())
         .onTapGesture { if isEnabled { selection = option.id } }
         .opacity(isEnabled ? 1 : 0.5)
+        .pointingHandCursor()
     }
 }
 
@@ -521,10 +523,11 @@ private var fileRowStateGallery: some View {
 struct ToolIconTile: View {
     let systemImage: String
     var size: CGFloat = 22
+    var tint: Color = Theme.Colors.accent
 
     var body: some View {
         RoundedRectangle(cornerRadius: size * 0.25, style: .continuous)
-            .fill(Theme.Colors.accent)
+            .fill(tint)
             .frame(width: size, height: size)
             .overlay(
                 Image(systemName: systemImage)
@@ -652,4 +655,68 @@ private var toolChromeGallery: some View {
     .frame(width: 560)
     .background(Theme.Colors.surface)
     .preferredColorScheme(.light)
+}
+
+extension View {
+    /// Show the hand ("this is clickable") cursor while the pointer is inside.
+    ///
+    /// SwiftUI leaves the arrow in place for a tappable card, so a control built from a card
+    /// rather than a `Button` gives the user no hover affordance at all.
+    func pointingHandCursor() -> some View {
+        onHover { isInside in
+            if isInside {
+                NSCursor.pointingHand.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+    }
+}
+
+/// The mockup's completion banner: a green tick beside the headline saving and a detail line.
+struct SuccessBanner: View {
+    let headline: String
+    let detail: String
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.medium) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Theme.Colors.success)
+                    .frame(width: 48, height: 48)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headline).themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
+                Text(detail).themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(Theme.Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .fill(Theme.Colors.success.opacity(0.12))
+        )
+    }
+}
+
+/// A thin determinate bar. Width animates linearly, matching the mockup's `width .18s linear`.
+struct LinearProgress: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.Colors.text.opacity(0.12))
+                Capsule()
+                    .fill(Theme.Colors.accent)
+                    .frame(width: max(0, min(1, fraction)) * geo.size.width)
+                    .animation(.linear(duration: 0.18), value: fraction)
+            }
+        }
+        .frame(height: 6)
+    }
 }

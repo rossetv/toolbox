@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PDF Toolbox
-# Copyright (C) 2026 PDF Toolbox authors
+# Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # This file is part of PDF Toolbox, released under the GNU Affero General

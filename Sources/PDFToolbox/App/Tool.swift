@@ -1,11 +1,11 @@
 // PDF Toolbox
-// Copyright (C) 2026 PDF Toolbox authors
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // This file is part of PDF Toolbox, released under the GNU Affero General
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
-import Foundation
+import SwiftUI
 
 /// The tools hosted by the shell's sidebar.
 ///
@@ -34,6 +34,17 @@ enum Tool: String, CaseIterable, Identifiable {
         case .ocr: return "text.viewfinder"
         case .merge: return "square.stack.3d.up.fill"
         case .split: return "square.split.2x1"
+        }
+    }
+
+    /// Tile colour. The mockup gives each tool its own coloured tile; these are iconography, not
+    /// interactive accents, so DESIGN.md's single-accent rule for controls still holds.
+    var tint: Color {
+        switch self {
+        case .compress: return Color(hex: 0xFF3B30)
+        case .ocr: return Color(hex: 0x5856D6)
+        case .merge: return Color(hex: 0x0071E3)
+        case .split: return Color(hex: 0xFF9500)
         }
     }
 
