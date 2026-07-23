@@ -105,10 +105,59 @@ struct OCREngine {
         guard try validator.validate(input: input, output: tempURL) else {
             throw OCRError.validationFailed
         }
+        try validateOCROutput(input: input, output: tempURL,
+                              textPages: Set(pageText.keys), pageCount: count)
         try FileManager.default.moveItem(at: tempURL, to: output)
         renamed = true
         progress(1.0)
         return .ocrAdded(pages: ocrPages, skipped: skipped)
+    }
+
+    /// OCR-specific fail-loud net, run before the output is ever placed.
+    ///
+    /// The generic `OutputValidator` samples a few pages and is tuned for lossy compression, where
+    /// the output legitimately differs. OCR needs stronger guarantees: it appends to an untrusted
+    /// file with a hand-rolled incremental-update writer, and a writer that mis-tokenises can emit
+    /// a plausible-looking but structurally corrupt document. Any failure here discards the output
+    /// and fails that file — a skipped file is always preferable to a silently corrupt one, and it
+    /// is the same visible outcome the object-stream limitation already produces.
+    private func validateOCROutput(input: URL, output: URL, textPages: Set<Int>, pageCount: Int) throws {
+        // 1. The incremental-update invariant, and the strongest check available: the original
+        //    file must be the output's verbatim prefix. That proves every original object — and
+        //    so every image XObject — is byte-identical, and catches any writer desync that
+        //    corrupted the copied region.
+        guard try Self.hasVerbatimPrefix(of: input, in: output) else {
+            throw OCRError.validationFailed
+        }
+        // 2. Structure survived the append.
+        guard let outDoc = PDFDocument(url: output), outDoc.pageCount == pageCount else {
+            throw OCRError.validationFailed
+        }
+        // 3. Every page we wrote text into must still render AND yield extractable text: rendering
+        //    proves the page object still parses, extraction proves the layer actually landed.
+        //    Checking all of them (not a sample) is what makes single-page corruption fail loud.
+        for i in textPages.sorted() {
+            guard let page = outDoc.page(at: i) else { throw OCRError.validationFailed }
+            _ = try service.render(page, maxDimension: 200)      // per-page render, then released
+            guard !(page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw OCRError.validationFailed
+            }
+        }
+    }
+
+    /// Byte-compares `input` against the head of `output` in bounded chunks — never loads either
+    /// file whole, so a large scan cannot blow memory just to be validated.
+    static func hasVerbatimPrefix(of input: URL, in output: URL) throws -> Bool {
+        let inHandle = try FileHandle(forReadingFrom: input)
+        let outHandle = try FileHandle(forReadingFrom: output)
+        defer { try? inHandle.close(); try? outHandle.close() }
+        let chunkSize = 1 << 20
+        while true {
+            let expected = try inHandle.read(upToCount: chunkSize) ?? Data()
+            if expected.isEmpty { return true }              // consumed the whole original
+            let actual = try outHandle.read(upToCount: expected.count) ?? Data()
+            if actual != expected { return false }
+        }
     }
 
     /// Render a page **upright** (rotation applied) at `dpi`, one page at a time. Uses
