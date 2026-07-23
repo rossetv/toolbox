@@ -30,8 +30,8 @@ enum FileNaming {
     /// `moveItem`.
     static func output(for input: URL, suffix: String, folder: URL?, reserving reserved: inout Set<String>) -> URL {
         let directory = folder ?? input.deletingLastPathComponent()
-        let base = input.deletingPathExtension().lastPathComponent
         let ext = input.pathExtension.isEmpty ? "pdf" : input.pathExtension
+        let base = truncatedBase(input.deletingPathExtension().lastPathComponent, suffix: suffix, ext: ext)
 
         var candidate = directory.appendingPathComponent("\(base)-\(suffix).\(ext)")
         var counter = 1
@@ -41,6 +41,23 @@ enum FileNaming {
         }
         reserved.insert(reservationKey(for: candidate))
         return candidate
+    }
+
+    /// macOS APFS/HFS+ filenames are limited to 255 UTF-8 bytes. A long basename (a ~250-character
+    /// name, or ~90 CJK characters at 3 bytes each) would otherwise exit the dedupe loop above only
+    /// to fail `FileManager.moveItem` with `ENAMETOOLONG` — every time, since retrying never
+    /// shortens it. Truncate `base` up front, preserving the suffix/extension and leaving headroom
+    /// for the dedupe counter, so the name that comes out the other end is always writable.
+    private static func truncatedBase(_ base: String, suffix: String, ext: String) -> String {
+        let maxFilenameBytes = 255
+        let reservedForCounter = "-\(suffix)-9999.\(ext)".utf8.count
+        let budget = maxFilenameBytes - reservedForCounter
+        guard budget > 0, base.utf8.count > budget else { return base }
+        var truncated = base
+        while truncated.utf8.count > budget {
+            truncated.removeLast()   // whole grapheme clusters — never splits a multi-byte character
+        }
+        return truncated
     }
 
     /// Case- and normalisation-insensitive key matching APFS/HFS+'s own filename comparison.

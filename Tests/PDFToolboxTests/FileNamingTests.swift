@@ -80,4 +80,33 @@ final class FileNamingTests: XCTestCase {
         XCTAssertEqual(outA.lastPathComponent, "Report-compressed.pdf")
         XCTAssertEqual(outB.lastPathComponent, "report-compressed-1.pdf")
     }
+
+    /// MINOR 5 regression: macOS filenames are capped at 255 UTF-8 bytes. An untruncated ~300-char
+    /// basename would exit the dedupe loop only to fail `moveItem` with `ENAMETOOLONG` every time.
+    func testLongBasenameIsTruncatedToFitFilesystemLimit() throws {
+        let dir = try uniqueDir()
+        let longName = String(repeating: "a", count: 300)
+        let input = dir.appendingPathComponent("\(longName).pdf")
+
+        let output = FileNaming.output(for: input, suffix: "compressed", folder: nil)
+
+        XCTAssertLessThanOrEqual(output.lastPathComponent.utf8.count, 255)
+        XCTAssertTrue(output.lastPathComponent.hasSuffix("-compressed.pdf"),
+                      "suffix and extension must survive truncation")
+    }
+
+    /// Same limit, but with multi-byte (3-bytes-per-character) CJK text: truncation must land on a
+    /// whole character boundary, never split a scalar mid-way through.
+    func testLongCJKBasenameIsTruncatedWithoutSplittingCharacters() throws {
+        let dir = try uniqueDir()
+        let longName = String(repeating: "字", count: 120)   // ~360 UTF-8 bytes
+        let input = dir.appendingPathComponent("\(longName).pdf")
+
+        let output = FileNaming.output(for: input, suffix: "compressed", folder: nil)
+
+        XCTAssertLessThanOrEqual(output.lastPathComponent.utf8.count, 255)
+        XCTAssertTrue(output.lastPathComponent.hasSuffix("-compressed.pdf"))
+        XCTAssertFalse(output.lastPathComponent.contains("\u{FFFD}"),
+                        "truncation must not split a multi-byte character")
+    }
 }
