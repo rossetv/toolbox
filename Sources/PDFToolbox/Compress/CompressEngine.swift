@@ -37,8 +37,16 @@ enum CompressError: Error, LocalizedError {
 /// nothing; re-validates every delivered output before success. A gs exit 0 that produces no /
 /// invalid output is a failure, never "already optimised".
 ///
-/// A content router seam is present (all types route to Rung-1 gs in v1); Rungs 2/3 slot in later.
+/// Content routing is live: a document classified `.scanBilevel` is attempted through Rung 2
+/// (binarise + CCITT G4, composed natively) and falls back to Rung 1 on any doubt; every other
+/// classification goes straight to Rung 1. Rung 3 (MRC) is not built.
 struct CompressEngine {
+    /// Longest side, in pixels, any Rung-2 page render may reach — the memory guard against a
+    /// hostile `/MediaBox`.
+    static let maxBilevelPixels: CGFloat = 5000
+    /// Effective resolution below which Rung 2 declines rather than shipping a degraded rebuild.
+    static let minBilevelDPI: CGFloat = 150
+
     let runner: any GhostscriptRunning
     let service: PDFService
     let validator: OutputValidator
@@ -88,10 +96,10 @@ struct CompressEngine {
 
         // 3. Rung 2 first for scans that are visually two-tone. Ghostscript's mono settings only
         //    apply to images that are ALREADY 1-bit, so a greyscale scan that merely looks
-        //    black-and-white is treated as a grey image and can come out LARGER (measured:
-        //    43,458 → 56,084 bytes). Binarising first and encoding CCITT G4 is where the large
-        //    saving is. Any failure, or a result that is not smaller and valid, falls through to
-        //    Rung 1 — no document is ever left unhandled or worse off (spec R2-N1).
+        //    black-and-white is treated as a grey image and can come out LARGER — measured on a
+        //    representative sample at roughly 29% growth. Binarising first and encoding CCITT G4
+        //    is where the large saving is. Any failure, or a result that is not smaller and valid,
+        //    falls through to Rung 1 — no document is ever left unhandled or worse off (R2-N1).
         if (try? service.classify(input)) == .scanBilevel,
            let bilevel = try? await bilevelCompress(input, preset: preset, to: work, progress: progress),
            bilevel < inputSize {
@@ -190,18 +198,37 @@ struct CompressEngine {
                                  progress: @escaping (Double) -> Void) async throws -> Int? {
         guard let document = PDFDocument(url: input), document.pageCount > 0 else { return nil }
 
+        // Rung 2 repaints each page as a bitmap, so everything that is not painted pixels is gone:
+        // a searchable text layer — including one this app's own OCR added — annotations, form
+        // fields, bookmarks. `classify` samples only five pages and calls a page "text" only above
+        // 40 characters, so a document with a sparse cover page or short pages can be routed here
+        // while still carrying content worth keeping. The check therefore has to be per page and
+        // over EVERY page, not a sample, and it must be here rather than in the classifier.
+        guard document.outlineRoot == nil else { return nil }
+
         var pages: [BilevelPDFComposer.Page] = []
         pages.reserveCapacity(document.pageCount)
 
         for index in 0..<document.pageCount {
             try Task.checkCancellation()
             guard let page = document.page(at: index) else { return nil }
+            guard page.annotations.isEmpty else { return nil }
+            let text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard text.isEmpty else { return nil }
             let box = page.bounds(for: .mediaBox)
             guard box.width > 0, box.height > 0 else { return nil }
 
             // Render at the preset's bilevel DPI, bounded so a hostile /MediaBox cannot blow memory.
             let scale = CGFloat(preset.bilevelDPI) / 72.0
-            let maxDimension = min(max(box.width, box.height) * scale, 5000)
+            let longestSide = max(box.width, box.height)
+            let maxDimension = min(longestSide * scale, Self.maxBilevelPixels)
+
+            // That cap is a memory guard and must never double as a silent quality decision. On a
+            // large-format page it becomes one: an A0 sheet at the highest preset clamps to about
+            // 107 dpi, losing hairlines and small print — and the result is still smaller, so it
+            // would ship as a success. Below the floor, decline and let Rung 1 handle it.
+            guard maxDimension / longestSide * 72.0 >= Self.minBilevelDPI else { return nil }
+
             let rendered = try service.render(page, maxDimension: maxDimension)
 
             // `binarise` applies the near-bilevel gate itself and returns nil when the page fails
@@ -210,7 +237,7 @@ struct CompressEngine {
                   let binarised = bitmap.cgImage,
                   let encoded = try? CCITTEncoder.encode(binarised) else { return nil }
 
-            pages.append(.init(image: encoded, size: box.size))
+            pages.append(.init(image: encoded, size: box.size, rotation: page.rotation))
             progress(Double(index + 1) / Double(document.pageCount))
         }
 

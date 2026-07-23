@@ -303,6 +303,61 @@ extension CompressEngineTests {
         XCTAssertEqual(outDoc.pageCount, inDoc.pageCount, "page count must survive Rung 2")
     }
 
+    /// The OCR-then-Compress journey. Rung 2 repaints every page as a bitmap, so running it over
+    /// a document that already carries a text layer destroys that layer permanently — including
+    /// one this app's own OCR just added — while still reporting a successful compression.
+    /// `classify` samples five pages and needs 40+ characters to call one "text", so a scan with
+    /// sparse pages routes here even after OCR.
+    func testARecognisedTextLayerSurvivesCompression() async throws {
+        let engine = try makeEngine()
+        let scan = try Fixtures.greyscaleBilevelScanPDF()
+
+        // Add an invisible text layer exactly as the OCR tool does.
+        let ocr = scan.deletingLastPathComponent().appendingPathComponent("scan-ocr.pdf")
+        let page = try XCTUnwrap(PDFDocument(url: scan)?.page(at: 0))
+        try PDFWriter().appendTextLayer(
+            to: scan, output: ocr,
+            pageText: [0: [PositionedText(text: "INVOICE",
+                                          boundingBox: CGRect(x: 0.1, y: 0.5, width: 0.4, height: 0.06))]],
+            geometry: [0: PageGeometry(mediaBox: page.bounds(for: .mediaBox), rotation: 0)])
+
+        let recognised = (PDFDocument(url: ocr)?.string ?? "")
+        XCTAssertTrue(recognised.contains("INVOICE"), "fixture precondition: the layer must be there")
+
+        let output = scan.deletingLastPathComponent().appendingPathComponent("scan-ocr-compressed.pdf")
+        let outcome = try await engine.compress(ocr, preset: .balanced, to: output) { _ in }
+
+        // On `.noGain` nothing is written and the user simply keeps the original, so the file that
+        // must still carry the text is whichever one they are left holding.
+        let delivered = FileManager.default.fileExists(atPath: output.path) ? output : ocr
+        let after = (PDFDocument(url: delivered)?.string ?? "")
+        XCTAssertTrue(after.contains("INVOICE"),
+                      "the text layer did not survive compression (outcome \(outcome)) — a Rung-2 "
+                      + "rebuild drops everything that is not painted pixels")
+    }
+
+    /// A page carrying `/Rotate` must not come back sideways. The bitmap is rendered from the
+    /// unrotated media box, so the composed page has to carry the same `/Rotate` through.
+    func testRotatedScanKeepsItsOrientation() async throws {
+        let engine = try makeEngine()
+        let input = try Fixtures.greyscaleBilevelScanPDF()
+        let rotated = input.deletingLastPathComponent().appendingPathComponent("rotated.pdf")
+        let doc = try XCTUnwrap(PDFDocument(url: input))
+        try XCTUnwrap(doc.page(at: 0)).rotation = 90
+        XCTAssertTrue(doc.write(to: rotated))
+
+        let before = try XCTUnwrap(PDFDocument(url: rotated)?.page(at: 0))
+        let output = input.deletingLastPathComponent().appendingPathComponent("rotated-compressed.pdf")
+        _ = try await engine.compress(rotated, preset: .balanced, to: output) { _ in }
+
+        let after = try XCTUnwrap(PDFDocument(url: output)?.page(at: 0))
+        XCTAssertEqual(after.rotation, before.rotation, "the page's /Rotate must survive compression")
+        // Rotation is what makes these differ; comparing the displayed bounds catches a page that
+        // kept its rotation value but lost the geometry it applies to.
+        XCTAssertEqual(after.bounds(for: .mediaBox).size.width,
+                       before.bounds(for: .mediaBox).size.width, accuracy: 1)
+    }
+
     /// A colour photo must never be binarised — that would destroy it. It must fall through to
     /// Rung 1 and still produce a valid, no-larger result.
     func testColourPhotoIsNotBinarised() async throws {

@@ -44,6 +44,11 @@ struct OutputValidator {
             guard inInk >= Self.contentFloor else { continue }   // input had no real content to lose
             let outInk = try Self.inkRatio(service.render(outPage, maxDimension: 800))
             if outInk < inInk * Self.minRetainedInk { return false }
+            // Bounded upwards too. A one-sided floor passes the worst corruption there is: an
+            // inverted or ink-flooded page measures near 1.0 and sails through, so any future
+            // polarity or bitstream regression would be delivered as a success rather than
+            // falling back. Compression never multiplies a page's ink; this only catches damage.
+            if outInk > inInk * Self.maxRetainedInk { return false }
         }
         return true
     }
@@ -56,6 +61,10 @@ struct OutputValidator {
     /// has effectively lost its content (compression corruption). Lossy downsampling preserves the
     /// bulk of a page's ink coverage, so a genuine compressed page stays well above this.
     private static let minRetainedInk = 0.3
+    /// The ceiling half of the same test. Deliberately generous — binarising a soft greyscale scan
+    /// legitimately thickens strokes — while still an order of magnitude below an inversion, which
+    /// turns a sparse page's ink ratio from roughly 0.02 to roughly 0.98.
+    private static let maxRetainedInk = 3.0
 
     /// Fraction of sampled pixels that carry ink (are not near-white).
     ///
