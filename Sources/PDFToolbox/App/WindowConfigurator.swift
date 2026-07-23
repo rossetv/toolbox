@@ -52,7 +52,7 @@ enum WindowSetup {
                 }
                 // Name the window for the app, not the selected tool: the detail views used to
                 // set it and it read "Compress"/"OCR", which says nothing about what is running.
-                window.title = "PDF Toolbox"
+                window.title = "Toolbox"
                 // The sidebar list does not inset itself for the titlebar, so with a
                 // full-size content view its rows draw a titlebar's height too high — over the
                 // traffic lights, with the first entries scrolled out of sight entirely.
@@ -61,7 +61,7 @@ enum WindowSetup {
 
                 // Start with nothing focused. The first focusable control is the sidebar's
                 // collapse toggle, whose hit area is the whole header row, so auto-focusing it on
-                // launch draws a keyboard focus ring around the "PDF Toolbox" title — which reads
+                // launch draws a keyboard focus ring around the "Toolbox" title — which reads
                 // as a stray selected box, not as focus. Keyboard users are unaffected: Tab still
                 // moves focus and every control still shows its ring, per DESIGN.md.
                 window.makeFirstResponder(nil)

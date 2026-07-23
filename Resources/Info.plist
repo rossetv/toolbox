@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>PDF Toolbox</string>
+	<string>Toolbox</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconFile</key>
@@ -17,7 +17,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>PDF Toolbox</string>
+	<string>Toolbox</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -29,11 +29,11 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
 	<key>NSDesktopFolderUsageDescription</key>
-	<string>PDF Toolbox needs access to compress PDFs you select from this folder.</string>
+	<string>Toolbox needs access to compress PDFs you select from this folder.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
-	<string>PDF Toolbox needs access to compress PDFs you select from this folder.</string>
+	<string>Toolbox needs access to compress PDFs you select from this folder.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
-	<string>PDF Toolbox needs access to compress PDFs you select from this folder.</string>
+	<string>Toolbox needs access to compress PDFs you select from this folder.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie). Licensed under the GNU AGPL v3.0 or later.</string>
 </dict>
