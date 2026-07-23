@@ -32,15 +32,6 @@ final class MRCSegmenterTests: XCTestCase {
         bitmap.bits[y * bitmap.bytesPerRow + x / 8] & (UInt8(0x80) >> UInt8(x % 8)) == 0
     }
 
-    /// Fraction of pixels the mask marks as ink, ignoring row padding bits.
-    private func inkFraction(_ bitmap: BilevelBitmap) -> Double {
-        var ink = 0
-        for y in 0..<bitmap.height {
-            for x in 0..<bitmap.width where isInk(bitmap, x, y) { ink += 1 }
-        }
-        return Double(ink) / Double(bitmap.width * bitmap.height)
-    }
-
     // MARK: the mask
 
     /// Black bars on white paper: the mask must cover almost all bar pixels and almost no
@@ -126,26 +117,43 @@ final class MRCSegmenterTests: XCTestCase {
                           "the gradient background must not flood into ink")
     }
 
-    /// C1 regression: an odd width forces `CGContext` to pad each row. If `greyBuffer` read that
-    /// padding (zero bytes = black under DeviceGray), a spurious ink strip would appear at the
-    /// right edge and the ink fraction would spike. The odd-width mask's ink fraction must match
-    /// the even-width one for the identical content.
+    /// C1 regression: an odd width forces `CGContext` to pad each row. Reading that padding
+    /// (zero bytes = black under DeviceGray) with the padded stride mistaken for the compact
+    /// width smears each row diagonally, inking paper columns and clearing bar columns. The test
+    /// is *structural*, not aggregate: a whole-page ink-fraction comparison survives such a
+    /// smear (a vertical-bar pattern's per-row ink count is invariant to a horizontal shift), so
+    /// it must assert per-column that bars stay inked and paper stays clean on the odd-width mask.
     func testOddWidthPaddingRegression() throws {
         // Certify the odd width genuinely pads a DeviceGray 8bpc row (mirrors BilevelScan's
         // padding regression): without padding this test would guard nothing.
-        let oddWidth = 61, height = 80
+        let oddWidth = 61, height = 80, barWidth = 6, period = 20
         let probe = try XCTUnwrap(CGContext(data: nil, width: oddWidth, height: height,
                                             bitsPerComponent: 8, bytesPerRow: 0,
                                             space: CGColorSpaceCreateDeviceGray(),
                                             bitmapInfo: CGImageAlphaInfo.none.rawValue))
         XCTAssertGreaterThan(probe.bytesPerRow, oddWidth, "the fixture width must force row padding")
 
-        let pattern: (Int, Int) -> Int = { x, _ in (x % 20) < 6 ? 0 : 255 }
-        let odd = try XCTUnwrap(MRCSegmenter.binarise(try grey(width: oddWidth, height: height, pattern)))
-        let even = try XCTUnwrap(MRCSegmenter.binarise(try grey(width: 60, height: height, pattern)))
+        let image = try grey(width: oddWidth, height: height) { x, _ in
+            (x % period) < barWidth ? 0 : 255
+        }
+        let mask = try XCTUnwrap(MRCSegmenter.binarise(image))
 
-        XCTAssertEqual(inkFraction(odd), inkFraction(even), accuracy: 0.02,
-                       "row padding must not leak into the mask (C1)")
+        var barPixels = 0, barInk = 0, paperPixels = 0, paperInk = 0
+        for y in 0..<height {
+            for x in 0..<oddWidth {
+                if (x % period) < barWidth {
+                    barPixels += 1
+                    if isInk(mask, x, y) { barInk += 1 }
+                } else {
+                    paperPixels += 1
+                    if isInk(mask, x, y) { paperInk += 1 }
+                }
+            }
+        }
+        XCTAssertGreaterThan(Double(barInk) / Double(barPixels), 0.90,
+                             "bars stay covered at an odd width")
+        XCTAssertLessThan(Double(paperInk) / Double(paperPixels), 0.02,
+                          "a stride-vs-width mix-up would smear ink into the paper columns (C1)")
     }
 
     // MARK: speck removal
