@@ -67,7 +67,9 @@ enum Theme {
     }
 
     enum Radius {
-        /// Full pill (Apple CTA radius) — `PrimaryButton`, pill links, `StatPill`.
+        /// Full pill (DESIGN.md's 980px) — the *link* CTAs ("Learn more"/"Shop") and compact
+        /// badges such as `StatPill`. Not the primary button: DESIGN.md §4 gives that `control`
+        /// (8px), and the mockup agrees.
         static let pill: CGFloat = 980
         /// Standard card/button corner. DESIGN.md's Do/Don't caps rectangular corners at 12px
         /// (980 reserved for pills), so this is also the ceiling for any rectangular container —

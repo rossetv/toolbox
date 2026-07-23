@@ -15,8 +15,14 @@ import SwiftUI
 
 // MARK: - PrimaryButton
 
-/// The signature Apple pill CTA (DESIGN.md §7: "980px pill radius... the signature Apple link
-/// shape"). Filled with `Theme.Colors.accent`, white label, disabled/hover states.
+/// The primary call-to-action. Filled with `Theme.Colors.accent`, white label, disabled/hover
+/// states.
+///
+/// Radius is DESIGN.md §4's 8px "Primary Blue (CTA)" button, not the 980px pill: the pill
+/// radius is reserved for *link* CTAs ("Learn more"/"Shop") and compact badges, and the Claude
+/// Design mockup draws both of its primary actions ("Choose Files…", "Compress N PDFs") as
+/// small-radius buttons too. The design system's earlier pill reading of "CTA radius" was the
+/// wrong half of §4.
 struct PrimaryButton: View {
     let title: String
     var isEnabled: Bool = true
@@ -39,7 +45,7 @@ struct PrimaryButton: View {
                 colors: [Color(hex: 0x0A84FF), Theme.Colors.accent],
                 startPoint: .top, endPoint: .bottom
             ),
-            in: RoundedRectangle(cornerRadius: Theme.Radius.pill, style: .continuous)
+            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
         )
         .shadow(color: Theme.Colors.accent.opacity(isEnabled ? 0.35 : 0), radius: 4, x: 0, y: 2)
         .opacity(isEnabled ? (isHovering ? 0.9 : 1) : 0.4)
@@ -60,6 +66,47 @@ struct PrimaryButton: View {
     VStack(spacing: 16) {
         PrimaryButton(title: "Compress 3 PDFs") {}
         PrimaryButton(title: "Disabled", isEnabled: false) {}
+    }
+    .padding(40)
+    .background(Theme.Colors.surface)
+    .preferredColorScheme(.dark)
+}
+
+// MARK: - LinkButton
+
+/// A borderless text action in DESIGN.md's link blue — the mockup's "+ Add", "Clear",
+/// "Change…" affordances. Secondary to `PrimaryButton`: no fill, no border, just the link.
+struct LinkButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .themeFont(.link)
+                .foregroundStyle(Theme.Colors.link)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+#Preview("LinkButton – Light") {
+    HStack(spacing: 14) {
+        LinkButton(title: "+ Add") {}
+        LinkButton(title: "Clear finished") {}
+        LinkButton(title: "Change…") {}
+    }
+    .padding(40)
+    .background(Theme.Colors.surface)
+    .preferredColorScheme(.light)
+}
+
+#Preview("LinkButton – Dark") {
+    HStack(spacing: 14) {
+        LinkButton(title: "+ Add") {}
+        LinkButton(title: "Clear finished") {}
+        LinkButton(title: "Change…") {}
     }
     .padding(40)
     .background(Theme.Colors.surface)
@@ -129,6 +176,10 @@ struct DropZone: View {
                 Circle()
                     .fill(Theme.Colors.surface)
                     .frame(width: 66, height: 66)
+                    // The disc is `surface`, and so is the pane it sits on — in dark mode the
+                    // shadow alone doesn't separate them. The hairline accent ring is the
+                    // mockup's own inset border and is what makes the disc read in both modes.
+                    .overlay(Circle().strokeBorder(Theme.Colors.accent.opacity(0.22), lineWidth: 1))
                     .shadow(color: Theme.Colors.accent.opacity(0.18), radius: 10, x: 0, y: 6)
                 Image(systemName: "arrow.down.doc")
                     .font(.system(size: 26, weight: .medium))
@@ -300,22 +351,30 @@ private let previewPresetOptions = [
 
 // MARK: - FileRow
 
-/// One file in a batch queue (DESIGN.md handover §5 "File-queue row"). Covers every state the
-/// spec calls for: queued (with remove), in-progress (determinate or indeterminate), done
-/// (original→new + saved badge), already-optimised, and error — inline, so a failing file in a
-/// batch doesn't disrupt the rest of the list.
+/// One file in a batch queue (DESIGN.md handover §5 "File-queue row"). Covers every state
+/// `JobState`/`JobOutcome` can reach in either tool — inline, so a failing file in a batch
+/// doesn't disrupt the rest of the list. Purely presentational: the consuming view maps its
+/// job state onto a `Status` and supplies any wording that varies by tool.
 struct FileRow: View {
     enum Status {
-        case queued
+        /// Waiting to start. `detail` is the trailing note — Compress puts its size estimate
+        /// there, OCR (which has nothing to predict) just says "Queued".
+        case queued(detail: String?)
+        /// Pre-flight analysis in flight (Compress's per-file size estimate).
+        case analysing
         case inProgress(fraction: Double?)
+        /// Finished with a real size delta: original → new, plus a saved-percentage pill.
         case done(originalBytes: Int, newBytes: Int)
-        case alreadyOptimised
+        /// Finished with a message rather than a size delta (OCR's "Searchable — 12 pages").
+        case succeeded(String)
+        /// Finished with nothing to do — "Already optimised" / "Already searchable".
+        case unchanged(String)
         case error(String)
     }
 
     let name: String
     let meta: String
-    var status: Status = .queued
+    var status: Status = .queued(detail: nil)
     var onRemove: (() -> Void)?
 
     var body: some View {
@@ -350,9 +409,19 @@ struct FileRow: View {
     @ViewBuilder
     private var trailing: some View {
         switch status {
-        case .queued:
-            if let onRemove {
-                removeButton(onRemove)
+        case .queued(let detail):
+            HStack(spacing: 11) {
+                if let detail {
+                    Text(detail).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
+                }
+                if let onRemove {
+                    removeButton(onRemove)
+                }
+            }
+        case .analysing:
+            HStack(spacing: Theme.Spacing.small) {
+                ProgressView().controlSize(.small)
+                Text("Analysing…").themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
             }
         case .inProgress(let fraction):
             if let fraction {
@@ -370,9 +439,16 @@ struct FileRow: View {
                 StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
             }
-        case .alreadyOptimised:
+        case .succeeded(let message):
             Label {
-                Text("Already optimised").themeFont(.micro)
+                Text(message).themeFont(.micro).lineLimit(1)
+            } icon: {
+                Image(systemName: "checkmark.circle.fill")
+            }
+            .foregroundStyle(Theme.Colors.success)
+        case .unchanged(let message):
+            Label {
+                Text(message).themeFont(.micro).lineLimit(1)
             } icon: {
                 Image(systemName: "checkmark.circle")
             }
@@ -409,30 +485,137 @@ struct FileRow: View {
     }
 }
 
-#Preview("FileRow – Light") {
+/// Every `Status` in one stack — the states the two tools actually reach.
+private var fileRowStateGallery: some View {
     VStack(spacing: 8) {
-        FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB · 88 pages", status: .queued, onRemove: {})
+        FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted"))
+        FileRow(name: "Board-Minutes.pdf", meta: "3.2 MB", status: .analysing)
         FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .inProgress(fraction: 0.62))
-        FileRow(name: "Product-Brochure.pdf", meta: "6 pages", status: .done(originalBytes: 5_400_000, newBytes: 1_400_000))
-        FileRow(name: "Already-Tiny.pdf", meta: "1 page", status: .alreadyOptimised)
+        FileRow(name: "User-Manual.pdf", meta: "19.3 MB", status: .inProgress(fraction: nil))
+        FileRow(name: "Product-Brochure.pdf", meta: "5.4 MB", status: .done(originalBytes: 5_400_000, newBytes: 1_400_000))
+        FileRow(name: "Receipts.pdf", meta: "2.1 MB", status: .succeeded("Searchable — 12 pages"))
+        FileRow(name: "Already-Tiny.pdf", meta: "184 KB", status: .unchanged("Already optimised"))
         FileRow(name: "Encrypted.pdf", meta: "—", status: .error("Password protected"))
     }
     .padding(24)
-    .background(Theme.Colors.surface)
-    .preferredColorScheme(.light)
+}
+
+#Preview("FileRow – Light") {
+    fileRowStateGallery
+        .background(Theme.Colors.surface)
+        .preferredColorScheme(.light)
 }
 
 #Preview("FileRow – Dark") {
-    VStack(spacing: 8) {
-        FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB · 88 pages", status: .queued, onRemove: {})
-        FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .inProgress(fraction: nil))
-        FileRow(name: "Product-Brochure.pdf", meta: "6 pages", status: .done(originalBytes: 5_400_000, newBytes: 1_400_000))
-        FileRow(name: "Already-Tiny.pdf", meta: "1 page", status: .alreadyOptimised)
-        FileRow(name: "Encrypted.pdf", meta: "—", status: .error("Password protected"))
+    fileRowStateGallery
+        .background(Theme.Colors.surface)
+        .preferredColorScheme(.dark)
+}
+
+// MARK: - ToolIconTile
+
+/// A tool's identity glyph: an SF Symbol on a rounded, accent-filled square (the mockup's
+/// sidebar and header tile). The mockup gives each tool its own colour; this stays on the one
+/// `Theme.Colors.accent` because DESIGN.md §7 spends the entire chromatic budget on that blue —
+/// DESIGN.md wins the conflict. Unavailable tools are dimmed by their row, not re-coloured.
+struct ToolIconTile: View {
+    let systemImage: String
+    var size: CGFloat = 22
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size * 0.25, style: .continuous)
+            .fill(Theme.Colors.accent)
+            .frame(width: size, height: size)
+            .overlay(
+                Image(systemName: systemImage)
+                    .font(.system(size: size * 0.52, weight: .semibold))
+                    .foregroundStyle(.white)
+            )
     }
-    .padding(24)
+}
+
+// MARK: - SectionLabel
+
+/// A small uppercase group label above a cluster of controls ("QUALITY", "ACCURACY"). The
+/// positive `tracking` deliberately overrides `microBold`'s negative value: DESIGN.md tracks
+/// tight for *reading* text, and uppercase micro-labels need the air back (the mockup sets
+/// +0.4px on exactly these labels).
+struct SectionLabel: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text.uppercased())
+            .themeFont(.microBold)
+            .tracking(0.4)
+            .foregroundStyle(Theme.Colors.textTertiary)
+    }
+}
+
+// MARK: - ToolHeader
+
+/// The detail pane's header strip: tool glyph, name and a one-line descriptor above a hairline
+/// rule — the mockup's content toolbar. Takes plain strings rather than a `Tool` so the design
+/// system stays independent of the app's model layer.
+struct ToolHeader: View {
+    let systemImage: String
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 9) {
+                ToolIconTile(systemImage: systemImage)
+                Text(title).themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
+            }
+            Text(subtitle)
+                .themeFont(.caption)
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Theme.Spacing.large)
+        .padding(.vertical, Theme.Spacing.medium)
+        .background(Theme.Colors.surface)
+        // An explicit hairline rather than `Divider()`: a bare Divider outside a stack takes its
+        // orientation from context, and this one lives in an overlay. The mockup's rule is
+        // 0.5px at ~9% ink, which reads the same in both appearances off `textTertiary`.
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Theme.Colors.textTertiary.opacity(0.2))
+                .frame(height: 0.5)
+        }
+    }
+}
+
+private var toolChromeGallery: some View {
+    VStack(alignment: .leading, spacing: 0) {
+        ToolHeader(
+            systemImage: "arrow.down.right.and.arrow.up.left",
+            title: "Compress",
+            subtitle: "Shrink large PDFs. Text and vectors stay sharp; images are re-encoded."
+        )
+        VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+            SectionLabel("Quality")
+            HStack(spacing: Theme.Spacing.small) {
+                ToolIconTile(systemImage: "text.viewfinder")
+                ToolIconTile(systemImage: "square.stack.3d.up.fill")
+                ToolIconTile(systemImage: "square.split.2x1", size: 34)
+            }
+        }
+        .padding(Theme.Spacing.large)
+    }
+    .frame(width: 520, alignment: .leading)
     .background(Theme.Colors.surface)
-    .preferredColorScheme(.dark)
+}
+
+#Preview("Tool chrome – Light") {
+    toolChromeGallery.preferredColorScheme(.light)
+}
+
+#Preview("Tool chrome – Dark") {
+    toolChromeGallery.preferredColorScheme(.dark)
 }
 
 // MARK: - Composite preview (integration check)
@@ -446,9 +629,9 @@ struct FileRow: View {
             Text("Clear").themeFont(.link).foregroundStyle(Theme.Colors.link)
         }
         VStack(spacing: 8) {
-            FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB · 88 pages", status: .queued, onRemove: {})
-            FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB · 12 pages", status: .queued, onRemove: {})
-            FileRow(name: "Product-Brochure.pdf", meta: "5.4 MB · 6 pages", status: .queued, onRemove: {})
+            FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted"))
+            FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .queued(detail: "≈4.9 MB predicted"))
+            FileRow(name: "Product-Brochure.pdf", meta: "5.4 MB", status: .queued(detail: "~1.4 MB predicted"))
         }
         SegmentedPreset(options: previewPresetOptions, selection: .constant("balanced"))
         HStack {
