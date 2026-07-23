@@ -110,4 +110,41 @@ final class SeatbeltRunTests: XCTestCase {
         XCTAssertGreaterThan(elapsed, 1, "should have waited for the ~2s cap, not failed instantly")
         XCTAssertLessThan(elapsed, 60, "should terminate near the cap, well under the 300s production bound")
     }
+
+    // MARK: M1 — cancelling the caller terminates the running gs child
+
+    /// The wall-clock cap is deliberately **generous** here: if the watchdog were what stopped the
+    /// run, this test would pass for the wrong reason. The proof that cancellation really killed
+    /// gs is the pair of assertions below — `CancellationError` (not `.timedOut`) and a return far
+    /// inside the cap. `run` only resumes after `waitUntilExit()` returns, so a prompt return *is*
+    /// evidence the child process is gone.
+    func testCancellingTheTaskTerminatesGhostscript() async throws {
+        let ps = try Fixtures.uniqueURL("infinite-cancel.ps")
+        let dir = ps.deletingLastPathComponent()
+        try Data("%!PS-Adobe-3.0\n{ } loop\n".utf8).write(to: ps)
+        let output = dir.appendingPathComponent("cancelled.pdf")
+
+        let runner = try GhostscriptRunner(wallClockTimeout: 120)
+        let start = Date()
+        let handle = Task {
+            try await runner.run(
+                arguments: ["-sDEVICE=pdfwrite", "-sOutputFile=\(output.path)", ps.path],
+                readPaths: [ps],
+                writePaths: [dir])
+        }
+        // Let gs actually get going before pulling the plug (launch is well under a second).
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        handle.cancel()
+
+        do {
+            _ = try await handle.value
+            XCTFail("expected the cancelled gs run to throw")
+        } catch is CancellationError {
+            // expected
+        } catch let error as GhostscriptError {
+            XCTFail("expected CancellationError, got \(error) — the watchdog, not cancellation, stopped gs")
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 30, "cancellation must terminate gs at once, not wait out the 120s cap")
+    }
 }
