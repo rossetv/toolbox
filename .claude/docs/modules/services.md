@@ -81,10 +81,13 @@ output re-validation, and the hand-written PDF incremental-update writer. Both
   copy of a key that was actually present, which makes the whole dictionary's meaning
   undefined (PDF 32000-1 §7.3.7). `dictValue`/`dictName`/`dictInt`/`dictRef` are the
   read-only convenience wrappers that collapse both cases to nil.
-- **`PDFSyntax.parseInt` refuses integers above `maxPlausibleInteger` (2^40)**: an
-  unbounded `Int(digits)` on a crafted object number overflows to `Int.max`, and the
-  writer's first `+= 1` on it traps and crashes — reachable from a few dozen bytes of
-  untrusted input. Nothing legitimate in a PDF needs a value this large.
+- **`PDFSyntax.parseInt` refuses integers above `maxPlausibleInteger` (2^40)**: a PDF may
+  name object `9223372036854775807`, which *is* `Int.max`, so an unbounded `Int(digits)`
+  parses it successfully and the writer's first `+= 1` on it then traps and crashes —
+  reachable from a few dozen bytes of untrusted input. The failure mode is a *successful*
+  parse, not an overflow: Swift's `Int(String)` returns nil above `Int.max` rather than
+  clamping to it, so a nil-check alone would not catch this. Nothing legitimate in a PDF
+  needs a value this large.
 - **`PDFFlate.inflate` is budget-bounded, never "inflate and see"**: a stream's
   compressed size says nothing about its expanded size, so decoding an untrusted
   object stream without a ceiling is a decompression bomb. `PDFWriter` spends one
