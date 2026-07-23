@@ -18,18 +18,18 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 
 | Doc | Purpose | Verified |
 |-----|---------|----------|
-| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-23 @ 55eb2d9 |
-| [DECISIONS](DECISIONS.md) | append-only decision log | 2026-07-23 @ 55eb2d9 |
+| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-23 @ 6887440 |
+| [DECISIONS](DECISIONS.md) | append-only decision log | 2026-07-23 @ 6887440 |
 | [MEMORY](MEMORY.md) | project memory index — always injected | 2026-07-23 @ 55eb2d9 |
 | [GATES](GATES.md) | the gates that define "done" — Claude's runbook | 2026-07-23 @ 55eb2d9 |
-| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-23 @ 55eb2d9 |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-23 @ 6887440 |
 
 ## Modules
 
 | Module | Purpose | Entrypoint | Doc |
 |--------|---------|-----------|-----|
 | App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/PDFToolbox/App/PDFToolboxApp.swift` | [→](docs/modules/app.md) |
-| Compress | Rung-1 (Ghostscript) compression, estimate, batch UI | `Sources/PDFToolbox/Compress/CompressEngine.swift` | [→](docs/modules/compress.md) |
+| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) compression, estimate, batch UI | `Sources/PDFToolbox/Compress/CompressEngine.swift` | [→](docs/modules/compress.md) |
 | OCR | Vision-based invisible text layer, batch UI | `Sources/PDFToolbox/OCR/OCREngine.swift` | [→](docs/modules/ocr.md) |
 | Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/PDFToolbox/Services/GhostscriptRunner.swift` | [→](docs/modules/services.md) |
 | Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/PDFToolbox/Shared/ToolQueue.swift` | [→](docs/modules/shared.md) |

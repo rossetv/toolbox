@@ -15,7 +15,7 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 | Module | Responsibility | Entrypoint | Doc |
 |--------|----------------|-----------|-----|
 | App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/PDFToolbox/App/PDFToolboxApp.swift` | [→](modules/app.md) |
-| Compress | Rung-1 (Ghostscript) compression, estimate, batch UI | `Sources/PDFToolbox/Compress/CompressEngine.swift` | [→](modules/compress.md) |
+| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) compression, estimate, batch UI | `Sources/PDFToolbox/Compress/CompressEngine.swift` | [→](modules/compress.md) |
 | OCR | Vision-based invisible text layer, batch UI | `Sources/PDFToolbox/OCR/OCREngine.swift` | [→](modules/ocr.md) |
 | Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/PDFToolbox/Services/GhostscriptRunner.swift` | [→](modules/services.md) |
 | Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/PDFToolbox/Shared/ToolQueue.swift` | [→](modules/shared.md) |
@@ -27,8 +27,11 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 1. **Compress**: `CompressView` (drop/pick) → `CompressViewModel.add` → `CompressEstimator.estimate`
    (per-file, time-boxed) → user taps Compress → `CompressViewModel.compress` pre-allocates
    output names (`FileNaming`) → `ToolQueue.run` → `CompressEngine.compress` → `OpenGuard.inspect`
-   → stage into temp work dir → `GhostscriptRunner.run` (`sandbox-exec` + `SeatbeltProfile`) →
-   size/page-count gain check → `OutputValidator.validate` → atomic rename to destination.
+   → stage into temp work dir → if `PDFService.classify` says `.scanBilevel`, try Rung 2 first
+   (`BilevelScan.binarise` → `CCITTEncoder.encode` → `BilevelPDFComposer.compose`, per page) →
+   otherwise, or on any Rung-2 failure/no-gain, `GhostscriptRunner.run` (`sandbox-exec` +
+   `SeatbeltProfile`) → size/page-count gain check → `OutputValidator.validate` → atomic rename
+   to destination.
 2. **OCR**: `OCRView` (drop/pick) → `OCRViewModel.add` → user taps run → `OCRViewModel.run`
    pre-allocates output names → `ToolQueue.run` (capped at 2) → `OCREngine.ocr` → `OpenGuard.inspect`
    → per page: `PDFService.pageHasText` (skip) or render-upright + `VisionOCR.recognise` →
@@ -68,6 +71,7 @@ empty queue.
 - **`ToolQueue` is generic over its job body** — it knows nothing about PDFs,
   Ghostscript, or Vision; both view models supply the tool-specific closure. See
   [Shared](modules/shared.md).
-- **Rung 2/3 (native JBIG2/CCITT/MRC scan pipeline) is spec'd but not built.** Every
-  document compresses via Rung-1 Ghostscript today, regardless of `PDFContentType`.
-  Do not document or assume a content-routed engine exists until it lands.
+- **Rung 2 (native bilevel scan pipeline: binarise + CCITT G4) is built and routes on
+  `PDFContentType`** — `.scanBilevel` tries it first, falling back to Rung-1
+  Ghostscript on any failure or no gain; `.bornDigital`/`.scanColour` go straight to
+  Rung 1. **Rung 3 (MRC, for colour scans) is spec'd but not built.**

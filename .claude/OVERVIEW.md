@@ -15,15 +15,16 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 Native macOS app (SwiftUI, macOS 14+, Apple Silicon) that compresses and OCRs PDFs
 locally — no cloud upload, no subscription. An extensible sidebar shell; v1 ships two
 tools, **Compress** and **OCR**, sharing a queue/batch/state machine. Named "toolbox"
-because more PDF utilities are planned (Merge/Split are dimmed "Soon" placeholders,
-not built).
+because more PDF utilities are planned — the sidebar lists only tools that are
+actually built (`Tool`), not placeholders for ones that aren't.
 
 ## Domain concepts
 
 | Term | Meaning |
 |------|---------|
-| Rung 1 | The only compression path built in v1: tuned Ghostscript `pdfwrite`, applied to every document regardless of content type. |
-| Rung 2/3 | Spec'd but **not built**: a native scan pipeline (JBIG2/CCITT bilevel, MRC colour) that would bypass Ghostscript for scans. `PDFContentType`'s colour/bilevel split exists only to seed this later. |
+| Rung 1 | Tuned Ghostscript `pdfwrite` — the fallback path for every document, and the only path for `.bornDigital`/`.scanColour` content. |
+| Rung 2 | Built: binarise a visually two-tone (`.scanBilevel`) scan, then encode CCITT G4 via ImageIO — tried first for that content type, falling back to Rung 1 on any failure or no gain. |
+| Rung 3 | Spec'd but **not built**: an MRC pipeline for `.scanColour` scans. |
 | Incremental update | The PDF technique `PDFWriter` uses for OCR: append new objects + a new xref + trailer with `/Prev`; original bytes are an untouched verbatim prefix. |
 | Seatbelt sandbox | The `sandbox-exec` profile every Ghostscript invocation runs inside — no exception. |
 | TCC-protected folder | `~/Documents`, `~/Downloads`, `~/Desktop` — folders macOS gates behind a user consent prompt that a non-interactive sandboxed child process cannot answer. |
@@ -52,8 +53,8 @@ No network access anywhere in the app; the seatbelt profile explicitly denies it
 ## Repo layout
 
 ```
-Sources/PDFToolbox/App/           # shell: entry point, NavigationSplitView, sidebar, Tool enum, smoke test
-Sources/PDFToolbox/Compress/      # Compress tool: engine, estimator, view, view model
+Sources/PDFToolbox/App/           # shell: entry point, sidebar/detail split, window setup, Tool enum, smoke test
+Sources/PDFToolbox/Compress/      # Compress tool: Rung-1/2 engine, bilevel scan/CCITT/composer, estimator, view, view model
 Sources/PDFToolbox/OCR/           # OCR tool: engine, Vision wrapper, options, view, view model
 Sources/PDFToolbox/Services/      # gs runner + sandbox profile, PDF inspection, output validation, PDF writer
 Sources/PDFToolbox/Shared/        # ToolQueue (batch runner), file naming, canonical-path, system info, logging

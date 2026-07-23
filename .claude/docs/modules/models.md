@@ -30,9 +30,10 @@ presets, content classification, and size estimates. No behaviour, no I/O.
 - `CompressPreset.gsArguments()` is the **only** place gs tuning flags are assembled —
   `CompressEngine` appends only `-sOutputFile=` and the input path to this list.
 - `PDFContentType`'s colour/bilevel split is classified by `PDFService.classify`
-  ([Services](services.md)) but **not currently consumed for routing** — every type
-  compresses via Rung-1 gs today (see [Compress](compress.md)). The split exists to
-  seed a future Rung 2/3 native scan pipeline.
+  ([Services](services.md)) and **is** consumed for routing: `.scanBilevel` routes
+  through Rung 2 (binarise + CCITT G4) first, falling back to Rung 1 gs on any
+  failure or no gain; `.bornDigital` and `.scanColour` go straight to Rung 1 (see
+  [Compress](compress.md)). Rung 3 (MRC, for `.scanColour`) is not built.
 
 ## Related
 

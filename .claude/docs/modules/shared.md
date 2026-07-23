@@ -24,6 +24,7 @@ avoidance, path canonicalisation, performance-core count, and logging categories
 | `Sources/PDFToolbox/Shared/CanonicalPath.swift` | `URL.canonical` / `URL.canonicalPath` — C `realpath`-based canonicalisation |
 | `Sources/PDFToolbox/Shared/SystemInfo.swift` | `SystemInfo.performanceCoreCount` — `hw.perflevel0.logicalcpu` via `sysctlbyname` |
 | `Sources/PDFToolbox/Shared/Log.swift` | `Log.compress`/`.ocr`/`.queue`/`.general` — unified-logging `Logger` categories |
+| `Sources/PDFToolbox/Shared/FilePicker.swift` | `FilePicker.choosePDFs()` / `.chooseFolder()` — `NSOpenPanel`-based file/folder selection |
 
 ## Invariants
 
@@ -53,6 +54,12 @@ avoidance, path canonicalisation, performance-core count, and logging categories
   a basename (from different source folders, same output folder) would otherwise both
   resolve to the same candidate name and the second job's atomic rename would fail.
   The `reserved` set threaded through each call is what prevents this.
+- **`FilePicker` uses `NSOpenPanel`, not `.fileImporter`**: two `.fileImporter`
+  modifiers attached to the same SwiftUI view (one for input PDFs, one for the output
+  folder) conflict on macOS and neither reliably presents — how the app first shipped
+  with a "Choose Files…" button that did nothing. `NSOpenPanel.runModal()` returns
+  synchronously, so `choosePDFs`/`chooseFolder` are plain `@MainActor` functions with
+  no callback plumbing.
 
 ## Related
 

@@ -27,6 +27,8 @@ output re-validation, and the hand-written PDF incremental-update writer. Both
 | `Sources/PDFToolbox/Services/OpenGuard.swift` | `OpenGuard.inspect(_:)` — up-front encrypted/corrupt detection, shared by both engines |
 | `Sources/PDFToolbox/Services/OutputValidator.swift` | `OutputValidator.validate(input:output:samplePages:)` — page-count + per-sample-page ink-retention check |
 | `Sources/PDFToolbox/Services/PDFWriter.swift` | `PDFWriter.appendTextLayer(to:output:pageText:geometry:)` — hand-written PDF incremental update; owns the Vision→PDF coordinate transform |
+| `Sources/PDFToolbox/Services/PDFSyntax.swift` | `PDFSyntax` — byte-level PDF lexical scanner (PDF 32000-1 §7.2–§7.3): token/dictionary/array/string boundaries, name-escape decoding, bounds-checked integer/reference parsing; `PDFWriter`'s only means of reading PDF structure |
+| `Sources/PDFToolbox/Services/PDFFlate.swift` | `PDFFlate.inflate(_:limit:)` — bounded `FlateDecode` (zlib) inflate; used by `PDFWriter` to read compressed object streams |
 
 ## Invariants
 
@@ -68,15 +70,38 @@ output re-validation, and the hand-written PDF incremental-update writer. Both
   previous `startxref`. The original page's image XObject streams are untouched, so
   the rendered appearance is provably unchanged (still re-checked by
   `OutputValidator`).
+- **`PDFSyntax` scans bytes, never `Character`s**: Swift collapses a CR byte followed
+  by an LF byte into one extended grapheme cluster that matches neither `"\r"` nor
+  `"\n"`, so a `String`-based scanner misses PDF's CRLF token separator and can write
+  a duplicate key. Every function is index-agnostic (works from the collection's own
+  bounds), so a slice of a larger buffer scans without rebasing.
+- **`PDFSyntax.dictLookup` distinguishes `.absent` from `.unparseable`** (`DictLookup`
+  enum) — callers that go on to *modify* a dictionary must treat `.unparseable` as an
+  error rather than as "key not there": conflating the two risks inserting a second
+  copy of a key that was actually present, which makes the whole dictionary's meaning
+  undefined (PDF 32000-1 §7.3.7). `dictValue`/`dictName`/`dictInt`/`dictRef` are the
+  read-only convenience wrappers that collapse both cases to nil.
+- **`PDFSyntax.parseInt` refuses integers above `maxPlausibleInteger` (2^40)**: an
+  unbounded `Int(digits)` on a crafted object number overflows to `Int.max`, and the
+  writer's first `+= 1` on it traps and crashes — reachable from a few dozen bytes of
+  untrusted input. Nothing legitimate in a PDF needs a value this large.
+- **`PDFFlate.inflate` is budget-bounded, never "inflate and see"**: a stream's
+  compressed size says nothing about its expanded size, so decoding an untrusted
+  object stream without a ceiling is a decompression bomb. `PDFWriter` spends one
+  budget (`maxObjectStreamBytes`, 64 MiB) across the **whole file**, not per stream,
+  so many small object streams can't add up past the ceiling either.
 
 ## Gotchas
 
-- `PDFWriter` throws `.unsupportedStructure` (fail-loud) when a page or the catalog is
-  packed inside a compressed object stream (`/ObjStm`) rather than being a top-level
-  indirect object — v1's minimal tokeniser does not unpack object streams. This is a
-  **known v1 limitation**: such PDFs are not OCR-able; the batch continues with that
-  one file failed. Compress is unaffected (it never parses PDF structure directly —
-  gs does).
+- **Object-stream (`/ObjStm`) PDFs are now OCR-able.** `PDFWriter` indexes every
+  packed object via `PDFSyntax` + `PDFFlate.inflate` (`indexObjectStreams`) and
+  supersedes one by emitting an **uncompressed top-level object of the same number**
+  in the appended section — the newest cross-reference entry wins (PDF 32000-1
+  §7.5.6), so the object stream itself is never rewritten. An object stream this
+  can't read (an unsupported filter, a `/DecodeParms` predictor, a truncated body) is
+  skipped rather than fatal; `.unsupportedStructure` only surfaces if the *skipped*
+  stream held an object the writer actually needed. Compress is unaffected either way
+  (it never parses PDF structure directly — gs does).
 - `PDFWriter`'s text layer uses base-14 Helvetica + WinAnsi only — non-Latin-1
   characters in recognised text become `?` (`PDFWriter.escapePDFString`); a conscious
   v1 deferral, not a bug.
