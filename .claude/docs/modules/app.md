@@ -22,7 +22,8 @@ window-minimum-size fix-up, and a headless self-test hook.
 |------|------|
 | `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` before any window opens |
 | `Sources/Toolbox/App/RootView.swift` | An explicit `HStack` split — sidebar + per-tool detail (`CompressView`/`OCRView`) |
-| `Sources/Toolbox/App/SidebarView.swift` | One collapsible-rail entry per built `Tool`, each a coloured tile (`Tool.tint`) plus its name |
+| `Sources/Toolbox/App/SidebarView.swift` | One collapsible-rail entry per built `Tool`, each a coloured tile (`Tool.tint`) plus its name; header uses `NSApp.applicationIconImage` for the real bundle icon; a bottom info button opens `AboutView` as a sheet |
+| `Sources/Toolbox/App/AboutView.swift` | The About sheet: bundle icon/name/version (read from `Bundle.main.infoDictionary`, never hard-coded), GitHub/licence/contact links, copyright |
 | `Sources/Toolbox/App/Tool.swift` | `enum Tool` — `compress`/`ocr`, each with `title`/`systemImage`/`tint` |
 | `Sources/Toolbox/App/WindowConfigurator.swift` | `WindowSetup.applyMinimumSize(_:)` — enforces the window's minimum size, title and titlebar style directly on `NSWindow` |
 | `Sources/Toolbox/App/CompressSmoke.swift` | `TOOLBOX_SMOKE=compress` — runs the real compress path from the app process, exits with a pass/fail line; the CI packaged-app smoke test |
