@@ -26,9 +26,9 @@ struct PageGeometry: Equatable {
 enum PDFWriterError: Error, LocalizedError {
     case cannotRead
     case malformedPDF
-    /// A page (or the catalog) we must supersede is not a top-level indirect object — it is
-    /// packed in a compressed object stream (`/ObjStm`). v1 does not unpack object streams;
-    /// the file fails inline so the batch continues (spec R2-N3).
+    /// A page (or the catalog) we must supersede lives in a structure this writer cannot read —
+    /// an object stream with a filter it does not implement, or an object that resolves nowhere.
+    /// The file fails inline so the batch continues (spec R2-N3).
     case unsupportedStructure
 
     var errorDescription: String? {
@@ -36,7 +36,7 @@ enum PDFWriterError: Error, LocalizedError {
         case .cannotRead: return "The PDF could not be read."
         case .malformedPDF: return "The PDF structure could not be parsed."
         case .unsupportedStructure:
-            return "This PDF uses a compressed object layout that OCR cannot amend in v1."
+            return "This PDF uses a compressed object layout that OCR cannot amend."
         }
     }
 }
@@ -48,14 +48,28 @@ enum PDFWriterError: Error, LocalizedError {
 /// Vision-normalised → PDF-user-space coordinate transform, including `mediaBox` origin and
 /// page rotation.
 ///
-/// Locating the page objects uses a minimal top-level tokeniser (stream bodies skipped) rather
-/// than a full xref parser, so both classic-xref and cross-reference-stream PDFs work. A page
-/// packed inside an object stream throws `.unsupportedStructure` (fail-loud, never silent
-/// corruption).
+/// Locating the page objects uses a byte-level scan (`PDFSyntax`) rather than a full xref
+/// parser, so classic-xref, cross-reference-stream and object-stream PDFs all work. Objects
+/// packed into an `/ObjStm` are superseded by emitting an **uncompressed top-level object of the
+/// same number** — the newest cross-reference entry wins (PDF 32000-1 §7.5.6), so the object
+/// stream itself never has to be rewritten.
 ///
 /// Non-Latin scripts: the layer uses base-14 Helvetica + WinAnsi, which extracts ASCII/Latin
 /// text. CJK/Arabic would need an embedded font + `/ToUnicode` CMap — a conscious v1 deferral.
 struct PDFWriter {
+
+    // MARK: - Structural limits
+    //
+    // Bounds on what the writer will accept from an untrusted file. Each exists because the
+    // unbounded version is reachable from a crafted input: a page tree that is a linear chain of
+    // 100k `/Pages` nodes overflows the stack, and a nesting depth of thousands does the same
+    // through the dictionary scanners.
+
+    /// Deepest `/Kids` nesting walked before the file is called malformed.
+    static let maxPageTreeDepth = 256
+    /// Most page-tree nodes visited before the file is called malformed. Well clear of the
+    /// 1000-page scans the tool targets.
+    static let maxPageTreeNodes = 500_000
 
     func appendTextLayer(to input: URL,
                          output: URL,
@@ -72,11 +86,42 @@ struct PDFWriter {
         }
 
         let bytes = [UInt8](data)
-        let index = try Self.indexTopLevelObjects(bytes)
-        let root = try Self.findRoot(bytes, objects: index)
-        let pageObjs = try Self.orderedPageObjects(bytes, objects: index, root: root)
+        let appended = try Self.buildIncrementalSection(bytes,
+                                                        baseLength: data.count,
+                                                        targets: targets,
+                                                        pageText: pageText,
+                                                        geometry: geometry)
+        var out = data
+        out.append(appended)
+        try out.write(to: output)
+    }
 
-        var maxObj = index.keys.max() ?? 0
+    /// Everything appended after the original bytes: the new objects, the new xref section and
+    /// the trailer. Split out from `appendTextLayer` so the whole parse runs against one byte
+    /// buffer and returns only the (small) bytes to append.
+    static func buildIncrementalSection<C: RandomAccessCollection>(
+        _ bytes: C,
+        baseLength: Int,
+        targets: [Int],
+        pageText: [Int: [PositionedText]],
+        geometry: [Int: PageGeometry]) throws -> Data
+    where C.Element == UInt8, C.Index == Int {
+
+        let index = try indexTopLevelObjects(bytes)
+        let root = try findRoot(bytes, objects: index)
+        let pageObjs = try orderedPageObjects(bytes, objects: index, root: root)
+
+        // Allocate above every object number the file could already be using — including any
+        // the scan failed to reach, which the trailer's `/Size` still accounts for. Allocating
+        // into a number that already exists would make the appended xref silently replace a
+        // live object.
+        var maxObj = max(index.keys.max() ?? 0, (trailerSize(bytes, objects: index) ?? 1) - 1)
+        // Every object number reaching this point came through `PDFSyntax.parseInt`, which
+        // refuses anything above `maxPlausibleInteger`; the check makes the invariant explicit
+        // so `allocate()` can never trap on overflow.
+        guard maxObj >= 0, maxObj <= PDFSyntax.maxPlausibleInteger else {
+            throw PDFWriterError.malformedPDF
+        }
         func allocate() -> Int { maxObj += 1; return maxObj }
 
         // One shared Helvetica font object for every appended layer.
@@ -87,60 +132,55 @@ struct PDFWriter {
         var appended = Data()
         appended.append(0x0A)   // separate from the original's trailing %%EOF
         var offsets: [Int: (offset: Int, gen: Int)] = [:]
-        let baseLen = data.count
 
-        func emit(objNum: Int, gen: Int, body: String) {
-            offsets[objNum] = (baseLen + appended.count, gen)
-            let head = "\(objNum) \(gen) obj\n"
-            appended.append(latin1(head))
-            appended.append(latin1(body))
-            appended.append(latin1("\nendobj\n"))
+        func emit(objNum: Int, gen: Int, body: [UInt8]) {
+            offsets[objNum] = (baseLength + appended.count, gen)
+            appended.append(contentsOf: latin1("\(objNum) \(gen) obj\n"))
+            appended.append(contentsOf: body)
+            appended.append(contentsOf: latin1("\nendobj\n"))
         }
 
         // Font object.
         emit(objNum: fontObj, gen: 0,
-             body: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+             body: latin1("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"))
 
         for pageIndex in targets {
             guard let objNum = pageObjs[safe: pageIndex] else { continue }
             guard let geo = geometry[pageIndex] else { throw PDFWriterError.malformedPDF }
             let boxes = pageText[pageIndex] ?? []
 
-            // Read the page dict (ASCII; a page object is a dict, never a stream).
-            guard let (dictText, gen) = Self.objectDictText(bytes, objects: index, objNum: objNum) else {
+            guard let page = objectDict(bytes, objects: index, objNum: objNum) else {
                 throw PDFWriterError.malformedPDF
             }
 
             // Build the invisible-text content stream for this page.
             let contentObj = allocate()
-            let content = Self.contentStream(for: boxes, geometry: geo, fontResource: fontName)
+            let content = contentStream(for: boxes, geometry: geo, fontResource: fontName)
             let contentBody = latin1(content)
             emit(objNum: contentObj, gen: 0,
-                 body: "<< /Length \(contentBody.count) >>\nstream\n\(content)\nendstream")
+                 body: latin1("<< /Length \(contentBody.count) >>\nstream\n") + contentBody
+                     + latin1("\nendstream"))
 
             // Supersede the page dict: append our content ref, ensure our font in /Resources.
-            let newPageDict = try Self.superseded(pageDict: dictText,
-                                                  addContent: contentObj,
-                                                  fontResource: fontName,
-                                                  fontObj: fontObj,
-                                                  bytes: bytes,
-                                                  objects: index,
-                                                  emit: { emit(objNum: $0, gen: $1, body: $2) })
-            emit(objNum: objNum, gen: gen, body: newPageDict)
+            let newPageDict = try superseded(pageDict: page.bytes,
+                                             addContent: contentObj,
+                                             fontResource: fontName,
+                                             fontObj: fontObj,
+                                             bytes: bytes,
+                                             objects: index,
+                                             emit: { emit(objNum: $0, gen: $1, body: $2) })
+            emit(objNum: objNum, gen: page.gen, body: newPageDict)
         }
 
         // New classic xref section + trailer with /Prev → the previous startxref.
-        let prev = try Self.lastStartxref(bytes)
-        let xrefOffset = baseLen + appended.count
-        appended.append(latin1(Self.xrefSection(offsets: offsets)))
+        let prev = try lastStartxref(bytes)
+        let xrefOffset = baseLength + appended.count
+        appended.append(contentsOf: latin1(xrefSection(offsets: offsets)))
         let size = (offsets.keys.max() ?? maxObj) + 1
         let trailer = "trailer\n<< /Size \(size) /Root \(root.num) \(root.gen) R /Prev \(prev) >>\n"
             + "startxref\n\(xrefOffset)\n%%EOF\n"
-        appended.append(latin1(trailer))
-
-        var out = data
-        out.append(appended)
-        try out.write(to: output)
+        appended.append(contentsOf: latin1(trailer))
+        return appended
     }
 
     // MARK: - Coordinate transform (PDFWriter owns it)
@@ -246,242 +286,373 @@ struct PDFWriter {
 
     /// Rewrite a page dict so it also draws our content stream and can resolve our font.
     /// `emit` is used when `/Resources` is an indirect object we must supersede too.
-    private static func superseded(pageDict: String,
-                                   addContent contentObj: Int,
-                                   fontResource: String,
-                                   fontObj: Int,
-                                   bytes: [UInt8],
-                                   objects: [Int: (offset: Int, gen: Int)],
-                                   emit: (Int, Int, String) -> Void) throws -> String {
+    ///
+    /// Works on the dictionary's **bytes**. Splicing a `String` here would reintroduce the
+    /// grapheme-cluster trap the byte scanners exist to avoid.
+    static func superseded<C: RandomAccessCollection>(
+        pageDict: [UInt8],
+        addContent contentObj: Int,
+        fontResource: String,
+        fontObj: Int,
+        bytes: C,
+        objects: [Int: IndexedObject],
+        emit: (Int, Int, [UInt8]) -> Void) throws -> [UInt8]
+    where C.Element == UInt8, C.Index == Int {
         var dict = pageDict
 
         // --- /Contents: make it an array ending in our content ref. ---
         let contentRef = "\(contentObj) 0 R"
-        if let value = topLevelValue(of: "Contents", in: dict) {
-            let replacement: String
-            if value.text.hasPrefix("[") {
-                // [ a 0 R b 0 R ] → [ a 0 R b 0 R contentRef ]
-                let inner = String(value.text.dropFirst().dropLast())
-                replacement = "[ \(inner.trimmingCharacters(in: .whitespacesAndNewlines)) \(contentRef) ]"
-            } else {
-                // single ref → array of the two
-                replacement = "[ \(value.text) \(contentRef) ]"
+        if let range = PDFSyntax.dictValue(of: "Contents", in: dict, dictAt: 0) {
+            let value = Array(dict[range])
+            let replacement: [UInt8]
+            if value.first == 0x5B {                            // `[ a 0 R ]` → `[ a 0 R ours ]`
+                let inner = trimmed(Array(value.dropFirst().dropLast()))
+                replacement = latin1("[ ") + inner + latin1(" \(contentRef) ]")
+            } else {                                            // single ref → array of the two
+                replacement = latin1("[ ") + value + latin1(" \(contentRef) ]")
             }
-            dict.replaceSubrange(value.range, with: replacement)
+            dict.replaceSubrange(range, with: replacement)
         } else {
-            dict = insertIntoDict(dict, entry: "/Contents [ \(contentRef) ]")
+            dict = insertIntoDict(dict, entry: latin1("/Contents [ \(contentRef) ]"))
         }
 
         // --- /Resources: ensure /Font << /<res> fontObj 0 R >>. ---
-        let fontEntry = "/\(fontResource) \(fontObj) 0 R"
-        if let value = topLevelValue(of: "Resources", in: dict) {
-            if value.text.hasPrefix("<<") {
-                let merged = insertFont(intoResources: value.text, fontEntry: fontEntry)
-                dict.replaceSubrange(value.range, with: merged)
-            } else if let ref = parseRef(value.text) {
+        let fontEntry = latin1("/\(fontResource) \(fontObj) 0 R")
+        if let range = PDFSyntax.dictValue(of: "Resources", in: dict, dictAt: 0) {
+            let value = Array(dict[range])
+            if value.first == 0x3C {
+                let merged = insertFont(intoResources: value, fontEntry: fontEntry)
+                dict.replaceSubrange(range, with: merged)
+            } else if let ref = PDFSyntax.parseRef(value) {
                 // Supersede the shared resources object, adding our font.
-                guard let (resDict, resGen) = objectDictText(bytes, objects: objects, objNum: ref.num) else {
+                guard let res = objectDict(bytes, objects: objects, objNum: ref.num) else {
                     throw PDFWriterError.malformedPDF
                 }
-                let merged = insertFont(intoResources: resDict, fontEntry: fontEntry)
-                emit(ref.num, resGen, merged)
+                emit(ref.num, res.gen, insertFont(intoResources: res.bytes, fontEntry: fontEntry))
                 // page keeps its /Resources ref → nothing else to change
             } else {
                 throw PDFWriterError.malformedPDF
             }
         } else {
-            dict = insertIntoDict(dict, entry: "/Resources << /Font << \(fontEntry) >> >>")
+            dict = insertIntoDict(dict, entry: latin1("/Resources << /Font << ") + fontEntry + latin1(" >> >>"))
         }
         return dict
     }
 
     /// Add `fontEntry` to a `<< … >>` resources dict, merging into an existing inline `/Font`.
-    private static func insertFont(intoResources res: String, fontEntry: String) -> String {
-        if let font = topLevelValue(of: "Font", in: res), font.text.hasPrefix("<<") {
+    private static func insertFont(intoResources res: [UInt8], fontEntry: [UInt8]) -> [UInt8] {
+        if let range = PDFSyntax.dictValue(of: "Font", in: res, dictAt: 0), res[range.lowerBound] == 0x3C,
+           range.lowerBound + 1 < res.count, res[range.lowerBound + 1] == 0x3C {
             var r = res
-            let inner = String(font.text.dropFirst(2).dropLast(2))
-            let merged = "<< \(inner.trimmingCharacters(in: .whitespacesAndNewlines)) \(fontEntry) >>"
-            r.replaceSubrange(font.range, with: merged)
+            let inner = trimmed(Array(res[range].dropFirst(2).dropLast(2)))
+            r.replaceSubrange(range, with: latin1("<< ") + inner + latin1(" ") + fontEntry + latin1(" >>"))
             return r
         }
         // No inline /Font (image-only scans, the common case) — or /Font is a ref we leave be
         // and simply add ours alongside under the same key namespace.
-        return insertIntoDict(res, entry: "/Font << \(fontEntry) >>")
+        return insertIntoDict(res, entry: latin1("/Font << ") + fontEntry + latin1(" >>"))
     }
 
-    /// Insert `entry` immediately after the opening `<<` of a dict string.
-    private static func insertIntoDict(_ dict: String, entry: String) -> String {
-        guard let open = dict.range(of: "<<") else { return dict }
+    /// Insert `entry` immediately after the opening `<<` of a dict.
+    private static func insertIntoDict(_ dict: [UInt8], entry: [UInt8]) -> [UInt8] {
+        guard dict.count >= 2, dict[0] == 0x3C, dict[1] == 0x3C else { return dict }
         var d = dict
-        d.replaceSubrange(open, with: "<< \(entry) ")
+        d.replaceSubrange(0..<2, with: latin1("<< ") + entry + latin1(" "))
         return d
     }
 
-    // MARK: - Minimal PDF parsing
+    private static func trimmed(_ b: [UInt8]) -> [UInt8] {
+        var lo = 0, hi = b.count
+        while lo < hi, PDFSyntax.isWhitespace(b[lo]) { lo += 1 }
+        while hi > lo, PDFSyntax.isWhitespace(b[hi - 1]) { hi -= 1 }
+        return Array(b[lo..<hi])
+    }
 
-    /// Enumerate top-level `N G obj` headers → latest byte offset + generation, skipping bytes
-    /// inside `stream … endstream` so binary payloads never yield phantom objects.
-    static func indexTopLevelObjects(_ bytes: [UInt8]) throws -> [Int: (offset: Int, gen: Int)] {
-        var result: [Int: (offset: Int, gen: Int)] = [:]
-        let streamRanges = streamBodyRanges(bytes)
-        var rangeIter = streamRanges.makeIterator()
-        var nextRange = rangeIter.next()
+    // MARK: - Object index
 
-        let objKW: [UInt8] = Array("obj".utf8)
-        var i = 0
-        let n = bytes.count
+    /// One top-level `N G obj … endobj`, with the extent that bounds every scan for its content.
+    struct IndexedObject: Equatable {
+        let gen: Int
+        /// First byte of the `N G obj` header.
+        let headerStart: Int
+        /// First byte after the `obj` keyword.
+        let bodyStart: Int
+        /// First byte of the closing `endobj` keyword.
+        let bodyEnd: Int
+    }
+
+    private static let objKW = Array("obj".utf8)
+    private static let endobjKW = Array("endobj".utf8)
+    private static let streamKW = Array("stream".utf8)
+    private static let endstreamKW = Array("endstream".utf8)
+
+    /// Index every top-level `N G obj … endobj`, in one forward pass that honours PDF's lexical
+    /// rules: comments, literal strings and hex strings are skipped, keywords must sit at token
+    /// boundaries, and a stream body is skipped by its dictionary's `/Length`.
+    ///
+    /// Two things this pass deliberately gets right that a substring scan does not. `stream` is
+    /// accepted only as a whole token that directly follows its own dictionary and is followed by
+    /// an end-of-line, so the `stream` inside `/BaseFont /BitstreamVeraSans` cannot start a
+    /// phantom stream body and swallow the object headers after it. And the body's extent comes
+    /// from `/Length` wherever that is a usable direct integer, so an `endstream` byte sequence
+    /// occurring *inside* attacker-controlled binary image data cannot end the skip early and let
+    /// a planted `N G obj` override the file's real object of that number.
+    static func indexTopLevelObjects<C: RandomAccessCollection>(_ b: C) throws -> [Int: IndexedObject]
+    where C.Element == UInt8, C.Index == Int {
+        var result: [Int: IndexedObject] = [:]
+        var open: (num: Int, gen: Int, headerStart: Int, bodyStart: Int)?
+        var dictStart: Int?
+        var lastDict: Range<Int>?
+        var depth = 0
+        var i = b.startIndex
+        let n = b.endIndex
+
         while i < n {
-            // Skip past any stream body we've entered.
-            if let r = nextRange, i >= r.lowerBound {
-                i = r.upperBound
-                nextRange = rangeIter.next()
-                continue
-            }
-            if bytes[i] == objKW[0], matches(bytes, at: i, objKW),
-               isDelimiterOrSpace(bytes, before: i), isDelimiterOrSpace(bytes, at: i + 3) {
-                // Backtrack across "  <gen> <num>".
-                if let header = parseObjHeaderBackwards(bytes, objAt: i) {
-                    result[header.num] = (header.start, header.gen)   // later offset wins
+            switch b[i] {
+            case 0x25:                                          // comment
+                i = PDFSyntax.skipSpace(b, from: i)
+            case 0x28:                                          // literal string
+                i = PDFSyntax.endOfLiteralString(b, from: i)
+            case 0x3C:
+                if i + 1 < n, b[i + 1] == 0x3C {
+                    if depth == 0 { dictStart = i }
+                    depth += 1
+                    i += 2
+                } else {
+                    i = PDFSyntax.endOfHexString(b, from: i)
                 }
+            case 0x3E where i + 1 < n && b[i + 1] == 0x3E:
+                if depth > 0 { depth -= 1 }
+                i += 2
+                if depth == 0, let s = dictStart { lastDict = s..<i; dictStart = nil }
+            case 0x73 where PDFSyntax.isKeyword(b, at: i, streamKW):
+                if let d = lastDict, PDFSyntax.skipSpace(b, from: d.upperBound) == i,
+                   let end = streamExtentEnd(b, dictAt: d.lowerBound, keywordEnd: i + streamKW.count) {
+                    i = end
+                } else {
+                    i += streamKW.count
+                }
+            case 0x65 where PDFSyntax.isKeyword(b, at: i, endobjKW):
+                if let o = open {
+                    result[o.num] = IndexedObject(gen: o.gen, headerStart: o.headerStart,
+                                                  bodyStart: o.bodyStart, bodyEnd: i)
+                    open = nil
+                }
+                i += endobjKW.count
+            case 0x6F where PDFSyntax.isKeyword(b, at: i, objKW):
+                if let h = parseObjHeaderBackwards(b, objAt: i) {
+                    open = (h.num, h.gen, h.start, i + objKW.count)
+                }
+                depth = 0
+                dictStart = nil
+                lastDict = nil
+                i += objKW.count
+            default:
+                i += 1
             }
-            i += 1
         }
         if result.isEmpty { throw PDFWriterError.malformedPDF }
         return result
     }
 
-    /// Byte ranges [start-of-body, end-of-body) for every `stream … endstream`.
-    private static func streamBodyRanges(_ bytes: [UInt8]) -> [Range<Int>] {
-        var ranges: [Range<Int>] = []
-        let streamKW: [UInt8] = Array("stream".utf8)
-        let endKW: [UInt8] = Array("endstream".utf8)
-        var i = 0
-        let n = bytes.count
-        while i < n {
-            if bytes[i] == streamKW[0], matches(bytes, at: i, streamKW) {
-                // "stream" but not the tail of "endstream".
-                if i >= 3, matches(bytes, at: i - 3, Array("end".utf8)) { i += 1; continue }
-                var bodyStart = i + streamKW.count
-                if bodyStart < n, bytes[bodyStart] == 0x0D { bodyStart += 1 }   // CR
-                if bodyStart < n, bytes[bodyStart] == 0x0A { bodyStart += 1 }   // LF
-                if let end = find(endKW, in: bytes, from: bodyStart) {
-                    ranges.append(bodyStart..<end)
-                    i = end + endKW.count
-                    continue
-                } else {
-                    break   // malformed; stop skipping
-                }
-            }
-            i += 1
+    /// The index just past `endstream` for the stream whose dictionary starts at `dictAt` and
+    /// whose `stream` keyword ends at `keywordEnd`, or nil when this is not a stream at all.
+    ///
+    /// `/Length` is preferred and verified — if `endstream` really is where `/Length` says the
+    /// body ends, the extent is trustworthy even for binary payloads. Files with a wrong or
+    /// indirect `/Length` do exist, so the fallback is a *token-bounded* search for `endstream`.
+    private static func streamExtentEnd<C: RandomAccessCollection>(
+        _ b: C, dictAt: Int, keywordEnd: Int) -> Int?
+    where C.Element == UInt8, C.Index == Int {
+        // PDF 32000-1 §7.3.8.1: the keyword is followed by CRLF or LF (a lone CR is tolerated).
+        var bodyStart = keywordEnd
+        guard bodyStart < b.endIndex, b[bodyStart] == 0x0D || b[bodyStart] == 0x0A else { return nil }
+        if b[bodyStart] == 0x0D { bodyStart += 1 }
+        if bodyStart < b.endIndex, b[bodyStart] == 0x0A { bodyStart += 1 }
+
+        if let length = PDFSyntax.dictInt(of: "Length", in: b, dictAt: dictAt),
+           let bodyEnd = addingWithinBounds(bodyStart, length, limit: b.endIndex) {
+            let after = PDFSyntax.skipSpace(b, from: bodyEnd)
+            if PDFSyntax.isKeyword(b, at: after, endstreamKW) { return after + endstreamKW.count }
         }
-        return ranges
+        var j = bodyStart
+        while j < b.endIndex {
+            if b[j] == 0x65, PDFSyntax.isKeyword(b, at: j, endstreamKW) { return j + endstreamKW.count }
+            j += 1
+        }
+        return nil
     }
 
-    private struct ObjHeader { let num: Int; let gen: Int; let start: Int }
+    private static func addingWithinBounds(_ a: Int, _ b: Int, limit: Int) -> Int? {
+        let (sum, overflow) = a.addingReportingOverflow(b)
+        guard !overflow, sum >= 0, sum <= limit else { return nil }
+        return sum
+    }
 
-    /// From an `obj` keyword at `objAt`, read the preceding `<num> <gen>` and the header's start.
-    private static func parseObjHeaderBackwards(_ bytes: [UInt8], objAt: Int) -> ObjHeader? {
+    /// From an `obj` keyword at `objAt`, read the preceding `N G` and the header's start.
+    /// Object numbers beyond `PDFSyntax.maxPlausibleInteger` are refused here rather than parsed
+    /// into `Int.max` and trapped on later.
+    private static func parseObjHeaderBackwards<C: RandomAccessCollection>(
+        _ b: C, objAt: Int) -> (num: Int, gen: Int, start: Int)?
+    where C.Element == UInt8, C.Index == Int {
         var j = objAt - 1
-        func skipWS() { while j >= 0, isWhitespace(bytes[j]) { j -= 1 } }
-        func readInt() -> (value: Int, start: Int)? {
-            var end = j
-            while j >= 0, bytes[j] >= 0x30, bytes[j] <= 0x39 { j -= 1 }
+        func skipWS() { while j >= b.startIndex, PDFSyntax.isWhitespace(b[j]) { j -= 1 } }
+        func readIntBackwards() -> (value: Int, start: Int)? {
+            let end = j
+            while j >= b.startIndex, PDFSyntax.isDigit(b[j]) { j -= 1 }
             let start = j + 1
-            guard start <= end else { return nil }
-            let digits = String(bytes: bytes[start...end], encoding: .ascii) ?? ""
-            guard let v = Int(digits) else { return nil }
+            guard start <= end, let v = PDFSyntax.parseInt(Array(b[start...end])) else { return nil }
             return (v, start)
         }
         skipWS()
-        guard let gen = readInt() else { return nil }
+        guard let gen = readIntBackwards() else { return nil }
         skipWS()
-        guard let num = readInt() else { return nil }
-        return ObjHeader(num: num.value, gen: gen.value, start: num.start)
+        guard let num = readIntBackwards() else { return nil }
+        return (num.value, gen.value, num.start)
     }
+
+    /// The dictionary bytes and generation of an indexed object, or nil when the object's value
+    /// is not a dictionary.
+    ///
+    /// Bounded to the object's own `obj … endobj` extent, and required to *start* there: an
+    /// unbounded forward search for `<<` runs straight into the next object and returns that
+    /// object's dictionary attributed to this object number — from which a non-page object gets
+    /// superseded with a page-shaped dictionary, or a bogus `/Root` is taken as the catalog.
+    static func objectDict<C: RandomAccessCollection>(
+        _ b: C, objects: [Int: IndexedObject], objNum: Int) -> (bytes: [UInt8], gen: Int)?
+    where C.Element == UInt8, C.Index == Int {
+        guard let info = objects[objNum] else { return nil }
+        let start = PDFSyntax.skipSpace(b, from: info.bodyStart)
+        guard start + 1 < info.bodyEnd, b[start] == 0x3C, b[start + 1] == 0x3C,
+              let end = PDFSyntax.endOfDictionary(b, from: start), end <= info.bodyEnd else {
+            return nil
+        }
+        return (Array(b[start..<end]), info.gen)
+    }
+
+    // MARK: - Document structure
 
     /// The `/Root` reference: from the last classic `trailer`, else the latest `/Type /XRef`
     /// stream dict, else a scan for `/Type /Catalog`.
-    static func findRoot(_ bytes: [UInt8],
-                         objects: [Int: (offset: Int, gen: Int)]) throws -> (num: Int, gen: Int) {
-        if let last = findLast(Array("trailer".utf8), in: bytes),
-           let dictStart = find(Array("<<".utf8), in: bytes, from: last),
-           let dictText = balancedDict(bytes, from: dictStart),
-           let ref = topLevelValue(of: "Root", in: dictText).flatMap({ parseRef($0.text) }) {
+    static func findRoot<C: RandomAccessCollection>(
+        _ b: C, objects: [Int: IndexedObject]) throws -> (num: Int, gen: Int)
+    where C.Element == UInt8, C.Index == Int {
+        if let dictAt = lastTrailerDict(b), let ref = PDFSyntax.dictRef(of: "Root", in: b, dictAt: dictAt) {
             return ref
         }
         // XRef-stream file: the object carrying /Type /XRef holds /Root.
-        var best: (num: Int, gen: Int)?
-        var bestOffset = -1
-        for (num, info) in objects {
-            guard let (dict, _) = objectDictText(bytes, objects: objects, objNum: num) else { continue }
-            if topLevelName(of: "Type", in: dict) == "XRef",
-               let ref = topLevelValue(of: "Root", in: dict).flatMap({ parseRef($0.text) }),
-               info.offset > bestOffset {
-                best = ref; bestOffset = info.offset
-            }
+        if let xref = latestObject(b, objects: objects, ofType: "XRef"),
+           let ref = PDFSyntax.dictRef(of: "Root", in: xref.dict, dictAt: 0) {
+            return ref
         }
-        if let best { return best }
         // Last resort: the catalog object itself.
-        for (num, _) in objects {
-            guard let (dict, gen) = objectDictText(bytes, objects: objects, objNum: num) else { continue }
-            if topLevelName(of: "Type", in: dict) == "Catalog" { return (num, gen) }
+        if let catalog = latestObject(b, objects: objects, ofType: "Catalog") {
+            return (catalog.num, catalog.gen)
         }
         throw PDFWriterError.malformedPDF
     }
 
+    /// `/Size` from the last classic trailer, else from the latest `/Type /XRef` stream dict.
+    static func trailerSize<C: RandomAccessCollection>(
+        _ b: C, objects: [Int: IndexedObject]) -> Int?
+    where C.Element == UInt8, C.Index == Int {
+        if let dictAt = lastTrailerDict(b), let size = PDFSyntax.dictInt(of: "Size", in: b, dictAt: dictAt) {
+            return size
+        }
+        guard let xref = latestObject(b, objects: objects, ofType: "XRef") else { return nil }
+        return PDFSyntax.dictInt(of: "Size", in: xref.dict, dictAt: 0)
+    }
+
+    /// Byte offset of the `<<` opening the file's last `trailer` dictionary.
+    private static func lastTrailerDict<C: RandomAccessCollection>(_ b: C) -> Int?
+    where C.Element == UInt8, C.Index == Int {
+        let kw = Array("trailer".utf8)
+        var i = b.endIndex - kw.count
+        while i >= b.startIndex {
+            if b[i] == 0x74, PDFSyntax.isKeyword(b, at: i, kw) {
+                let d = PDFSyntax.skipSpace(b, from: i + kw.count)
+                if d + 1 < b.endIndex, b[d] == 0x3C, b[d + 1] == 0x3C { return d }
+                return nil
+            }
+            i -= 1
+        }
+        return nil
+    }
+
+    /// The latest-defined object whose dictionary declares `/Type /<type>`.
+    private static func latestObject<C: RandomAccessCollection>(
+        _ b: C, objects: [Int: IndexedObject], ofType type: String) -> (num: Int, gen: Int, dict: [UInt8])?
+    where C.Element == UInt8, C.Index == Int {
+        var best: (num: Int, gen: Int, dict: [UInt8])?
+        var bestOffset = -1
+        for (num, info) in objects where info.headerStart > bestOffset {
+            guard let obj = objectDict(b, objects: objects, objNum: num),
+                  PDFSyntax.dictName(of: "Type", in: obj.bytes, dictAt: 0) == type else { continue }
+            best = (num, obj.gen, obj.bytes)
+            bestOffset = info.headerStart
+        }
+        return best
+    }
+
     /// Ordered leaf page object numbers, walking `/Root → /Pages → /Kids`.
-    static func orderedPageObjects(_ bytes: [UInt8],
-                                   objects: [Int: (offset: Int, gen: Int)],
-                                   root: (num: Int, gen: Int)) throws -> [Int] {
-        guard let (catalog, _) = objectDictText(bytes, objects: objects, objNum: root.num),
-              let pagesRef = topLevelValue(of: "Pages", in: catalog).flatMap({ parseRef($0.text) }) else {
+    ///
+    /// An explicit stack, not recursion: a page tree that is a linear chain of `/Pages` nodes is
+    /// structurally valid PDF and a few megabytes long, and recursing it once per level overflows
+    /// the stack and kills the process — taking every other job in the batch with it.
+    static func orderedPageObjects<C: RandomAccessCollection>(
+        _ b: C, objects: [Int: IndexedObject], root: (num: Int, gen: Int)) throws -> [Int]
+    where C.Element == UInt8, C.Index == Int {
+        guard let catalog = objectDict(b, objects: objects, objNum: root.num),
+              let pagesRef = PDFSyntax.dictRef(of: "Pages", in: catalog.bytes, dictAt: 0) else {
             throw PDFWriterError.malformedPDF
         }
         var pages: [Int] = []
         var visited = Set<Int>()
-        func walk(_ objNum: Int) throws {
-            guard !visited.contains(objNum) else { return }
-            visited.insert(objNum)
-            guard let (dict, _) = objectDictText(bytes, objects: objects, objNum: objNum) else {
-                throw PDFWriterError.unsupportedStructure   // not top-level → likely in an ObjStm
+        var stack: [(num: Int, depth: Int)] = [(pagesRef.num, 0)]
+        var nodes = 0
+
+        while let node = stack.popLast() {
+            guard !visited.contains(node.num) else { continue }
+            visited.insert(node.num)
+            nodes += 1
+            guard node.depth <= maxPageTreeDepth, nodes <= maxPageTreeNodes else {
+                throw PDFWriterError.malformedPDF
             }
-            let type = topLevelName(of: "Type", in: dict)
+            guard let obj = objectDict(b, objects: objects, objNum: node.num) else {
+                throw PDFWriterError.unsupportedStructure   // not a top-level dict → likely an ObjStm
+            }
+            let type = PDFSyntax.dictName(of: "Type", in: obj.bytes, dictAt: 0)
             if type == "Page" {
-                pages.append(objNum)
-            } else if let kids = topLevelValue(of: "Kids", in: dict) {
-                for ref in parseRefArray(kids.text) { try walk(ref.num) }
+                pages.append(node.num)
+            } else if let kids = PDFSyntax.dictValue(of: "Kids", in: obj.bytes, dictAt: 0) {
+                // Push in reverse so the stack yields the kids in document order.
+                for ref in PDFSyntax.parseRefArray(Array(obj.bytes[kids])).reversed() {
+                    stack.append((ref.num, node.depth + 1))
+                }
             } else if type == "Pages" {
                 // /Pages with no /Kids — nothing to add
             } else {
-                pages.append(objNum)   // untyped leaf
+                pages.append(node.num)   // untyped leaf
             }
         }
-        try walk(pagesRef.num)
         guard !pages.isEmpty else { throw PDFWriterError.malformedPDF }
         return pages
     }
 
-    /// The dict text (`<< … >>`) and generation of a top-level object, or nil if it isn't one.
-    static func objectDictText(_ bytes: [UInt8],
-                               objects: [Int: (offset: Int, gen: Int)],
-                               objNum: Int) -> (String, Int)? {
-        guard let info = objects[objNum] else { return nil }
-        guard let dictStart = find(Array("<<".utf8), in: bytes, from: info.offset),
-              let dict = balancedDict(bytes, from: dictStart) else { return nil }
-        return (dict, info.gen)
-    }
-
     /// The offset written by the file's final `startxref` (the previous xref, for `/Prev`).
-    static func lastStartxref(_ bytes: [UInt8]) throws -> Int {
-        guard let sx = findLast(Array("startxref".utf8), in: bytes) else {
-            throw PDFWriterError.malformedPDF
+    static func lastStartxref<C: RandomAccessCollection>(_ b: C) throws -> Int
+    where C.Element == UInt8, C.Index == Int {
+        let kw = Array("startxref".utf8)
+        var i = b.endIndex - kw.count
+        while i >= b.startIndex {
+            if b[i] == 0x73, PDFSyntax.isKeyword(b, at: i, kw) {
+                guard let tok = PDFSyntax.readToken(b, from: i + kw.count),
+                      let v = PDFSyntax.parseInt(tok.bytes) else { throw PDFWriterError.malformedPDF }
+                return v
+            }
+            i -= 1
         }
-        var i = sx + "startxref".count
-        while i < bytes.count, isWhitespace(bytes[i]) { i += 1 }
-        var digits = ""
-        while i < bytes.count, bytes[i] >= 0x30, bytes[i] <= 0x39 { digits.unicodeScalars.append(UnicodeScalar(bytes[i])); i += 1 }
-        guard let v = Int(digits) else { throw PDFWriterError.malformedPDF }
-        return v
+        throw PDFWriterError.malformedPDF
     }
 
     /// A classic xref section covering the appended/superseded objects, split into contiguous
@@ -503,178 +674,6 @@ struct PDFWriter {
         }
         return s
     }
-
-    // MARK: - Dict value scanning (page/resources/font dicts are ASCII)
-
-    /// A value token for `/key` at the top level of a `<< … >>` dict, with its range in `dict`.
-    private static func topLevelValue(of key: String, in dict: String) -> (text: String, range: Range<String.Index>)? {
-        let chars = Array(dict)
-        let target = Array("/\(key)")
-        var depth = 0
-        var i = 0
-        while i < chars.count {
-            let c = chars[i]
-            if c == "<" && i + 1 < chars.count && chars[i + 1] == "<" { depth += 1; i += 2; continue }
-            if c == ">" && i + 1 < chars.count && chars[i + 1] == ">" { depth -= 1; i += 2; continue }
-            // match /key only at the dict's own level (depth 1 within the outer <<)
-            if depth == 1, c == "/", matchesChars(chars, at: i, target),
-               isNameBoundary(chars, at: i + target.count) {
-                var v = i + target.count
-                while v < chars.count, chars[v] == " " || chars[v] == "\n" || chars[v] == "\r" || chars[v] == "\t" { v += 1 }
-                let start = v
-                let end = valueEnd(chars, from: v)
-                let text = String(chars[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
-                let rStart = dict.index(dict.startIndex, offsetBy: start)
-                let rEnd = dict.index(dict.startIndex, offsetBy: end)
-                return (text, rStart..<rEnd)
-            }
-            i += 1
-        }
-        return nil
-    }
-
-    private static func topLevelName(of key: String, in dict: String) -> String? {
-        guard let v = topLevelValue(of: key, in: dict)?.text, v.hasPrefix("/") else { return nil }
-        return String(v.dropFirst())
-    }
-
-    /// End index of a value beginning at `from`: handles `<<…>>`, `[…]`, `(…)`, `/name`,
-    /// references `N G R`, and bare numbers/keywords.
-    private static func valueEnd(_ chars: [Character], from: Int) -> Int {
-        guard from < chars.count else { return from }
-        switch chars[from] {
-        case "<" where from + 1 < chars.count && chars[from + 1] == "<":
-            var depth = 0, i = from
-            while i < chars.count {
-                if chars[i] == "<" && i + 1 < chars.count && chars[i + 1] == "<" { depth += 1; i += 2; continue }
-                if chars[i] == ">" && i + 1 < chars.count && chars[i + 1] == ">" { depth -= 1; i += 2; if depth == 0 { return i }; continue }
-                i += 1
-            }
-            return chars.count
-        case "[":
-            var depth = 0, i = from
-            while i < chars.count {
-                if chars[i] == "[" { depth += 1 }
-                else if chars[i] == "]" { depth -= 1; if depth == 0 { return i + 1 } }
-                i += 1
-            }
-            return chars.count
-        case "(":
-            var depth = 0, i = from
-            while i < chars.count {
-                if chars[i] == "\\" { i += 2; continue }
-                if chars[i] == "(" { depth += 1 }
-                else if chars[i] == ")" { depth -= 1; if depth == 0 { return i + 1 } }
-                i += 1
-            }
-            return chars.count
-        default:
-            // A reference `N G R`, a bare number, or a keyword (true/false/null). Read
-            // whitespace-separated tokens, stopping after an `R` (reference), at the next
-            // delimiter, or after a lone non-numeric keyword.
-            func isSpace(_ c: Character) -> Bool { c == " " || c == "\n" || c == "\r" || c == "\t" }
-            var i = from
-            while i < chars.count {
-                while i < chars.count, isSpace(chars[i]) { i += 1 }
-                guard i < chars.count else { break }
-                let c = chars[i]
-                if c == "/" || c == ">" || c == "]" || c == "[" || c == "<" || c == "(" { break }
-                let tokStart = i
-                while i < chars.count, !isSpace(chars[i]), !"/><[(]".contains(chars[i]) { i += 1 }
-                let tok = String(chars[tokStart..<i])
-                if tok == "R" { break }                      // end of a reference
-                if Int(tok) == nil && Double(tok) == nil { break }   // a keyword → single-token value
-                // a number → may be the N or G of an "N G R" reference; keep reading
-            }
-            return i
-        }
-    }
-
-    private static func parseRef(_ text: String) -> (num: Int, gen: Int)? {
-        let parts = text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" })
-        guard parts.count >= 3, parts[2] == "R", let num = Int(parts[0]), let gen = Int(parts[1]) else { return nil }
-        return (num, gen)
-    }
-
-    private static func parseRefArray(_ text: String) -> [(num: Int, gen: Int)] {
-        let inner = text.hasPrefix("[") ? String(text.dropFirst().dropLast()) : text
-        let toks = inner.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\r" || $0 == "\t" }).map(String.init)
-        var refs: [(Int, Int)] = []
-        var i = 0
-        while i + 2 < toks.count + 1 {
-            if i + 2 < toks.count, toks[i + 2] == "R", let n = Int(toks[i]), let g = Int(toks[i + 1]) {
-                refs.append((n, g)); i += 3
-            } else { i += 1 }
-        }
-        return refs
-    }
-
-    /// Extract a balanced `<< … >>` starting at `from` as a Latin-1 string.
-    private static func balancedDict(_ bytes: [UInt8], from: Int) -> String? {
-        var depth = 0, i = from
-        let n = bytes.count
-        while i < n {
-            if bytes[i] == 0x3C, i + 1 < n, bytes[i + 1] == 0x3C { depth += 1; i += 2; continue }   // <<
-            if bytes[i] == 0x3E, i + 1 < n, bytes[i + 1] == 0x3E { depth -= 1; i += 2; if depth == 0 { return String(bytes: bytes[from..<i], encoding: .isoLatin1) }; continue }   // >>
-            i += 1
-        }
-        return nil
-    }
-
-    // MARK: - byte helpers
-
-    private static func matches(_ bytes: [UInt8], at i: Int, _ pat: [UInt8]) -> Bool {
-        guard i + pat.count <= bytes.count else { return false }
-        for k in 0..<pat.count where bytes[i + k] != pat[k] { return false }
-        return true
-    }
-
-    private static func matchesChars(_ chars: [Character], at i: Int, _ pat: [Character]) -> Bool {
-        guard i + pat.count <= chars.count else { return false }
-        for k in 0..<pat.count where chars[i + k] != pat[k] { return false }
-        return true
-    }
-
-    private static func isNameBoundary(_ chars: [Character], at i: Int) -> Bool {
-        guard i < chars.count else { return true }
-        let c = chars[i]
-        return c == " " || c == "\n" || c == "\r" || c == "\t" || c == "/" || c == "[" || c == "<" || c == "(" || c == ">"
-    }
-
-    private static func find(_ needle: [UInt8], in hay: [UInt8], from: Int) -> Int? {
-        guard !needle.isEmpty, from >= 0 else { return nil }
-        var i = from
-        let last = hay.count - needle.count
-        while i <= last {
-            if hay[i] == needle[0], matches(hay, at: i, needle) { return i }
-            i += 1
-        }
-        return nil
-    }
-
-    private static func findLast(_ needle: [UInt8], in hay: [UInt8]) -> Int? {
-        guard !needle.isEmpty else { return nil }
-        var i = hay.count - needle.count
-        while i >= 0 {
-            if hay[i] == needle[0], matches(hay, at: i, needle) { return i }
-            i -= 1
-        }
-        return nil
-    }
-
-    private static func isWhitespace(_ b: UInt8) -> Bool {
-        b == 0x20 || b == 0x0A || b == 0x0D || b == 0x09 || b == 0x0C || b == 0x00
-    }
-
-    private static func isDelimiterOrSpace(_ bytes: [UInt8], at i: Int) -> Bool {
-        guard i < bytes.count else { return true }
-        return isWhitespace(bytes[i]) || bytes[i] == 0x3C || bytes[i] == 0x5B || bytes[i] == 0x2F
-    }
-
-    private static func isDelimiterOrSpace(_ bytes: [UInt8], before i: Int) -> Bool {
-        guard i - 1 >= 0 else { return true }
-        return isWhitespace(bytes[i - 1])
-    }
 }
 
 private extension Array {
@@ -684,4 +683,4 @@ private extension Array {
 }
 
 /// Encode an ASCII/Latin-1 PDF fragment to bytes losslessly (1 byte per scalar).
-private func latin1(_ s: String) -> Data { s.data(using: .isoLatin1) ?? Data(s.utf8) }
+func latin1(_ s: String) -> [UInt8] { Array(s.data(using: .isoLatin1) ?? Data(s.utf8)) }

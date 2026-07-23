@@ -15,7 +15,6 @@ import UniformTypeIdentifiers
 struct OCRView: View {
     @StateObject private var model = OCRViewModel()
     @State private var isTargeted = false
-    @State private var isImporting = false
 
     /// Language override choices. `nil` = auto-detect. Curated common set (v1); Vision's full
     /// supported list is revision-dependent, so a fixed menu keeps the UI honest and simple.
@@ -48,11 +47,6 @@ struct OCRView: View {
             return true
         }
         .overlay { dropHighlight }
-        .fileImporter(isPresented: $isImporting,
-                      allowedContentTypes: [.pdf],
-                      allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { model.add(urls) }
-        }
     }
 
     // MARK: sections
@@ -65,7 +59,7 @@ struct OCRView: View {
                 title: "Drop PDFs to make searchable",
                 subtitle: "or add them manually · batch supported",
                 buttonTitle: "Choose Files…"
-            ) { isImporting = true }
+            ) { model.add(FilePicker.choosePDFs()) }
                 .padding(Theme.Spacing.large)
         } else {
             queue
@@ -101,7 +95,7 @@ struct OCRView: View {
             Text(queueSummary).themeFont(.captionBold).foregroundStyle(Theme.Colors.text)
             Spacer(minLength: Theme.Spacing.small)
             if !model.isRunning {
-                LinkButton(title: "+ Add") { isImporting = true }
+                LinkButton(title: "+ Add") { model.add(FilePicker.choosePDFs()) }
             }
             if hasFinishedJobs {
                 LinkButton(title: "Clear finished") { model.clearFinished() }

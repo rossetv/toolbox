@@ -198,6 +198,95 @@ enum Fixtures {
         return url.canonical
     }
 
+    // MARK: - Hand-authored byte-level PDFs
+
+    /// Assemble a byte-exact PDF from hand-written object bodies, with a correct classic xref
+    /// table and trailer.
+    ///
+    /// Every other generator here goes through CoreGraphics, which only ever emits well-formed,
+    /// LF-terminated, ASCII-clean structure — which is precisely why none of them can express the
+    /// inputs the writer's parser has to survive: CRLF between a key and its value, a `stream`
+    /// keyword inside an ordinary word, `>>` inside a string, an implausible object number, a
+    /// compressed object stream. Those are authored here, byte by byte. **Entirely synthetic —
+    /// no bytes from any real document.**
+    ///
+    /// - Parameter eol: line terminator for the object section (the xref table keeps its own
+    ///   fixed 20-byte entry format, as the specification requires).
+    static func rawPDF(_ objects: [(num: Int, body: Data)],
+                       root: Int,
+                       name: String,
+                       eol: String = "\n") throws -> URL {
+        let nl = Data(eol.utf8)
+        var out = Data("%PDF-1.5".utf8)
+        out.append(nl)
+        out.append(Data([0x25, 0xE2, 0xE3, 0xCF, 0xD3]))          // binary-content marker comment
+        out.append(nl)
+
+        var offsets: [Int: Int] = [:]
+        for object in objects.sorted(by: { $0.num < $1.num }) {
+            offsets[object.num] = out.count
+            out.append(Data("\(object.num) 0 obj".utf8))
+            out.append(nl)
+            out.append(object.body)
+            out.append(nl)
+            out.append(Data("endobj".utf8))
+            out.append(nl)
+        }
+
+        let highest = objects.map(\.num).max() ?? 0
+        let xrefOffset = out.count
+        out.append(Data("xref\n0 \(highest + 1)\n".utf8))
+        out.append(Data("0000000000 65535 f \n".utf8))
+        for n in 1...max(1, highest) {
+            if let offset = offsets[n] {
+                out.append(Data(String(format: "%010d 00000 n \n", offset).utf8))
+            } else {
+                out.append(Data("0000000000 65535 f \n".utf8))
+            }
+        }
+        out.append(Data("trailer\n<< /Size \(highest + 1) /Root \(root) 0 R >>\n".utf8))
+        out.append(Data("startxref\n\(xrefOffset)\n%%EOF\n".utf8))
+
+        let url = try uniqueURL(name)
+        try out.write(to: url)
+        return url.canonical
+    }
+
+    static func rawObject(_ num: Int, _ body: String) -> (num: Int, body: Data) {
+        (num, Data(body.data(using: .isoLatin1) ?? Data(body.utf8)))
+    }
+
+    /// A stream object with a correct `/Length`. `extraKeys` go into the stream dictionary.
+    static func rawStream(_ num: Int, body: Data, extraKeys: String = "") -> (num: Int, body: Data) {
+        var out = Data("<< /Length \(body.count)\(extraKeys.isEmpty ? "" : " " + extraKeys) >>\nstream\n".utf8)
+        out.append(body)
+        out.append(Data("\nendstream".utf8))
+        return (num, out)
+    }
+
+    /// A one-page document whose page dictionary is `pageDict`, plus a real content stream, in
+    /// the given object order. The caller controls the page dictionary's exact bytes.
+    ///
+    /// Object numbers: 1 catalog, 2 pages, 3 page, 4 contents. `extras` are appended verbatim.
+    static func rawOnePagePDF(pageDict: String,
+                              name: String,
+                              eol: String = "\n",
+                              extras: [(num: Int, body: Data)] = []) throws -> URL {
+        let content = Data("0.9 0.9 0.9 rg 72 72 468 648 re f".utf8)
+        var objects: [(num: Int, body: Data)] = [
+            rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            rawObject(2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>"),
+            rawObject(3, pageDict),
+            rawStream(4, body: content),
+        ]
+        objects.append(contentsOf: extras)
+        return try rawPDF(objects, root: 1, name: name, eol: eol)
+    }
+
+    /// The default one-page page dictionary, in the writer's own preferred spelling.
+    static let plainPageDict =
+        "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] /Contents 4 0 R /Resources << >> >>"
+
     // MARK: drawing helpers
 
     private enum InkColour { case black, white }
