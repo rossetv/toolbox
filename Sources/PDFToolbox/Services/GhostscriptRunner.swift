@@ -142,6 +142,28 @@ struct GhostscriptRunner {
         }
     }
 
+    /// How much gs stderr is kept. Enough for any real diagnostic; small enough that a hostile
+    /// input cannot make the app retain megabytes of it.
+    private static let stderrLimit = 4096
+
+    /// Drain `handle` to EOF, keeping at most `limit` trailing bytes.
+    ///
+    /// The pipe must always be drained to EOF or a chatty child blocks on a full pipe buffer — but
+    /// nothing says the bytes must be *kept*. gs's stderr is attacker-influenced (a malformed PDF
+    /// can provoke a warning per object, and gs echoes fragments of the input in its messages) and
+    /// it ends up retained in the job list and rendered in the UI, so only the tail is kept: a
+    /// failing gs puts its fatal diagnostic in its last words.
+    static func drainTail(_ handle: FileHandle, limit: Int) -> Data {
+        var tail = Data()
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }                                  // EOF
+            tail.append(chunk)
+            if tail.count > limit { tail.removeFirst(tail.count - limit) }
+        }
+        return tail
+    }
+
     /// SIGTERM, then SIGKILL if the child is still alive `grace` seconds later. Both the
     /// wall-clock watchdog and cancellation go through here, so neither is merely cooperative: a
     /// gs that installs a SIGTERM handler or blocks uninterruptibly would otherwise park the
@@ -201,7 +223,7 @@ struct GhostscriptRunner {
         ioGroup.enter()
         ioQueue.async { outData = outPipe.fileHandleForReading.readDataToEndOfFile(); ioGroup.leave() }
         ioGroup.enter()
-        ioQueue.async { errData = errPipe.fileHandleForReading.readDataToEndOfFile(); ioGroup.leave() }
+        ioQueue.async { errData = Self.drainTail(errPipe.fileHandleForReading, limit: Self.stderrLimit); ioGroup.leave() }
 
         do {
             try process.run()

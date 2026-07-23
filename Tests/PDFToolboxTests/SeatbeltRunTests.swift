@@ -111,6 +111,22 @@ final class SeatbeltRunTests: XCTestCase {
         XCTAssertLessThan(elapsed, 60, "should terminate near the cap, well under the 300s production bound")
     }
 
+    // MARK: S16 — a chatty child's stderr is drained but not retained
+
+    func testDrainTailKeepsOnlyTheTrailingBytes() throws {
+        let pipe = Pipe()
+        // Under the 64 KB pipe buffer, so the write completes before the drain starts (a larger
+        // payload would block the writer here — in production the drain runs concurrently).
+        let payload = Data((0..<20_000).map { UInt8($0 % 251) })
+        try pipe.fileHandleForWriting.write(contentsOf: payload)
+        try pipe.fileHandleForWriting.close()
+
+        let tail = GhostscriptRunner.drainTail(pipe.fileHandleForReading, limit: 4096)
+
+        XCTAssertEqual(tail.count, 4096, "output must be capped, not merely read")
+        XCTAssertEqual(tail, Data(payload.suffix(4096)), "the kept bytes must be the last ones")
+    }
+
     // MARK: S10 — a child that ignores SIGTERM is escalated to SIGKILL
 
     /// gs itself dies on SIGTERM (proved by the timeout test above), so the escalation is tested
