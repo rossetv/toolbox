@@ -36,7 +36,7 @@ enum Tool: String, CaseIterable, Identifiable {
     /// interactive accents, so DESIGN.md's single-accent rule for controls still holds.
     var tint: Color {
         switch self {
-        case .compress: return Color(hex: 0xFF3B30)
+        case .compress: return Theme.Colors.documentBadge
         case .ocr: return Color(hex: 0x5856D6)
         }
     }
