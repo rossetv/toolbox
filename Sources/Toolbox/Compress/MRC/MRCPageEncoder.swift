@@ -28,8 +28,9 @@ enum MRCPageEncoder {
     static func layerQualities(for preset: CompressPreset) -> (bg: Double, fg: Double) {
         switch preset {
         case .smallestSize: return (0.30, 0.25)
-        case .balanced: return (0.40, 0.30)
-        case .maximumQuality: return (0.55, 0.40)
+        // D3: MRC never runs on maximumQuality; if the preset gate ever regresses, fall back
+        // to the balanced qualities rather than an uncalibrated invention.
+        case .balanced, .maximumQuality: return (0.40, 0.30)
         }
     }
 
