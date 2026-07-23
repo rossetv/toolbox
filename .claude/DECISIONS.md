@@ -201,3 +201,32 @@ a `PlaceholderToolView`, all of it dead weight for features that do not exist.
 
 **Provenance:** human decision, which overrides the spec. `Tool` now has only the built cases and
 `isAvailable` is gone entirely; re-adding a tool means adding a case when it is actually built.
+
+## 2026-07-23 — jbig2enc/leptonica native path removed; Rung 2 ships on ImageIO CCITT, no native library
+
+**Decision:** The native jbig2enc/leptonica encoder path is removed entirely. Rung 2 (bilevel-scan
+compression) ships on ImageIO's built-in CCITT Group 4 encoder instead; the app links no native or
+bespoke image-compression library.
+**Why:** The jbig2enc/leptonica experiment was abandoned but left a dead `.cpp` in the compile
+sources and header/library search paths in `project.yml` pointing at a git-ignored tree. No Swift
+code ever referenced a native symbol, so the path was pure dead weight — but it was live enough to
+break the build: the project built and gated green only on the one machine that still had that
+tree, and CI would have failed on the first push. CCITT via ImageIO needs no C interop and delivers
+the saving Rung 2 exists for.
+**Spec:** .claude/specs/20260722-pdf-toolbox-v1.md
+**Affects:** docs/modules/compress.md, OVERVIEW.md, docs/ARCHITECTURE.md
+**Supersedes:** 2026-07-22 — Rung 2 (JBIG2/CCITT) and Rung 3 (MRC) are out of scope for v1 — the
+Rung-2 half only: Rung 2 is now built (on CCITT, not JBIG2). Rung 3 (MRC) remains out of scope.
+
+## 2026-07-23 — Sidebar tool tiles use per-tool colours, diverging from DESIGN.md's single-accent rule (deliberate)
+
+**Decision:** `Tool.tint` gives each sidebar tool tile its own colour (Compress red, OCR purple)
+rather than reusing the single Apple-Blue accent `DESIGN.md` specifies for the whole app. This is a
+deliberate, recorded divergence — not a defect to silently "fix" back to blue.
+**Why:** The repo owner explicitly asked for fidelity to the original design mockup, which gives
+each tool tile its own colour. `Theme` already carried non-blue tokens before this branch
+(`Theme.Colors.success`, `Theme.Colors.documentBadge`), so this widens an existing precedent rather
+than introducing a first departure. `DESIGN.md` is human-owned (`.claude/CLAUDE.md` § Design & UI
+Consistency) — reconciling its single-accent rule with per-tool tile colours is the owner's
+amendment to make; Claude does not edit `DESIGN.md` unasked.
+**Affects:** docs/modules/app.md, docs/modules/design-system.md
