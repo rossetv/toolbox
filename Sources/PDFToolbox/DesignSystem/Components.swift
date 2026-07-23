@@ -361,7 +361,7 @@ struct FileRow: View {
     enum Status {
         /// Waiting to start. `detail` is the trailing note — Compress puts its size estimate
         /// there, OCR (which has nothing to predict) just says "Queued".
-        case queued(detail: String?)
+        case queued(detail: String?, savedPercent: Int?)
         /// Pre-flight analysis in flight (Compress's per-file size estimate).
         case analysing
         case inProgress(fraction: Double?)
@@ -376,7 +376,7 @@ struct FileRow: View {
 
     let name: String
     let meta: String
-    var status: Status = .queued(detail: nil)
+    var status: Status = .queued(detail: nil, savedPercent: nil)
     var onRemove: (() -> Void)?
 
     var body: some View {
@@ -411,10 +411,13 @@ struct FileRow: View {
     @ViewBuilder
     private var trailing: some View {
         switch status {
-        case .queued(let detail):
+        case .queued(let detail, let savedPercent):
             HStack(spacing: 11) {
                 if let detail {
                     Text(detail).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
+                }
+                if let savedPercent, savedPercent > 0 {
+                    StatPill(text: "−\(savedPercent)%", tone: .success)
                 }
                 if let onRemove {
                     removeButton(onRemove)
@@ -490,7 +493,7 @@ struct FileRow: View {
 /// Every `Status` in one stack — the states the two tools actually reach.
 private var fileRowStateGallery: some View {
     VStack(spacing: 8) {
-        FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted"))
+        FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted", savedPercent: 74))
         FileRow(name: "Board-Minutes.pdf", meta: "3.2 MB", status: .analysing)
         FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .inProgress(fraction: 0.62))
         FileRow(name: "User-Manual.pdf", meta: "19.3 MB", status: .inProgress(fraction: nil))
@@ -632,9 +635,9 @@ private var toolChromeGallery: some View {
             Text("Clear").themeFont(.link).foregroundStyle(Theme.Colors.link)
         }
         VStack(spacing: 8) {
-            FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted"))
-            FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .queued(detail: "≈4.9 MB predicted"))
-            FileRow(name: "Product-Brochure.pdf", meta: "5.4 MB", status: .queued(detail: "~1.4 MB predicted"))
+            FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted", savedPercent: 74))
+            FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .queued(detail: "≈4.9 MB predicted", savedPercent: 78))
+            FileRow(name: "Product-Brochure.pdf", meta: "5.4 MB", status: .queued(detail: "~1.4 MB predicted", savedPercent: 61))
         }
         SegmentedPreset(options: previewPresetOptions, selection: .constant("balanced"))
         HStack {

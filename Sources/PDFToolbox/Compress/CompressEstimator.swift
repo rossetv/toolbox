@@ -44,12 +44,59 @@ struct CompressEstimator {
     }
 
     func estimate(_ input: URL, preset: CompressPreset) async -> SizeEstimate {
+        await estimateAll(input)[preset] ?? Self.fallbackEstimate(
+            inputSize: Self.fileSize(input), preset: preset)
+    }
+
+    /// Predictions for EVERY preset, from a single analysis pass.
+    ///
+    /// The costly part is inspecting the document (page count + content classification); the
+    /// per-preset arithmetic is trivial. Doing all three at once means switching preset is a
+    /// dictionary lookup rather than a fresh analysis — previously each switch re-analysed every
+    /// queued file, blanking the rows into their "analysing" state and making the list appear to
+    /// reload on every click.
+    func estimateAll(_ input: URL) async -> [CompressPreset: SizeEstimate] {
         let inputSize = Self.fileSize(input)
         let analyser = self.analyser
-        let result = await Self.timeBoxed(seconds: timeBudget) {
-            try? Self.analyse(input, inputSize: inputSize, preset: preset, analyser: analyser)
+        let measured = await Self.timeBoxed(seconds: timeBudget) {
+            try? Self.measure(input, inputSize: inputSize, analyser: analyser)
         }
-        return result ?? Self.fallbackEstimate(inputSize: inputSize, preset: preset)
+        var out: [CompressPreset: SizeEstimate] = [:]
+        for preset in CompressPreset.allCases {
+            if let measured {
+                out[preset] = Self.predict(measured, inputSize: inputSize, preset: preset)
+            } else {
+                out[preset] = Self.fallbackEstimate(inputSize: inputSize, preset: preset)
+            }
+        }
+        return out
+    }
+
+    /// What a single analysis pass yields — preset-independent.
+    struct Measurement {
+        let contentType: PDFContentType
+        let payloadRatio: Double
+    }
+
+    private static func measure(_ input: URL, inputSize: Int,
+                                analyser: PDFAnalysing) throws -> Measurement {
+        guard inputSize > 0 else { throw CompressEstimatorError.unreadable }
+        let pageCount = try analyser.pageCount(input)
+        let contentType = try analyser.classify(input)
+        let bytesPerPage = pageCount > 0 ? Double(inputSize) / Double(pageCount) : Double(inputSize)
+        let textBaselineBytesPerPage = 20_000.0
+        let payloadRatio = bytesPerPage > textBaselineBytesPerPage
+            ? 1.0 - (textBaselineBytesPerPage / bytesPerPage)
+            : 0.0
+        return Measurement(contentType: contentType, payloadRatio: payloadRatio)
+    }
+
+    private static func predict(_ m: Measurement, inputSize: Int,
+                                preset: CompressPreset) -> SizeEstimate {
+        let base = baseReduction[m.contentType]?[preset] ?? typicalReduction[preset] ?? 0.2
+        let reduction = m.contentType == .bornDigital ? base : base * (0.3 + 0.7 * m.payloadRatio)
+        let predicted = max(1, Int(Double(inputSize) * (1 - reduction)))
+        return SizeEstimate(predictedBytes: predicted, confidence: .high, isFallback: false)
     }
 
     // MARK: sample-based analysis

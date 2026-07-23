@@ -237,7 +237,7 @@ struct CompressView: View {
     private func status(for job: ToolJob) -> FileRow.Status {
         switch job.state {
         case .queued:
-            return .queued(detail: estimateText(for: job))
+            return .queued(detail: estimateText(for: job), savedPercent: predictedSaving(for: job))
         case .analysing:
             return .analysing
         case .running(let fraction):
@@ -261,7 +261,22 @@ struct CompressView: View {
         // "~" marks a typical-range fallback (content type unknown/analysis timed out);
         // "≈" marks a real sample-based prediction for this file.
         let marker = estimate.isFallback ? "~" : "\u{2248}"
+        // Show the predicted saving as well as the predicted size: a bare figure gives no sense
+        // of whether the preset is worth choosing, which is the decision this line exists to serve.
+        guard let original = inputSize(of: job), original > 0 else {
+            return "\(marker)\(byteString(estimate.predictedBytes)) predicted"
+        }
+        guard original > estimate.predictedBytes else { return "\(marker)no saving predicted" }
         return "\(marker)\(byteString(estimate.predictedBytes)) predicted"
+    }
+
+    /// Predicted saving as a whole percent, shown as a badge beside the predicted size.
+    private func predictedSaving(for job: ToolJob) -> Int? {
+        guard let estimate = job.estimate,
+              let original = inputSize(of: job), original > 0,
+              original > estimate.predictedBytes else { return nil }
+        let saved = original - estimate.predictedBytes
+        return Int(((Double(saved) / Double(original)) * 100).rounded())
     }
 
     private func meta(for job: ToolJob) -> String {

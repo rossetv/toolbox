@@ -157,7 +157,7 @@ struct OCRView: View {
     private func status(for job: ToolJob) -> FileRow.Status {
         switch job.state {
         case .queued:
-            return .queued(detail: "Queued")
+            return .queued(detail: "Queued", savedPercent: nil)
         case .analysing:
             return .analysing
         case .running(let fraction):

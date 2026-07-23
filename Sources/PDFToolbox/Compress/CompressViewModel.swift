@@ -39,7 +39,8 @@ final class CompressViewModel: ObservableObject {
     /// The queue's own jobs, unmodified — `jobs` above is derived from this plus the local
     /// estimate/analysing state below.
     private var rawJobs: [ToolJob] = []
-    private var estimates: [UUID: SizeEstimate] = [:]
+    /// Predictions for every preset, per job — computed once, so changing preset is a lookup.
+    private var estimates: [UUID: [CompressPreset: SizeEstimate]] = [:]
     private var analysingIDs: Set<UUID> = []
     private var estimationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -145,12 +146,11 @@ final class CompressViewModel: ObservableObject {
         analysingIDs.insert(job.id)
         publishJobs()
 
-        let chosenPreset = preset
         estimationTasks[job.id] = Task { [weak self] in
             guard let self else { return }
-            let estimate = await self.estimator.estimate(job.url, preset: chosenPreset)
+            let all = await self.estimator.estimateAll(job.url)
             guard !Task.isCancelled else { return }
-            self.estimates[job.id] = estimate
+            self.estimates[job.id] = all
             self.analysingIDs.remove(job.id)
             self.estimationTasks[job.id] = nil
             self.publishJobs()
@@ -159,10 +159,11 @@ final class CompressViewModel: ObservableObject {
 
     /// Re-run the estimate for every job that hasn't started compressing yet (a preset change
     /// invalidates any prediction made under the old preset).
+    /// A preset change needs no new analysis — every preset's prediction was computed when the
+    /// file was added, so this is a republish. Re-analysing here is what made the whole list
+    /// blank into its "analysing" state on every preset click.
     private func reestimatePendingJobs() {
-        for job in rawJobs where isStillQueued(job) {
-            scheduleEstimate(for: job)
-        }
+        publishJobs()
     }
 
     private func isStillQueued(_ job: ToolJob) -> Bool {
@@ -188,7 +189,7 @@ final class CompressViewModel: ObservableObject {
     private func publishJobs() {
         jobs = rawJobs.map { job in
             var display = job
-            display.estimate = estimates[job.id]
+            display.estimate = estimates[job.id]?[preset]
             if analysingIDs.contains(job.id), isStillQueued(job) {
                 display.state = .analysing
             }
