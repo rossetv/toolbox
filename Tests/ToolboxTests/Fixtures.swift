@@ -101,7 +101,10 @@ enum Fixtures {
     }
 
     /// Born-digital vector text, `pages` pages — extractable text, classifies `.bornDigital`.
-    static func bornDigitalPDF(pages: Int = 3) throws -> URL {
+    /// `lines` scales the per-page content: fewer lines → a smaller file with proportionally
+    /// less ink, letting a test build a "compressed" counterpart of the default fixture that
+    /// still passes `OutputValidator`'s retained-ink comparison.
+    static func bornDigitalPDF(pages: Int = 3, lines: Int = 14) throws -> URL {
         let url = try uniqueURL("born-digital.pdf")
         var media = letter
         guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
@@ -111,7 +114,7 @@ enum Fixtures {
         for page in 1...max(1, pages) {
             ctx.beginPDFPage(nil)
             var y: CGFloat = 748
-            for line in 0..<14 {
+            for line in 0..<max(1, lines) {
                 let string = "Page \(page), line \(line): The quick brown fox jumps over the lazy dog. " +
                              "Born-digital vector text — 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ."
                 drawText(string, in: ctx, at: CGPoint(x: 40, y: y), font: font)

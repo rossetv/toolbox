@@ -135,14 +135,20 @@ final class CompressEngineTests: XCTestCase {
     // MARK: M1 — a cancelled compression delivers nothing
 
     /// Cancel while gs is running. The stub's output is a **deliverable** one — valid, smaller,
-    /// same page count, and (the input being blank) it passes `OutputValidator` — so without the
-    /// engine's cancellation checks this run would place a file in the user's folder, which is
-    /// exactly the reported defect. The assertions are therefore both discriminating.
+    /// same page count, and (retaining well over `minRetainedInk` of the input's ink) it passes
+    /// `OutputValidator` — so without the engine's cancellation checks this run would place a
+    /// file in the user's folder, which is exactly the reported defect. The assertions are
+    /// therefore both discriminating.
+    ///
+    /// The input must classify `.bornDigital`: an all-white `blankPDF` reads as near-two-tone,
+    /// which routes the engine through the whole Rung-2 attempt (1500 px render + binarise +
+    /// CCITT) before it ever reaches the gated runner — ~2 s of irrelevant work that blew the
+    /// 5 s `entered` window on a loaded CI runner.
     func testCancelDuringGhostscriptRunDeliversNoOutput() async throws {
-        let input = try Fixtures.blankPDF(pages: 1)
+        let input = try Fixtures.bornDigitalPDF(pages: 1)
         let output = input.deletingLastPathComponent().appendingPathComponent("cancelled-compressed.pdf")
 
-        let smaller = Self.minimalBlankPDF()
+        let smaller = try Data(contentsOf: Fixtures.bornDigitalPDF(pages: 1, lines: 6))
         XCTAssertNotNil(PDFDocument(data: smaller), "the stub output must be a valid PDF")
         XCTAssertLessThan(smaller.count, TestSupport.fileSize(input),
                           "the stub output must be a genuine gain, or the engine would return .noGain")
@@ -235,26 +241,6 @@ final class CompressEngineTests: XCTestCase {
         }
     }
 
-    /// A hand-built one-page PDF (~350 bytes) — smaller than anything CoreGraphics or PDFKit
-    /// emits, so a stub "compression" of a blank fixture is a genuine size gain. Offsets are
-    /// computed, never hand-counted, so the xref is correct by construction.
-    private static func minimalBlankPDF() -> Data {
-        let bodies = ["<< /Type /Catalog /Pages 2 0 R >>",
-                      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-                      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"]
-        var pdf = "%PDF-1.4\n"
-        var offsets: [Int] = []
-        for (i, body) in bodies.enumerated() {
-            offsets.append(pdf.utf8.count)
-            pdf += "\(i + 1) 0 obj\n\(body)\nendobj\n"
-        }
-        let xrefOffset = pdf.utf8.count
-        pdf += "xref\n0 \(bodies.count + 1)\n0000000000 65535 f \n"
-        for offset in offsets { pdf += String(format: "%010d 00000 n \n", offset) }
-        pdf += "trailer\n<< /Size \(bodies.count + 1) /Root 1 0 R >>\n"
-            + "startxref\n\(xrefOffset)\n%%EOF\n"
-        return Data(pdf.utf8)
-    }
 }
 
 /// Deterministic handshake: lets the test cancel exactly while the "gs run" is in flight, with no
