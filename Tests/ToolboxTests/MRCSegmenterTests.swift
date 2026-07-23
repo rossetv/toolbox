@@ -158,27 +158,33 @@ final class MRCSegmenterTests: XCTestCase {
 
     // MARK: speck removal
 
-    /// A component below the minimum area is a scanner speck and is cleared; a 2×2 block (area
-    /// 4, above the limit) survives.
+    /// A component below the minimum area is a scanner speck and is cleared; one at the exact
+    /// limit (area 3) survives — pinning the `< minComponentArea` boundary against an off-by-one
+    /// that a 2-vs-4 test alone would pass under. A 2×2 block (area 4) survives too.
     func testRemoveSpecksDropsSpecksKeepsBlocks() {
         let w = 10, h = 10
         var ink = [Bool](repeating: false, count: w * h)
         // A 1-px isolated speck (area 1) and a 2-px pair (area 2) — both below the limit.
         ink[1 * w + 1] = true
         ink[3 * w + 3] = true; ink[3 * w + 4] = true
+        // A 3-px component (area 3, exactly the limit) — "smaller than 3" is cleared, so it stays.
+        ink[5 * w + 0] = true; ink[5 * w + 1] = true; ink[5 * w + 2] = true
         // A 2×2 block (area 4) — above the limit, must survive.
-        ink[6 * w + 6] = true; ink[6 * w + 7] = true
         ink[7 * w + 6] = true; ink[7 * w + 7] = true
+        ink[8 * w + 6] = true; ink[8 * w + 7] = true
 
         MRCSegmenter.removeSpecks(&ink, width: w, height: h)
 
         XCTAssertFalse(ink[1 * w + 1], "an area-1 speck must be cleared")
         XCTAssertFalse(ink[3 * w + 3], "an area-2 component must be cleared")
         XCTAssertFalse(ink[3 * w + 4])
-        XCTAssertTrue(ink[6 * w + 6], "a 2×2 block must survive")
-        XCTAssertTrue(ink[6 * w + 7])
-        XCTAssertTrue(ink[7 * w + 6])
+        XCTAssertTrue(ink[5 * w + 0], "an area-3 component (the exact limit) must survive")
+        XCTAssertTrue(ink[5 * w + 1])
+        XCTAssertTrue(ink[5 * w + 2])
+        XCTAssertTrue(ink[7 * w + 6], "a 2×2 block must survive")
         XCTAssertTrue(ink[7 * w + 7])
+        XCTAssertTrue(ink[8 * w + 6])
+        XCTAssertTrue(ink[8 * w + 7])
     }
 
     // MARK: bit packing
