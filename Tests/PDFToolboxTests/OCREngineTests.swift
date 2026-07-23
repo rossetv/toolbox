@@ -97,6 +97,32 @@ final class OCREngineTests: XCTestCase {
             // expected
         }
     }
+
+    /// M2 — a cancelled OCR run stops at its next page boundary and delivers nothing. The task is
+    /// held at a gate until the test has cancelled it, so there is no race between cancellation
+    /// and the first page: recognition never starts and no output is written.
+    func testCancelledRunStopsAndWritesNoOutput() async throws {
+        let engine = OCREngine()
+        let input = try Fixtures.textImagePDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("cancelled-ocr.pdf")
+
+        let gate = OCRGate()
+        let handle = Task {
+            await gate.wait()
+            return try await engine.ocr(input, to: output, options: OCROptions()) { _ in }
+        }
+        handle.cancel()
+        await gate.open()
+
+        do {
+            let outcome = try await handle.value
+            XCTFail("expected the cancelled OCR run to throw, got \(outcome)")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "a cancelled OCR job must leave no output file")
+    }
 }
 
 // MARK: - fail-loud validation net
@@ -128,5 +154,21 @@ extension OCREngineTests {
         try original.prefix(original.count / 2).write(to: short)
         XCTAssertFalse(try OCREngine.hasVerbatimPrefix(of: input, in: short),
                        "an output shorter than the original must be caught")
+    }
+}
+
+/// Holds a task until the test has cancelled it, with no ordering race (open-before-wait
+/// returns immediately).
+private actor OCRGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func open() {
+        opened = true
+        continuation?.resume()
+        continuation = nil
     }
 }

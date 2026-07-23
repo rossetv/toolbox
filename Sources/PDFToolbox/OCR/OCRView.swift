@@ -134,7 +134,10 @@ struct OCRView: View {
         HStack(spacing: Theme.Spacing.medium) {
             Text(footerNote).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
             Spacer(minLength: Theme.Spacing.small)
-            if model.isRunning { ProgressView().controlSize(.small) }
+            if model.isRunning {
+                ProgressView().controlSize(.small)
+                LinkButton(title: "Cancel") { model.cancel() }
+            }
             PrimaryButton(title: actionTitle, isEnabled: model.canRun) { model.run() }
         }
         .padding(.horizontal, Theme.Spacing.large)
