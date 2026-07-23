@@ -406,6 +406,41 @@ final class PDFWriterTests: XCTestCase {
         XCTAssertNotNil(text.range(of: "trailer"))
     }
 
+    /// An object stream's `/Length` may be an indirect reference. If it is not resolved, the
+    /// extent falls back to hunting for `endstream` inside *compressed* bytes that can perfectly
+    /// well contain those nine bytes — truncating the payload and losing the packed objects.
+    func testIndirectLengthOnAnObjectStreamIsResolved() throws {
+        let input = try Fixtures.objectStreamPDF(name: "objstm-indirect.pdf", indirectLength: true)
+        let bytes = [UInt8](try Data(contentsOf: input))
+        let topLevel = try PDFWriter.indexTopLevelObjects(bytes)
+        XCTAssertNotNil(topLevel[7], "precondition: the length lives in its own object")
+
+        let packed = PDFWriter.indexObjectStreams(bytes, topLevel: topLevel)
+        XCTAssertEqual(Set(packed.keys), [1, 2, 3], "the stream still decodes whole")
+
+        let output = try sibling(of: input, "objstm-indirect-ocr.pdf")
+        try write(input, to: output)
+        XCTAssertTrue(try supersededPageDict(in: output, objNum: 3).contains("/MediaBox"))
+        XCTAssertNotNil(PDFDocument(url: output))
+    }
+
+    /// Offsets past 65535 need a wider cross-reference field than the small fixture exercises;
+    /// a hard-coded two-byte field would silently truncate every offset in a real document.
+    func testWideCrossReferenceOffsetsAreEmitted() throws {
+        let input = try Fixtures.objectStreamPDF(name: "objstm-wide.pdf", padTo: 90_000)
+        XCTAssertGreaterThan(try Data(contentsOf: input).count, 1 << 16, "precondition: past 2 bytes")
+
+        let output = try sibling(of: input, "objstm-wide-ocr.pdf")
+        try write(input, to: output)
+        let appended = try Data(contentsOf: output).dropFirst(try Data(contentsOf: input).count)
+        XCTAssertNotNil(String(decoding: appended, as: UTF8.self).range(of: "/W [ 1 3 2 ]"),
+                        "a three-byte offset field is required at this file size")
+
+        let doc = try XCTUnwrap(PDFDocument(url: output))
+        XCTAssertEqual(doc.pageCount, 1)
+        XCTAssertTrue((doc.page(at: 0)?.string ?? "").contains("HELLO"))
+    }
+
     /// An object stream this writer cannot decode must fail loud, not guess. A predictor in
     /// `/DecodeParms` is the realistic case.
     func testUndecodableObjectStreamFailsLoudRatherThanSilently() throws {

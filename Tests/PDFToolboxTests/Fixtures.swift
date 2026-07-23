@@ -290,7 +290,15 @@ enum Fixtures {
     /// Built here rather than by any framework because no Apple API emits this layout. Streams
     /// themselves cannot be packed (PDF 32000-1 §7.5.7), so the content stream, the object stream
     /// and the cross-reference stream stay top-level; objects 1–3 are packed.
-    static func objectStreamPDF(name: String = "objstm.pdf") throws -> URL {
+    /// - Parameters:
+    ///   - indirectLength: give the object stream an indirect `/Length` (`7 0 R`) — legal, and
+    ///     the case where a writer that cannot resolve the reference falls back to hunting for
+    ///     `endstream` inside compressed bytes that may contain it.
+    ///   - padTo: pad the content stream so the file exceeds this size, pushing object offsets
+    ///     past what a two-byte cross-reference field can hold.
+    static func objectStreamPDF(name: String = "objstm.pdf",
+                                indirectLength: Bool = false,
+                                padTo: Int = 0) throws -> URL {
         let packedObjects: [(num: Int, body: String)] = [
             (1, "<< /Type /Catalog /Pages 2 0 R >>"),
             (2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>"),
@@ -310,7 +318,12 @@ enum Fixtures {
         payload.append(bodies)
         let compressed = try zlibCompress(payload)
 
-        let content = Data("0.9 0.9 0.9 rg 72 72 468 648 re f".utf8)
+        var content = Data("0.9 0.9 0.9 rg 72 72 468 648 re f".utf8)
+        if padTo > 0 {
+            // `%` comments are legal inside a content stream and change nothing that renders.
+            content.append(Data("\n% ".utf8))
+            content.append(Data(repeating: 0x70, count: max(0, padTo - content.count - 512)))
+        }
         var out = Data("%PDF-1.5\n".utf8)
         out.append(Data([0x25, 0xE2, 0xE3, 0xCF, 0xD3]))
         out.append(0x0A)
@@ -328,8 +341,10 @@ enum Fixtures {
         contentObject.append(Data("\nendstream".utf8))
         appendObject(4, contentObject)
 
+        if indirectLength { appendObject(7, Data("\(compressed.count)".utf8)) }
+        let lengthValue = indirectLength ? "7 0 R" : "\(compressed.count)"
         let streamHeader = "<< /Type /ObjStm /N \(packedObjects.count) /First \(first) "
-            + "/Length \(compressed.count) /Filter /FlateDecode >>\nstream\n"
+            + "/Length \(lengthValue) /Filter /FlateDecode >>\nstream\n"
         var streamObject = Data(streamHeader.utf8)
         streamObject.append(compressed)
         streamObject.append(Data("\nendstream".utf8))
@@ -338,19 +353,25 @@ enum Fixtures {
         // The cross-reference stream. /W [1 2 2]: type, then two fields. Type 2 entries name the
         // containing object stream and the index within it; type 1 entries are offset + generation.
         let xrefOffset = out.count
+        offsets[6] = xrefOffset                                      // object 6 is this stream
+        let highest = indirectLength ? 7 : 6
+        // Field 2 carries a byte offset, so it must be wide enough for the largest one.
+        var width = 2
+        while width < 8, (offsets.values.max() ?? 0) >= (1 << (8 * width)) { width += 1 }
+
         var table = Data()
         func entry(_ type: UInt8, _ field2: Int, _ field3: Int) {
             table.append(type)
-            table.append(UInt8((field2 >> 8) & 0xFF)); table.append(UInt8(field2 & 0xFF))
+            for shift in stride(from: width - 1, through: 0, by: -1) {
+                table.append(UInt8((field2 >> (8 * shift)) & 0xFF))
+            }
             table.append(UInt8((field3 >> 8) & 0xFF)); table.append(UInt8(field3 & 0xFF))
         }
         entry(0, 0, 0xFFFF)                                          // object 0, free
-        for (i, object) in packedObjects.enumerated() { _ = object; entry(2, 5, i) }
-        entry(1, offsets[4]!, 0)
-        entry(1, offsets[5]!, 0)
-        entry(1, xrefOffset, 0)                                      // object 6 is this stream
+        for i in packedObjects.indices { entry(2, 5, i) }
+        for num in 4...highest { entry(1, offsets[num] ?? 0, 0) }
 
-        let xrefHeader = "<< /Type /XRef /Size 7 /W [ 1 2 2 ] /Root 1 0 R "
+        let xrefHeader = "<< /Type /XRef /Size \(highest + 1) /W [ 1 \(width) 2 ] /Root 1 0 R "
             + "/Length \(table.count) >>\nstream\n"
         var xrefObject = Data(xrefHeader.utf8)
         xrefObject.append(table)
