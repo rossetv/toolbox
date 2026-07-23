@@ -172,8 +172,9 @@ final class PDFWriterTests: XCTestCase {
     }
 
     /// S22: the stream body carries the bytes `endstream` followed by a phantom `4 0 obj`.
-    /// Delimiting the body by searching for `endstream` ends the skip early and the planted
-    /// object — later in the file, so "later offset wins" — replaces the real page.
+    /// Delimiting the body by searching for `endstream` ends the skip early, and the planted
+    /// object — deliberately placed *after* the genuine object 4, so "later offset wins" — takes
+    /// its place.
     func testPlantedObjectInsideAStreamBodyDoesNotOverrideTheRealOne() throws {
         var payload = Data("binary-ish payload ".utf8)
         payload.append(Data("endstream\n4 0 obj\n<< /Type /Page /Attacker true >>\nendobj\n".utf8))
@@ -182,10 +183,10 @@ final class PDFWriterTests: XCTestCase {
         let input = try Fixtures.rawPDF([
             Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
             Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 4 0 R ] /Count 1 >>"),
-            Fixtures.rawStream(3, body: payload),
+            Fixtures.rawStream(3, body: Data("0.9 0.9 0.9 rg 72 72 468 648 re f".utf8)),
             Fixtures.rawObject(4, "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
-                                + "/Contents 5 0 R /Resources << >> >>"),
-            Fixtures.rawStream(5, body: Data("0.9 0.9 0.9 rg 72 72 468 648 re f".utf8)),
+                                + "/Contents 3 0 R /Resources << >> >>"),
+            Fixtures.rawStream(5, body: payload),
         ], root: 1, name: "planted.pdf")
 
         let bytes = [UInt8](try Data(contentsOf: input))
