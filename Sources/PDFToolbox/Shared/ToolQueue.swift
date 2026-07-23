@@ -7,18 +7,6 @@
 
 import Foundation
 
-/// The batch runner shared by both tools. It owns per-job state and runs jobs with bounded
-/// concurrency; the tool supplies the per-job `body`.
-///
-/// Contract:
-///  - the body is `(ThisJob, report) async throws -> JobResult`; it must **suspend** on its
-///    blocking work (never block a cooperative-pool thread) so the concurrency cap is real;
-///  - each `report(fraction)` sets that job `.running(fraction)`; the body's return sets
-///    `.done(outcome)`; a **throw sets that one job `.failed` and the batch continues**;
-///  - `cancel()` stops launching queued jobs and cancels running ones — a cancelled job
-///    returns to `.queued` and (by the engine's atomic-write contract) leaves no partial output;
-///  - **one batch at a time**: `run` while a batch is in flight is a no-op, so the live batch can
-///    never be orphaned from `cancel()`. The invariant lives here, in the type that owns the task.
 /// What a job produced: its outcome, and where the output landed (nil when nothing was written —
 /// a no-gain compress keeps the original, so there is no new file to reveal or open).
 struct JobResult {
@@ -31,6 +19,18 @@ struct JobResult {
     }
 }
 
+/// The batch runner shared by both tools. It owns per-job state and runs jobs with bounded
+/// concurrency; the tool supplies the per-job `body`.
+///
+/// Contract:
+///  - the body is `(ThisJob, report) async throws -> JobResult`; it must **suspend** on its
+///    blocking work (never block a cooperative-pool thread) so the concurrency cap is real;
+///  - each `report(fraction)` sets that job `.running(fraction)`; the body's return sets
+///    `.done(outcome)`; a **throw sets that one job `.failed` and the batch continues**;
+///  - `cancel()` stops launching queued jobs and cancels running ones — a cancelled job
+///    returns to `.queued` and (by the engine's atomic-write contract) leaves no partial output;
+///  - **one batch at a time**: `run` while a batch is in flight is a no-op, so the live batch can
+///    never be orphaned from `cancel()`. The invariant lives here, in the type that owns the task.
 @MainActor
 final class ToolQueue: ObservableObject {
     @Published private(set) var jobs: [ToolJob] = []
