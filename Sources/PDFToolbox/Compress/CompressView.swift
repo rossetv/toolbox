@@ -32,7 +32,10 @@ struct CompressView: View {
         .background(Theme.Colors.surface)
         .animation(.easeInOut(duration: 0.2), value: model.isRunning)
         .animation(.easeInOut(duration: 0.2), value: model.allFinished)
-        .onDrop(of: [.pdf], isTargeted: $isTargeted) { providers in
+        // `.fileURL`, not `.pdf`: a drag from Finder advertises `public.file-url`, so matching on
+        // the PDF content type rejected every drop before this closure could run — the drop zone
+        // looked live and did nothing. `add` still filters to local PDFs.
+        .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             loadDroppedURLs(providers)
             return true
         }
