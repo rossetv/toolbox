@@ -152,6 +152,16 @@ struct CompressView: View {
         }
     }
 
+    /// How the output will be named. With a single file in the queue that is its real resulting
+    /// filename, which is more use than a placeholder; with several, the pattern they all follow.
+    private var outputNamePreview: String {
+        if model.jobs.count == 1, let job = model.jobs.first {
+            let base = job.url.deletingPathExtension().lastPathComponent
+            return "as \(base)-compressed.pdf"
+        }
+        return "as <file>-compressed.pdf"
+    }
+
     private func revealOutputs() {
         // Fall back to the originals' folder when nothing new was written (every file was
         // already optimised), so the button still does something sensible.
@@ -174,9 +184,11 @@ struct CompressView: View {
                 .foregroundStyle(Theme.Colors.text)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Text("· Name-compressed.pdf")
+            Text(outputNamePreview)
                 .themeFont(.caption)
                 .foregroundStyle(Theme.Colors.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
             Spacer(minLength: Theme.Spacing.small)
             if model.outputFolder != nil {
                 LinkButton(title: "Use original location") { model.outputFolder = nil }

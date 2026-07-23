@@ -52,6 +52,9 @@ struct PrimaryButton: View {
         .opacity(isEnabled ? (isHovering ? 0.9 : 1) : 0.4)
         .onHover { isHovering = $0 }
         .disabled(!isEnabled)
+        // Only offer the "clickable" cursor when the button can actually be pressed — a hand
+        // over a disabled control promises something that will not happen.
+        .modifier(HandCursorWhen(isEnabled: isEnabled))
         .animation(.easeOut(duration: 0.1), value: isHovering)
     }
 }
@@ -89,6 +92,8 @@ struct LinkButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .pointingHandCursor()
     }
 }
 
@@ -383,23 +388,30 @@ struct FileRow: View {
 
     var body: some View {
         HStack(spacing: 13) {
-            fileBadge
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .themeFont(.bodyEmphasis)
-                    .foregroundStyle(Theme.Colors.text)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(meta).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
+            // Only the badge and the filename open the file. Making the whole row clickable turns
+            // it into one large hit target that also swallows clicks meant for the trailing
+            // controls, and gives no hint about what the click will do.
+            HStack(spacing: 13) {
+                fileBadge
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .themeFont(.bodyEmphasis)
+                        .foregroundStyle(Theme.Colors.text)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(meta).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
+                }
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .contentShape(Rectangle())
+            .modifier(RowOpenModifier(onOpen: onOpen))
+
             Spacer(minLength: Theme.Spacing.small)
             trailing
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
         .background(Theme.Colors.background, in: RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
-        .modifier(RowOpenModifier(onOpen: onOpen))
     }
 
     private var fileBadge: some View {
@@ -741,5 +753,14 @@ private struct RowOpenModifier: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// Applies the hand cursor only when a control is enabled.
+private struct HandCursorWhen: ViewModifier {
+    let isEnabled: Bool
+
+    func body(content: Content) -> some View {
+        if isEnabled { content.pointingHandCursor() } else { content }
     }
 }
