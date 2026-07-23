@@ -49,16 +49,10 @@ targets:
         # Keys live in Resources/Info.plist: CFBundleName drives the menu-bar name and Xcode
         # derives it from PRODUCT_NAME unless an explicit plist is supplied. The bundle stays
         # PDFToolbox.app — a space in the bundle path breaks TEST_HOST, schemes and scripts.
-        # Bundled static libraries (leptonica, jbig2enc) for the Rung-2 bilevel scan pipeline.
-        # Built by scripts/build-leptonica.sh + scripts/build-jbig2enc.sh into a git-ignored
-        # tree, and linked INTO the app binary — nothing to bundle, nothing to resolve at
-        # runtime. jbig2enc is C++ and depends on leptonica, hence its position and -lc++.
-        SWIFT_OBJC_BRIDGING_HEADER: $(SRCROOT)/Sources/PDFToolbox/Native/PDFToolbox-Bridging-Header.h
-        HEADER_SEARCH_PATHS: $(SRCROOT)/Resources/native/leptonica/include $(SRCROOT)/Resources/native/jbig2enc/include
-        LIBRARY_SEARCH_PATHS: $(SRCROOT)/Resources/native/leptonica/lib $(SRCROOT)/Resources/native/jbig2enc/lib
-        OTHER_LDFLAGS: -ljbig2enc -lleptonica -lc++
-        CLANG_CXX_LANGUAGE_STANDARD: c++17
-        CLANG_CXX_LIBRARY: libc++
+        # Rung 2 encodes CCITT G4 through ImageIO and needs no native library, so the app links
+        # nothing beyond the system frameworks. An earlier jbig2enc/leptonica attempt left build
+        # settings pointing at a git-ignored tree, which built only on the machine that happened
+        # to have it — see .claude/DECISIONS.md.
 
   PDFToolboxTests:
     type: bundle.unit-test
