@@ -34,7 +34,8 @@ struct OCRView: View {
             ToolHeader(
                 systemImage: Tool.ocr.systemImage,
                 title: "OCR",
-                subtitle: "Make scanned PDFs searchable. A hidden text layer is added — the page image is untouched."
+                subtitle: "Make scanned PDFs searchable. A hidden text layer is added — the page image is untouched.",
+                tint: Tool.ocr.tint
             )
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -77,6 +78,7 @@ struct OCRView: View {
                     ForEach(model.jobs) { job in
                         FileRow(name: job.url.lastPathComponent,
                                 meta: meta(for: job),
+                                fileURL: job.url,
                                 status: status(for: job),
                                 onOpen: { NSWorkspace.shared.open(job.resultURL ?? job.url) })
                     }

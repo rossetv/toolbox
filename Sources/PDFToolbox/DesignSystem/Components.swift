@@ -6,6 +6,7 @@
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
 import AppKit
+import PDFKit
 import SwiftUI
 
 /// Reusable components built on `Theme`, rebuilt from the Claude Design mockup
@@ -380,6 +381,9 @@ struct FileRow: View {
 
     let name: String
     let meta: String
+    /// The file this row represents, used to draw a preview of its first page. Nil falls back to
+    /// a plain document mark, which is what the previews and any non-file row get.
+    var fileURL: URL?
     var status: Status = .queued(detail: nil, savedPercent: nil)
     var onRemove: (() -> Void)?
     /// Opening the file the row represents. Nil leaves the row inert.
@@ -414,13 +418,7 @@ struct FileRow: View {
     }
 
     private var fileBadge: some View {
-        RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(Theme.Colors.documentBadge)
-            .frame(width: 26, height: 32)
-            .overlay(
-                Text("PDF").font(.system(size: 7, weight: .bold)).foregroundStyle(.white)
-            )
-            .shadow(color: .black.opacity(0.18), radius: 1, x: 0, y: 0.5)
+        PDFThumbnail(url: fileURL)
     }
 
     @ViewBuilder
@@ -532,6 +530,75 @@ private var fileRowStateGallery: some View {
         .preferredColorScheme(.dark)
 }
 
+// MARK: - PDFThumbnail
+
+/// A preview of a PDF's first page with a small red PDF label beneath it.
+///
+/// A generic badge told the user nothing they did not already know from the filename; the page
+/// itself is how anyone actually recognises a document. Rendering happens off the main actor —
+/// `PDFDocument(url:)` reads and parses the whole file, which for a large scan is far too much
+/// work to do while the row is being laid out.
+struct PDFThumbnail: View {
+    let url: URL?
+    var width: CGFloat = 30
+
+    @State private var preview: NSImage?
+
+    /// The red card visible around the page — the border of the document container.
+    private let inset: CGFloat = 2.5
+    private var height: CGFloat { (width * 11 / 8.5).rounded() }   // US Letter aspect
+
+    var body: some View {
+        VStack(spacing: 2) {
+            page
+            Text("PDF")
+                .font(.system(size: 6.5, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .padding(.horizontal, inset)
+        .padding(.top, inset)
+        .padding(.bottom, 2)
+        .frame(width: width, height: height)
+        .background(
+            Theme.Colors.documentBadge,
+            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 1, x: 0, y: 0.5)
+        .task(id: url) { await loadPreview() }
+    }
+
+    /// The page itself, sitting on the red document card.
+    private var page: some View {
+        ZStack {
+            Color.white
+            if let preview {
+                Image(nsImage: preview)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                // Until the page is ready — or if it cannot be read at all — show a plain sheet
+                // rather than a spinner: a row that flickers a spinner per file makes a whole
+                // batch look broken, and a blank sheet is also the honest preview of a blank page.
+                Color.white
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 1.5, style: .continuous))
+    }
+
+    private func loadPreview() async {
+        preview = nil
+        guard let url else { return }
+        let pixels = CGSize(width: width * 3, height: height * 3)   // 3x, so it stays crisp on Retina
+        let rendered = await Task.detached(priority: .utility) { () -> NSImage? in
+            guard let page = PDFDocument(url: url)?.page(at: 0) else { return nil }
+            return page.thumbnail(of: pixels, for: .mediaBox)
+        }.value
+        guard !Task.isCancelled else { return }
+        preview = rendered
+    }
+}
+
 // MARK: - ToolIconTile
 
 /// A tool's identity glyph: an SF Symbol on a rounded, accent-filled square (the mockup's
@@ -583,11 +650,15 @@ struct ToolHeader: View {
     let systemImage: String
     let title: String
     let subtitle: String
+    /// The owning tool's tint. Required in practice: leaving it to `ToolIconTile`'s default drew
+    /// the header tile in the accent blue while the sidebar drew the same glyph in the tool's own
+    /// colour, so one tool appeared in two colours on screen at once.
+    var tint: Color = Theme.Colors.accent
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 9) {
-                ToolIconTile(systemImage: systemImage)
+                ToolIconTile(systemImage: systemImage, tint: tint)
                 Text(title).themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
             }
             Text(subtitle)

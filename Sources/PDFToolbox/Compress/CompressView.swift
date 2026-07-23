@@ -21,7 +21,8 @@ struct CompressView: View {
             ToolHeader(
                 systemImage: Tool.compress.systemImage,
                 title: "Compress",
-                subtitle: "Shrink large PDFs. Text and vectors stay sharp; images are re-encoded."
+                subtitle: "Shrink large PDFs. Text and vectors stay sharp; images are re-encoded.",
+                tint: Tool.compress.tint
             )
             loadErrorBanner
             content
@@ -73,6 +74,7 @@ struct CompressView: View {
                     ForEach(model.jobs) { job in
                         FileRow(name: job.url.lastPathComponent,
                                 meta: meta(for: job),
+                                fileURL: job.url,
                                 status: status(for: job),
                                 onRemove: canRemove(job) ? { model.remove(job) } : nil,
                                 onOpen: { open(job) })
