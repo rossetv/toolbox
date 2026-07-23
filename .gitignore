@@ -11,6 +11,12 @@ xcuserdata/
 *.xccheckout
 *.moved-aside
 
+# XcodeGen-generated project (regenerated locally + in CI)
+*.xcodeproj
+
+# Bundled Ghostscript (built from source by scripts/build-ghostscript.sh; 26 MB — never committed)
+Resources/ghostscript/
+
 # Swift Package Manager
 .build/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
@@ -20,3 +26,10 @@ xcuserdata/
 .desloppify/
 .claude/worktrees/
 .claude/settings.local.json
+
+# Coverage artefacts from running instrumented binaries directly
+*.profraw
+
+# Build + packaging output
+build/
+dist/
