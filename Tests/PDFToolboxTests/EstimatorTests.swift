@@ -51,10 +51,9 @@ final class EstimatorTests: XCTestCase {
         let estimate = await estimator.estimate(input, preset: .balanced)
 
         XCTAssertFalse(estimate.isFallback)
-        XCTAssertEqual(estimate.confidence, .high)
     }
 
-    func testSlowClassifierFallsBackWithLowConfidence() async throws {
+    func testSlowClassifierUsesTheFallbackEstimate() async throws {
         let slow = SlowAnalyser(delay: 2.0)
         let estimator = CompressEstimator(analyser: slow, timeBudget: 0.2)
         let input = try Fixtures.imagePDF()
@@ -65,7 +64,6 @@ final class EstimatorTests: XCTestCase {
 
         XCTAssertLessThan(elapsed, 1.0, "the time box should return well before the injected 2s delay")
         XCTAssertTrue(estimate.isFallback)
-        XCTAssertEqual(estimate.confidence, .low)
         XCTAssertGreaterThan(estimate.predictedBytes, 0)
     }
 
@@ -76,7 +74,6 @@ final class EstimatorTests: XCTestCase {
         let estimate = await estimator.estimate(input, preset: .smallestSize)
 
         XCTAssertTrue(estimate.isFallback)
-        XCTAssertEqual(estimate.confidence, .low)
         XCTAssertGreaterThan(estimate.predictedBytes, 0)
     }
 
@@ -88,6 +85,5 @@ final class EstimatorTests: XCTestCase {
         let estimate = await estimator.estimate(missing, preset: .balanced)
 
         XCTAssertTrue(estimate.isFallback)
-        XCTAssertEqual(estimate.confidence, .low)
     }
 }

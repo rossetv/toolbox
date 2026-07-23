@@ -7,16 +7,10 @@
 
 import Foundation
 
-/// A pre-compression size prediction (spec §5.3). Defined here in the shared layer; the
-/// estimator (Track C, Task C.2) implements against this type.
+/// A pre-compression size prediction, shown to the user before a job runs.
 struct SizeEstimate: Equatable {
     let predictedBytes: Int
-    let confidence: Confidence
-    /// True when per-file analysis was abandoned (too slow / too uncertain) and a
-    /// typical-range fallback was used instead.
+    /// True when per-file analysis was abandoned (too slow, or too uncertain) and a
+    /// typical-range fallback was used instead. The UI marks such a figure as approximate.
     let isFallback: Bool
-}
-
-enum Confidence: Equatable {
-    case high, medium, low
 }

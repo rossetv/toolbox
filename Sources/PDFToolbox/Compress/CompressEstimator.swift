@@ -32,7 +32,7 @@ enum CompressEstimatorError: Error {
 /// above that baseline is attributed to embedded images. Time-boxed (default 500 ms — real
 /// per-file analysis is milliseconds; the box only guards a pathological/huge input or a
 /// slow classifier): on overrun, or on any analysis failure, returns a **typical-range
-/// fallback** instead, flagged `isFallback` with `.low` confidence. The reduction figures are
+/// fallback** instead, flagged `isFallback`. The reduction figures are
 /// a concrete provisional baseline (mirrors `CompressPreset`'s own baseline) — not corpus-tuned.
 struct CompressEstimator {
     private let analyser: PDFAnalysing
@@ -96,7 +96,7 @@ struct CompressEstimator {
         let base = baseReduction[m.contentType]?[preset] ?? typicalReduction[preset] ?? 0.2
         let reduction = m.contentType == .bornDigital ? base : base * (0.3 + 0.7 * m.payloadRatio)
         let predicted = max(1, Int(Double(inputSize) * (1 - reduction)))
-        return SizeEstimate(predictedBytes: predicted, confidence: .high, isFallback: false)
+        return SizeEstimate(predictedBytes: predicted, isFallback: false)
     }
 
     // MARK: sample-based analysis
@@ -121,14 +121,14 @@ struct CompressEstimator {
         let reduction = contentType == .bornDigital ? base : base * (0.3 + 0.7 * payloadRatio)
 
         let predicted = max(1, Int(Double(inputSize) * (1 - reduction)))
-        return SizeEstimate(predictedBytes: predicted, confidence: .high, isFallback: false)
+        return SizeEstimate(predictedBytes: predicted, isFallback: false)
     }
 
     /// Typical-range fallback (content type unknown/unreliable) — a flat reduction per preset.
     private static func fallbackEstimate(inputSize: Int, preset: CompressPreset) -> SizeEstimate {
         let reduction = typicalReduction[preset] ?? 0.3
         let predicted = max(1, Int(Double(max(inputSize, 1)) * (1 - reduction)))
-        return SizeEstimate(predictedBytes: predicted, confidence: .low, isFallback: true)
+        return SizeEstimate(predictedBytes: predicted, isFallback: true)
     }
 
     private static let typicalReduction: [CompressPreset: Double] = [
