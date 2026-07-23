@@ -1,0 +1,134 @@
+// PDF Toolbox
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// This file is part of PDF Toolbox, released under the GNU Affero General
+// Public License v3.0 or later. See the LICENSE file in the project root.
+
+import CoreGraphics
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+/// CCITT Group 4 encoding of a bilevel page, for embedding as a PDF image XObject.
+///
+/// The encoder is ImageIO's: the image is written to an in-memory TIFF with
+/// `Compression = 4` (CCITT G4) and the compressed strip is lifted back out. PDF's
+/// `/CCITTFaxDecode` with `/K -1` consumes exactly that bitstream, so no bespoke encoder — and no
+/// native image library — is needed. TIFF is used purely as a transport for the codec.
+enum CCITTEncoder {
+
+    struct Encoded {
+        let data: Data          // the raw G4 bitstream, ready for /CCITTFaxDecode
+        let width: Int
+        let height: Int
+        /// True when a 1 bit means black. TIFF photometric 0 (WhiteIsZero) is the usual output
+        /// for G4, which corresponds to PDF's default `/BlackIs1 false`.
+        let blackIs1: Bool
+    }
+
+    enum Failure: Error {
+        case destinationUnavailable
+        case encodingFailed
+        case stripNotFound
+    }
+
+    /// Encode a bilevel bitmap as CCITT G4. Returns nil rather than throwing for a degenerate
+    /// image, so callers can simply fall back.
+    static func encode(_ image: CGImage) throws -> Encoded {
+        guard image.width > 0, image.height > 0 else { throw Failure.encodingFailed }
+
+        let buffer = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            buffer, UTType.tiff.identifier as CFString, 1, nil
+        ) else { throw Failure.destinationUnavailable }
+
+        let properties: [CFString: Any] = [
+            kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 4] as [CFString: Any],
+            kCGImagePropertyDepth: 1,
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw Failure.encodingFailed }
+
+        let tiff = buffer as Data
+        guard let strip = try Self.strip(fromTIFF: tiff) else { throw Failure.stripNotFound }
+        return Encoded(data: strip.data,
+                       width: image.width,
+                       height: image.height,
+                       blackIs1: strip.photometric == 1)
+    }
+
+    // MARK: TIFF strip extraction
+
+    private struct Strip {
+        let data: Data
+        let photometric: Int
+    }
+
+    /// Pull the single compressed strip out of a baseline TIFF.
+    ///
+    /// Deliberately a minimal reader: this parses only the TIFF *we* just produced, so it needs
+    /// nothing beyond the first IFD and a handful of tags. Every offset is bounds-checked anyway —
+    /// the parser must not be the weak point even on input it is supposed to trust.
+    private static func strip(fromTIFF tiff: Data) throws -> Strip? {
+        guard tiff.count >= 8 else { return nil }
+        let little: Bool
+        switch (tiff[0], tiff[1]) {
+        case (0x49, 0x49): little = true
+        case (0x4D, 0x4D): little = false
+        default: return nil
+        }
+
+        func u16(_ offset: Int) -> Int? {
+            guard offset >= 0, offset + 2 <= tiff.count else { return nil }
+            let a = Int(tiff[offset]), b = Int(tiff[offset + 1])
+            return little ? a | (b << 8) : (a << 8) | b
+        }
+        func u32(_ offset: Int) -> Int? {
+            guard offset >= 0, offset + 4 <= tiff.count else { return nil }
+            let bytes = (0..<4).map { Int(tiff[offset + $0]) }
+            return little
+                ? bytes[0] | bytes[1] << 8 | bytes[2] << 16 | bytes[3] << 24
+                : bytes[3] | bytes[2] << 8 | bytes[1] << 16 | bytes[0] << 24
+        }
+
+        guard let ifd = u32(4), let entryCount = u16(ifd) else { return nil }
+
+        var offsets: [Int] = []
+        var counts: [Int] = []
+        var photometric = 0
+
+        for index in 0..<entryCount {
+            let entry = ifd + 2 + index * 12
+            guard let tag = u16(entry), let type = u16(entry + 2), let count = u32(entry + 4) else {
+                return nil
+            }
+            // A value of 4 bytes or fewer is stored inline in the entry, otherwise the entry
+            // holds a pointer to it.
+            let width = (type == 3) ? 2 : 4
+            func values() -> [Int] {
+                let inline = count * width <= 4
+                let base = inline ? entry + 8 : (u32(entry + 8) ?? -1)
+                guard base >= 0 else { return [] }
+                return (0..<count).compactMap { i in
+                    width == 2 ? u16(base + i * 2) : u32(base + i * 4)
+                }
+            }
+            switch tag {
+            case 262: photometric = values().first ?? 0
+            case 273: offsets = values()
+            case 279: counts = values()
+            default: break
+            }
+        }
+
+        guard !offsets.isEmpty, offsets.count == counts.count else { return nil }
+        var payload = Data()
+        for (offset, count) in zip(offsets, counts) {
+            guard offset >= 0, count >= 0, offset + count <= tiff.count else { return nil }
+            payload.append(tiff.subdata(in: offset..<(offset + count)))
+        }
+        guard !payload.isEmpty else { return nil }
+        return Strip(data: payload, photometric: photometric)
+    }
+}
