@@ -70,4 +70,11 @@ final class OCRViewModel: ObservableObject {
             isRunning = false
         }
     }
+
+    /// Stop the batch: queued files stay queued and in-flight recognition is interrupted at its
+    /// next page boundary, leaving no output (matches `CompressViewModel`). Without this a
+    /// thousand-page scan could only be stopped by force-quitting the app.
+    func cancel() {
+        queue.cancel()
+    }
 }
