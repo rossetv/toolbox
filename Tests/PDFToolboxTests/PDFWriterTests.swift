@@ -489,7 +489,11 @@ final class PDFWriterTests: XCTestCase {
     func testWriterDoesNotHoldWholeCopiesOfTheInput() throws {
         let input = try Fixtures.repeatedImagePDF(pages: 12)          // tens of MB
         let size = try FileManager.default.attributesOfItem(atPath: input.path)[.size] as! Int
-        try XCTSkipIf(size < 8 << 20, "fixture too small to measure meaningfully")
+        // Assert, never skip. The fixture is generated in-process, so its size is an invariant we
+        // control rather than a runtime condition — and a skip here would silently retire the only
+        // check on the writer's memory bound the first time the fixture happened to shrink.
+        XCTAssertGreaterThanOrEqual(size, 8 << 20,
+                                    "fixture must stay large enough to measure a whole copy against")
 
         let output = try sibling(of: input, "footprint-ocr.pdf")
         let before = Self.residentFootprint()
