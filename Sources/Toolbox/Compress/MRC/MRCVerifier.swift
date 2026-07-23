@@ -84,12 +84,10 @@ enum MRCVerifier {
     private static func greyBuffer(from image: CGImage, width: Int, height: Int) -> [UInt8]? {
         guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                   bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue),
-              let base = { () -> UnsafeMutablePointer<UInt8>? in
-                  ctx.interpolationQuality = .none
-                  ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-                  return ctx.data?.assumingMemoryBound(to: UInt8.self)
-              }() else { return nil }
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        ctx.interpolationQuality = .none
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let base = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
 
         let stride = ctx.bytesPerRow
         var out = [UInt8](repeating: 0, count: width * height)
