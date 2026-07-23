@@ -138,7 +138,9 @@ final class CompressEngineTests: XCTestCase {
     /// same page count, and (retaining well over `minRetainedInk` of the input's ink) it passes
     /// `OutputValidator` — so without the engine's cancellation checks this run would place a
     /// file in the user's folder, which is exactly the reported defect. The assertions are
-    /// therefore both discriminating.
+    /// therefore both discriminating. The stub retains 6/14 ≈ 0.43 of the input's ink by
+    /// construction (a ratio of line counts); raising `OutputValidator.minRetainedInk` past
+    /// 0.43 would silently strip this test of that property — revisit the fixtures if so.
     ///
     /// The input must classify `.bornDigital`: an all-white `blankPDF` reads as near-two-tone,
     /// which routes the engine through the whole Rung-2 attempt (1500 px render + binarise +
