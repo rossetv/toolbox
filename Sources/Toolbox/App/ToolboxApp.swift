@@ -13,6 +13,24 @@ struct ToolboxApp: App {
         // Headless self-test hook (TOOLBOX_SMOKE=compress) — runs the real compress path
         // from the app process and exits, before any window appears.
         CompressSmoke.runIfRequested()
+        Self.yieldToExistingInstance()
+    }
+
+    /// Single-instance guard. LaunchServices already refuses to launch the same bundle
+    /// twice, but a second COPY at another path (an old build in /Applications beside a
+    /// fresh one, a mounted DMG) runs happily alongside — two instances writing
+    /// `-compressed` siblings into the same folders. The newcomer bows out: bring the
+    /// running instance forward and exit before any window appears.
+    private static func yieldToExistingInstance() {
+        // The hosted XCTest runner launches this app as its test host while a user copy
+        // may legitimately be open — killing the host would kill the suite.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+              let bundleID = Bundle.main.bundleIdentifier else { return }
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        guard let existing = others.first else { return }
+        existing.activate(options: [.activateAllWindows])
+        exit(0)
     }
 
     var body: some Scene {
