@@ -20,8 +20,8 @@ than styling inline.
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography; `Color(light:dark:)` / `NSColor(hex:)` helpers |
-| `Sources/PDFToolbox/DesignSystem/Components.swift` | `PrimaryButton`, `LinkButton`, `Card`, `DropZone`, `StatPill`, `SegmentedPreset`(Option), `FileRow`, `ToolIconTile`, `SectionLabel`, `ToolHeader` |
+| `Sources/Toolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography; `Color(light:dark:)` / `NSColor(hex:)` helpers |
+| `Sources/Toolbox/DesignSystem/Components.swift` | `PrimaryButton`, `LinkButton`, `Card`, `DropZone`, `StatPill`, `SegmentedPreset`(Option), `FileRow`, `ToolIconTile`, `SectionLabel`, `ToolHeader` |
 
 ## Invariants
 
@@ -39,6 +39,10 @@ than styling inline.
 
 ## Gotchas
 
+- **`Tool.tint`** (see [App](app.md)) gives each sidebar tool tile its own colour and is a
+  **deliberate, recorded divergence** from `DESIGN.md`'s single-accent rule, not a bug to
+  fix back to blue — see `.claude/DECISIONS.md`, 2026-07-23. `Theme.Colors.success` and
+  `.documentBadge` already predated it as non-blue tokens.
 - `Theme.Typography` line-heights are **not** reproduced per role from `DESIGN.md`:
   SwiftUI's `lineSpacing` adds to a font's natural leading rather than replacing the
   CSS line-box `DESIGN.md`'s values assume, so a naive px→points copy would be

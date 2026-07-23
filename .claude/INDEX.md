@@ -12,29 +12,29 @@ only, still one table); area sub-index files stay unbuilt until a real repo
 actually needs them.
 Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,000-char hook cap, 8,000 B per-block budget). -->
 
-# PDF Toolbox — KB Index
+# Toolbox — KB Index
 
 ## KB docs
 
 | Doc | Purpose | Verified |
 |-----|---------|----------|
-| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-23 @ 55eb2d9 |
-| [DECISIONS](DECISIONS.md) | append-only decision log | 2026-07-23 @ 55eb2d9 |
+| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-23 @ 6887440 |
+| [DECISIONS](DECISIONS.md) | append-only decision log | 2026-07-23 @ 6887440 |
 | [MEMORY](MEMORY.md) | project memory index — always injected | 2026-07-23 @ 55eb2d9 |
 | [GATES](GATES.md) | the gates that define "done" — Claude's runbook | 2026-07-23 @ 55eb2d9 |
-| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-23 @ 55eb2d9 |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-23 @ 6887440 |
 
 ## Modules
 
 | Module | Purpose | Entrypoint | Doc |
 |--------|---------|-----------|-----|
-| App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/PDFToolbox/App/PDFToolboxApp.swift` | [→](docs/modules/app.md) |
-| Compress | Rung-1 (Ghostscript) compression, estimate, batch UI | `Sources/PDFToolbox/Compress/CompressEngine.swift` | [→](docs/modules/compress.md) |
-| OCR | Vision-based invisible text layer, batch UI | `Sources/PDFToolbox/OCR/OCREngine.swift` | [→](docs/modules/ocr.md) |
-| Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/PDFToolbox/Services/GhostscriptRunner.swift` | [→](docs/modules/services.md) |
-| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/PDFToolbox/Shared/ToolQueue.swift` | [→](docs/modules/shared.md) |
-| Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/PDFToolbox/Models/ToolJob.swift` | [→](docs/modules/models.md) |
-| DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/PDFToolbox/DesignSystem/Theme.swift` | [→](docs/modules/design-system.md) |
+| App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/Toolbox/App/ToolboxApp.swift` | [→](docs/modules/app.md) |
+| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) compression, estimate, batch UI | `Sources/Toolbox/Compress/CompressEngine.swift` | [→](docs/modules/compress.md) |
+| OCR | Vision-based invisible text layer, batch UI | `Sources/Toolbox/OCR/OCREngine.swift` | [→](docs/modules/ocr.md) |
+| Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/Toolbox/Services/GhostscriptRunner.swift` | [→](docs/modules/services.md) |
+| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/Toolbox/Shared/ToolQueue.swift` | [→](docs/modules/shared.md) |
+| Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/Toolbox/Models/ToolJob.swift` | [→](docs/modules/models.md) |
+| DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/Toolbox/DesignSystem/Theme.swift` | [→](docs/modules/design-system.md) |
 
 ## Goal → start here
 
@@ -58,9 +58,9 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 
 ## Central vs peripheral
 
-- **Central** (changes fan out to both tools): `Sources/PDFToolbox/Services/` (gs
-  runner, sandbox profile, PDF inspection/validation/writer), `Sources/PDFToolbox/Shared/`
+- **Central** (changes fan out to both tools): `Sources/Toolbox/Services/` (gs
+  runner, sandbox profile, PDF inspection/validation/writer), `Sources/Toolbox/Shared/`
   (batch queue, naming, path canonicalisation).
-- **Peripheral** (isolated): `Sources/PDFToolbox/DesignSystem/` (presentation only, no
-  logic dependents), `Sources/PDFToolbox/Models/` (leaf value types, no outward
+- **Peripheral** (isolated): `Sources/Toolbox/DesignSystem/` (presentation only, no
+  logic dependents), `Sources/Toolbox/Models/` (leaf value types, no outward
   dependencies).

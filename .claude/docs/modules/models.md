@@ -19,20 +19,25 @@ presets, content classification, and size estimates. No behaviour, no I/O.
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/Models/ToolJob.swift` | `ToolJob` — one queued file: id, url, `state`, `resultURL`, `estimate` |
-| `Sources/PDFToolbox/Models/JobOutcome.swift` | `JobOutcome` (compressed/noGain/ocrAdded/alreadySearchable) + `JobState` (queued/analysing/running/done/failed) |
-| `Sources/PDFToolbox/Models/CompressPreset.swift` | `CompressPreset` (maximumQuality/balanced/smallestSize) — `gsArguments()` builds the tuned gs flag set |
-| `Sources/PDFToolbox/Models/PDFContentType.swift` | `PDFContentType` (bornDigital/mixedColour/scanColour/scanBilevel) |
-| `Sources/PDFToolbox/Models/SizeEstimate.swift` | `SizeEstimate` (predictedBytes, `Confidence`, isFallback) |
+| `Sources/Toolbox/Models/ToolJob.swift` | `ToolJob` — one queued file: id, url, `state`, `resultURL`, `estimate` |
+| `Sources/Toolbox/Models/JobOutcome.swift` | `JobOutcome` (compressed/noGain/ocrAdded/alreadySearchable) + `JobState` (queued/analysing/running/done/failed) |
+| `Sources/Toolbox/Models/CompressPreset.swift` | `CompressPreset` (maximumQuality/balanced/smallestSize) — `gsArguments()` builds the tuned gs flag set |
+| `Sources/Toolbox/Models/PDFContentType.swift` | `PDFContentType` (bornDigital/mixedColour/scanColour/scanBilevel) |
+| `Sources/Toolbox/Models/SizeEstimate.swift` | `SizeEstimate` (predictedBytes, `Confidence`, isFallback) |
 
 ## Invariants
 
 - `CompressPreset.gsArguments()` is the **only** place gs tuning flags are assembled —
   `CompressEngine` appends only `-sOutputFile=` and the input path to this list.
 - `PDFContentType`'s colour/bilevel split is classified by `PDFService.classify`
-  ([Services](services.md)) but **not currently consumed for routing** — every type
-  compresses via Rung-1 gs today (see [Compress](compress.md)). The split exists to
-  seed a future Rung 2/3 native scan pipeline.
+  ([Services](services.md)) and **is** consumed for routing: `.scanBilevel` routes
+  through Rung 2 (binarise + CCITT G4) first, falling back to Rung 1 gs on any
+  failure or no gain; every other classification goes straight to Rung 1 (see
+  [Compress](compress.md)). Rung 3 (MRC, for colour scans) is not built.
+- `PDFService.classify` never actually returns `.mixedColour` today — only
+  `.bornDigital`, `.scanBilevel` and `.scanColour` are reachable from its current
+  logic. `CompressEstimator` still carries a weight for it (seeding a future,
+  finer-grained classifier), so the case stays in the enum.
 
 ## Related
 

@@ -1,8 +1,8 @@
-# PDF Toolbox v1 — Implementation Plan (v3 — SHIP, gated R1→R3)
+# Toolbox v1 — Implementation Plan (v3 — SHIP, gated R1→R3)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship a native macOS app, **PDF Toolbox**, with two working tools — **Compress** (Ghostscript-core, Rung 1) and **OCR** (Apple Vision) — in an extensible SwiftUI shell, packaged as an ad-hoc-signed DMG with GitHub Actions CI.
+**Goal:** Ship a native macOS app, **Toolbox**, with two working tools — **Compress** (Ghostscript-core, Rung 1) and **OCR** (Apple Vision) — in an extensible SwiftUI shell, packaged as an ad-hoc-signed DMG with GitHub Actions CI.
 
 **Architecture:** Depth-first. A serial vertical slice (Phase 0) builds the **complete shared layer** (§4) — models, PDFService, GhostscriptRunner+sandbox, ToolQueue, FileNaming — plus Rung-1 compress wired end-to-end, and proves it works at the **M1 gate** (launch → compress → validate). Only then does Phase 1 fork into breadth tracks (OCR, compress-depth, design) that *consume settled interfaces*, never build shared modules in parallel. Phase 2 integrates, validates on the real corpus, gates, and ships.
 
@@ -15,10 +15,10 @@
 
 - **Platform:** macOS 14.0 minimum deployment target; Apple Silicon (arm64). Built with Xcode 26.6 / macOS 26 SDK.
 - **Licence:** AGPL-3.0. **Every new source file carries a short AGPL header** `[m13]`. Repo private during dev, public at release.
-- **Build:** XcodeGen generates `PDFToolbox.xcodeproj` from `project.yml`; `xcodebuild` drives builds. `project.yml` uses **directory/glob source discovery** (no explicit file lists) so Phase-1 tracks add files without editing it `[m6]`. `.xcodeproj` is generated (git-ignored), regenerated locally + in CI.
+- **Build:** XcodeGen generates `Toolbox.xcodeproj` from `project.yml`; `xcodebuild` drives builds. `project.yml` uses **directory/glob source discovery** (no explicit file lists) so Phase-1 tracks add files without editing it `[m6]`. `.xcodeproj` is generated (git-ignored), regenerated locally + in CI.
 - **Ghostscript:** built from source by `scripts/build-ghostscript.sh` (spike recipe) into `Resources/ghostscript/`, which is **git-ignored, not committed** `[m15]` (a 26 MB arm64 binary must not bloat an open-source repo's history). A fresh clone / CI runs the script before building the app.
 - **Signing:** ad-hoc only (`codesign -s -`) — no Developer ID cert available. Hardened runtime enabled. Notarisation deferred (needs user's Apple Developer credentials); CI notarise step guarded on secrets.
-- **Naming/copy:** Product "PDF Toolbox". Outputs `<name>-compressed.pdf` / `<name>-ocr.pdf` next to the original (batch: optional output-folder picker). British English in prose/comments/commits; code identifiers follow platform/library spelling.
+- **Naming/copy:** Product "Toolbox". Outputs `<name>-compressed.pdf` / `<name>-ocr.pdf` next to the original (batch: optional output-folder picker). British English in prose/comments/commits; code identifiers follow platform/library spelling.
 - **Privacy (HARD):** Never commit anything about the user's personal test PDFs at `<private local corpus>` — no path, names, sizes-tied-to-names, contents, or subject matter. Committed fixtures are synthetic only. Local quality validation on the real corpus reports anonymised aggregates only, to the ledger (uncommittable), never the repo.
 - **GS containment `[M5]`:** every Ghostscript invocation runs under `sandbox-exec` with a profile that **`(import "system.sb")` + `(import "bsd.sb")`** (so the dynamically-linked binary can launch: dyld, `/usr/lib`+`/System/Library` reads, `com.apple.dyld` mach-lookup, `sysctl-read`, `/dev/urandom`), **`(allow process-exec* (literal "<gsPath>"))`** (empirically required `[MAJOR-A]` — without it `sandbox-exec` refuses to exec gs, `execvp Operation not permitted`), **then `(deny network*)`** and **scopes file-read/write to the specific input, output, and temp paths** (the gs binary's own dir MUST be inside the `file-read*` scope) — plus `-dSAFER` and resource caps. Never a bare `Process`. (Empirically verified this round: with the imports + `process-exec*` + scoped `file-read*`, gs launches and a read outside the scope is still denied — the FS confinement is real.)
 - **Output safety:** compress/OCR write to a temp file **in the output directory** (same volume, so atomic rename cannot cross-device-fail `[m5]`) then atomically rename; never overwrite the input; compress never emits a file larger than the input — on no-gain, **keep the original, surface "already optimised", and write NO redundant copy** `[m4-minor]`; every output re-validated before it is called done.
@@ -39,8 +39,8 @@ toolbox/
   scripts/
     build-ghostscript.sh               reproducible gs build (spike recipe; local + CI)
     package-dmg.sh                     archive → ad-hoc sign → DMG
-  Sources/PDFToolbox/
-    App/            PDFToolboxApp.swift RootView.swift SidebarView.swift Tool.swift
+  Sources/Toolbox/
+    App/            ToolboxApp.swift RootView.swift SidebarView.swift Tool.swift
     DesignSystem/   Theme.swift (0.1 stub → D.1 full)  Components.swift (D.1)
     Models/         ToolJob.swift  JobOutcome.swift  CompressPreset.swift  PDFContentType.swift  SizeEstimate.swift
     Services/       PDFService.swift  GhostscriptRunner.swift  SeatbeltProfile.swift  PDFWriter.swift  OutputValidator.swift  OpenGuard.swift
@@ -48,7 +48,7 @@ toolbox/
     Compress/       CompressEngine.swift  CompressEstimator.swift  CompressView.swift  CompressViewModel.swift
     OCR/            VisionOCR.swift  OCREngine.swift  OCROptions.swift  OCRView.swift  OCRViewModel.swift
   Resources/ghostscript/               (git-ignored; built)
-  Tests/PDFToolboxTests/
+  Tests/ToolboxTests/
     Fixtures.swift  (bornDigital / image / bilevel / textImage / encrypted / corrupt)
     PDFServiceTests.swift  SeatbeltRunTests.swift  CompressEngineTests.swift
     OutputValidatorTests.swift  PDFWriterTests.swift  OCREngineTests.swift
@@ -69,10 +69,10 @@ One dependency chain, orchestrator-led. Builds the **entire §4 shared layer** s
 
 **Interfaces — Produces:** `enum Tool: String, CaseIterable, Identifiable { case compress, ocr, merge, split }` with `title`, `systemImage`, `isAvailable` (compress/ocr true; merge/split shown disabled = "Soon" per spec §7 — a 4-entry sidebar). `RootView` owns `@State selectedTool: Tool`.
 
-- [ ] Step 1: `project.yml` — app target `PDFToolbox` (bundleId `com.pdftoolbox.app`, deploy 14.0, arm64, hardened runtime), test target `PDFToolboxTests`; **glob-based sources** (`Sources/PDFToolbox`, `Tests/PDFToolboxTests`) `[m6]`; `Resources/` folder reference so `Resources/ghostscript/` bundles. `.gitignore` adds `Resources/ghostscript/`, `*.xcodeproj`, `.build/`, `DerivedData/`.
-- [ ] Step 2: `PDFToolboxApp.swift` (`@main`, `WindowGroup { RootView() }`, min 900×620), `RootView` (`NavigationSplitView`), `SidebarView`, `Tool.swift`. AGPL `LICENSE` + per-file headers.
-- [ ] Step 3: `.claude/GATES.md` `[M8]` — the commands that define "done": `xcodegen generate`; `xcodebuild -scheme PDFToolbox build`; `xcodebuild test`; `scripts/build-ghostscript.sh` succeeds + produces `Resources/ghostscript/bin/gs`; `scripts/package-dmg.sh` produces a mountable DMG. (KB itself bootstrapped in Phase 2 once modules exist.)
-- [ ] Step 4: `xcodegen generate` → `xcodebuild -scheme PDFToolbox build` → BUILD SUCCEEDED. Launch (smoke): window + 4-entry sidebar appears; kill.
+- [ ] Step 1: `project.yml` — app target `Toolbox` (bundleId `com.pdftoolbox.app`, deploy 14.0, arm64, hardened runtime), test target `ToolboxTests`; **glob-based sources** (`Sources/Toolbox`, `Tests/ToolboxTests`) `[m6]`; `Resources/` folder reference so `Resources/ghostscript/` bundles. `.gitignore` adds `Resources/ghostscript/`, `*.xcodeproj`, `.build/`, `DerivedData/`.
+- [ ] Step 2: `ToolboxApp.swift` (`@main`, `WindowGroup { RootView() }`, min 900×620), `RootView` (`NavigationSplitView`), `SidebarView`, `Tool.swift`. AGPL `LICENSE` + per-file headers.
+- [ ] Step 3: `.claude/GATES.md` `[M8]` — the commands that define "done": `xcodegen generate`; `xcodebuild -scheme Toolbox build`; `xcodebuild test`; `scripts/build-ghostscript.sh` succeeds + produces `Resources/ghostscript/bin/gs`; `scripts/package-dmg.sh` produces a mountable DMG. (KB itself bootstrapped in Phase 2 once modules exist.)
+- [ ] Step 4: `xcodegen generate` → `xcodebuild -scheme Toolbox build` → BUILD SUCCEEDED. Launch (smoke): window + 4-entry sidebar appears; kill.
 - [ ] Step 5: Commit `feat: scaffold app shell (XcodeGen glob project, SwiftUI shell, GATES.md)`.
 
 ### Task 0.2: Bundle Ghostscript + sandboxed GhostscriptRunner (with a REAL sandboxed-compress test)

@@ -12,25 +12,40 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 
 ## Purpose
 
-The shell: app entry point, the `NavigationSplitView` sidebar + detail layout, the
-`Tool` enum that enumerates sidebar entries, and a headless self-test hook.
+The shell: app entry point, the sidebar + detail layout, the `Tool` enum that
+enumerates sidebar entries (only tools that actually exist — no placeholders), the
+window-minimum-size fix-up, and a headless self-test hook.
 
 ## Key files
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/App/PDFToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` before any window opens |
-| `Sources/PDFToolbox/App/RootView.swift` | `NavigationSplitView` — sidebar + per-tool detail (`CompressView`/`OCRView`/placeholder) |
-| `Sources/PDFToolbox/App/SidebarView.swift` | The four-entry tool list; unavailable tools rendered dimmed + disabled with a "Soon" badge |
-| `Sources/PDFToolbox/App/Tool.swift` | `enum Tool` — compress/ocr/merge/split, each with title/icon/`isAvailable` |
-| `Sources/PDFToolbox/App/CompressSmoke.swift` | `PDFTOOLBOX_SMOKE=compress` — runs the real compress path from the app process, exits with a pass/fail line; the CI packaged-app smoke test |
+| `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` before any window opens |
+| `Sources/Toolbox/App/RootView.swift` | An explicit `HStack` split — sidebar + per-tool detail (`CompressView`/`OCRView`) |
+| `Sources/Toolbox/App/SidebarView.swift` | One collapsible-rail entry per built `Tool`, each a coloured tile (`Tool.tint`) plus its name |
+| `Sources/Toolbox/App/Tool.swift` | `enum Tool` — `compress`/`ocr`, each with `title`/`systemImage`/`tint` |
+| `Sources/Toolbox/App/WindowConfigurator.swift` | `WindowSetup.applyMinimumSize(_:)` — enforces the window's minimum size, title and titlebar style directly on `NSWindow` |
+| `Sources/Toolbox/App/CompressSmoke.swift` | `TOOLBOX_SMOKE=compress` — runs the real compress path from the app process, exits with a pass/fail line; the CI packaged-app smoke test |
 
 ## Invariants
 
-- `Tool.isAvailable` is the single source of truth for what's selectable — `compress`
-  and `ocr` are `true`, `merge`/`split` are `false`. `RootView.detail(for:)` and
-  `SidebarView` both key off it; a new "Soon" tool needs only a `Tool` case, no other
-  shell change.
+- **`RootView` is a plain `HStack`, not `NavigationSplitView`**: that container laid
+  the sidebar out a titlebar's height too high (drawing over the traffic lights, the
+  first entries scrolled out of view) and, on a slightly-too-small window, collapsed
+  the sidebar to zero width — how the app first shipped looking as though it had no
+  sidebar at all.
+- **`WindowSetup.applyMinimumSize` must run** (`RootView`'s `.onAppear`) because
+  SwiftUI's `.frame(minWidth:minHeight:)` only constrains the *content*, not the
+  window — a window opened or restored smaller than that simply clips the content,
+  with the sidebar as the casualty. Setting `NSWindow.minSize` directly makes the
+  constraint real and grows an already-too-small restored frame on launch.
+- **`Tool` lists only built tools** — `compress`/`ocr` are the only cases; the spec's
+  dimmed "Soon" `merge`/`split` placeholders were removed on the maintainer's
+  instruction (`.claude/DECISIONS.md`, 2026-07-23). Adding a tool means adding a case,
+  no `isAvailable`/disabled-state plumbing exists any more.
+- **`Tool.tint` gives each sidebar tile its own colour** — a deliberate divergence
+  from `DESIGN.md`'s single-accent rule, recorded in `.claude/DECISIONS.md`
+  (2026-07-23); not something to "fix" without the design doc's owner amending it.
 - `CompressSmoke` must run and exit **before** `WindowGroup` renders — it drives the
   real bundled-gs-under-sandbox path from the actual app process (xctest launches gs
   from a different context, which doesn't exercise the same `Bundle.main` resolution).

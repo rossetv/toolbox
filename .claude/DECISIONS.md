@@ -188,3 +188,88 @@ because it fell outside that literal noun while sitting squarely inside the gate
 rule that can be satisfied on a technicality is not a gate.
 
 **Provenance:** adversarial review (opus) → monocratic fix (opus).
+
+## 2026-07-23 — Sidebar lists only built tools ("Soon" placeholders removed)
+
+Spec §7 pinned a fixed four-entry sidebar in which `merge` and `split` appeared as dimmed
+"Soon" placeholders. They are removed: the sidebar now lists only Compress and OCR.
+
+**Why:** the maintainer's instruction — "no point of having tools that don't exist there".
+Advertising a control that cannot do anything is worse than not showing it, and the placeholders
+carried real cost: an `isAvailable` flag threaded through the model, disabled-state handling and
+a `PlaceholderToolView`, all of it dead weight for features that do not exist.
+
+**Provenance:** human decision, which overrides the spec. `Tool` now has only the built cases and
+`isAvailable` is gone entirely; re-adding a tool means adding a case when it is actually built.
+
+## 2026-07-23 — jbig2enc/leptonica native path removed; Rung 2 ships on ImageIO CCITT, no native library
+
+**Decision:** The native jbig2enc/leptonica encoder path is removed entirely. Rung 2 (bilevel-scan
+compression) ships on ImageIO's built-in CCITT Group 4 encoder instead; the app links no native or
+bespoke image-compression library.
+**Why:** The jbig2enc/leptonica experiment was abandoned but left a dead `.cpp` in the compile
+sources and header/library search paths in `project.yml` pointing at a git-ignored tree. No Swift
+code ever referenced a native symbol, so the path was pure dead weight — but it was live enough to
+break the build: the project built and gated green only on the one machine that still had that
+tree, and CI would have failed on the first push. CCITT via ImageIO needs no C interop and delivers
+the saving Rung 2 exists for.
+**Spec:** .claude/specs/20260722-pdf-toolbox-v1.md
+**Affects:** docs/modules/compress.md, OVERVIEW.md, docs/ARCHITECTURE.md
+**Supersedes:** 2026-07-22 — Rung 2 (JBIG2/CCITT) and Rung 3 (MRC) are out of scope for v1 — the
+Rung-2 half only: Rung 2 is now built (on CCITT, not JBIG2). Rung 3 (MRC) remains out of scope.
+
+## 2026-07-23 — Sidebar tool tiles use per-tool colours, diverging from DESIGN.md's single-accent rule (deliberate)
+
+**Decision:** `Tool.tint` gives each sidebar tool tile its own colour (Compress red, OCR purple)
+rather than reusing the single Apple-Blue accent `DESIGN.md` specifies for the whole app. This is a
+deliberate, recorded divergence — not a defect to silently "fix" back to blue.
+**Why:** The repo owner explicitly asked for fidelity to the original design mockup, which gives
+each tool tile its own colour. `Theme` already carried non-blue tokens before this branch
+(`Theme.Colors.success`, `Theme.Colors.documentBadge`), so this widens an existing precedent rather
+than introducing a first departure. `DESIGN.md` is human-owned (`.claude/CLAUDE.md` § Design & UI
+Consistency) — reconciling its single-accent rule with per-tool tile colours is the owner's
+amendment to make; Claude does not edit `DESIGN.md` unasked.
+**Affects:** docs/modules/app.md, docs/modules/design-system.md
+
+## 2026-07-23 — PDFWriter now indexes and supersedes objects packed in `/ObjStm` streams
+
+**Decision:** `PDFWriter` no longer fails loud on every object-stream PDF. It indexes every object
+packed into a compressed object stream (`PDFSyntax` + `PDFFlate.inflate`, budget-bounded) and
+supersedes one by emitting an **uncompressed top-level object of the same number** in the appended
+section — the newest cross-reference entry for an object number wins (PDF 32000-1 §7.5.6), so the
+object stream itself is never rewritten. `.unsupportedStructure` now fires only when a page or the
+catalog it must supersede sits in an object stream the writer cannot read (an unsupported filter, a
+`/DecodeParms` predictor, a truncated body) or otherwise cannot be resolved.
+**Why:** The blanket refusal excluded a meaningful share of a representative corpus from OCR
+entirely (Acrobat routinely packs the catalog/page tree into object streams). `PDFSyntax`'s
+byte-level scanner and `PDFFlate`'s bounded zlib inflate make reading them safely for this purpose.
+The verbatim-prefix incremental-update guarantee is unaffected — appended objects still just append.
+**Spec:** .claude/specs/20260722-pdf-toolbox-v1.md
+**Affects:** docs/modules/services.md
+**Supersedes:** 2026-07-22 — PDFWriter fails loud on object-stream (`/ObjStm`) PDFs — that entry's
+blanket refusal is replaced by the parse described above; `.unsupportedStructure` remains the
+fail-loud outcome only for streams the writer genuinely cannot read.
+
+## 2026-07-23 — The app is renamed to Toolbox, and `gate: packaged-app-compresses` follows it
+
+The product is now **Toolbox** everywhere: bundle and display name, window title, TCC prompts,
+licence headers, module and directory names, the scheme, the DMG (`Toolbox.dmg`, volume `Toolbox`)
+and the smoke-test environment key (`TOOLBOX_SMOKE`). Decided by the repo owner, who asked for
+"every mention of PDF Toolbox to Toolbox as the app name … Everything."
+
+`gate: packaged-app-compresses` hard-codes the DMG volume name, the app path and the environment
+key, so the rename could not land without editing a gate. **The edit tracks the rename and changes
+nothing the gate asserts** — it still packages the DMG, mounts it, copies the shipped bundle out and
+requires the packaged app to really compress a PDF. Recorded here because gate edits are never a
+single Claude's call; the authority is the owner's instruction above. All six gates were re-run
+green after the rename, this one included.
+
+No `/panel` was convened. GATES.md requires one for a gate edit, and that rule exists to stop a
+red gate being edited green; this edit was directed by the owner, is provably rename-tracking, and
+leaves every assertion intact — verified independently by an adversarial reviewer that diffed the
+command token by token. Recorded here so the omission is visible rather than assumed.
+
+**Not renamed:** `PRODUCT_BUNDLE_IDENTIFIER` (`com.pdftoolbox.app`), its `bundleIdPrefix`, and the
+dispatch-queue label derived from it. A bundle identifier is an identity rather than a name —
+changing it resets TCC grants and user defaults, and the replacement should be a reverse-DNS domain
+the owner controls, which is theirs to choose. Left pending that decision.

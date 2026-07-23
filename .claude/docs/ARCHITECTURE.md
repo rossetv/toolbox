@@ -14,27 +14,30 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 
 | Module | Responsibility | Entrypoint | Doc |
 |--------|----------------|-----------|-----|
-| App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/PDFToolbox/App/PDFToolboxApp.swift` | [→](modules/app.md) |
-| Compress | Rung-1 (Ghostscript) compression, estimate, batch UI | `Sources/PDFToolbox/Compress/CompressEngine.swift` | [→](modules/compress.md) |
-| OCR | Vision-based invisible text layer, batch UI | `Sources/PDFToolbox/OCR/OCREngine.swift` | [→](modules/ocr.md) |
-| Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/PDFToolbox/Services/GhostscriptRunner.swift` | [→](modules/services.md) |
-| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/PDFToolbox/Shared/ToolQueue.swift` | [→](modules/shared.md) |
-| Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/PDFToolbox/Models/ToolJob.swift` | [→](modules/models.md) |
-| DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/PDFToolbox/DesignSystem/Theme.swift` | [→](modules/design-system.md) |
+| App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/Toolbox/App/ToolboxApp.swift` | [→](modules/app.md) |
+| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) compression, estimate, batch UI | `Sources/Toolbox/Compress/CompressEngine.swift` | [→](modules/compress.md) |
+| OCR | Vision-based invisible text layer, batch UI | `Sources/Toolbox/OCR/OCREngine.swift` | [→](modules/ocr.md) |
+| Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/Toolbox/Services/GhostscriptRunner.swift` | [→](modules/services.md) |
+| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/Toolbox/Shared/ToolQueue.swift` | [→](modules/shared.md) |
+| Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/Toolbox/Models/ToolJob.swift` | [→](modules/models.md) |
+| DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/Toolbox/DesignSystem/Theme.swift` | [→](modules/design-system.md) |
 
 ## Key flows
 
 1. **Compress**: `CompressView` (drop/pick) → `CompressViewModel.add` → `CompressEstimator.estimate`
    (per-file, time-boxed) → user taps Compress → `CompressViewModel.compress` pre-allocates
    output names (`FileNaming`) → `ToolQueue.run` → `CompressEngine.compress` → `OpenGuard.inspect`
-   → stage into temp work dir → `GhostscriptRunner.run` (`sandbox-exec` + `SeatbeltProfile`) →
-   size/page-count gain check → `OutputValidator.validate` → atomic rename to destination.
+   → stage into temp work dir → if `PDFService.classify` says `.scanBilevel`, try Rung 2 first
+   (`BilevelScan.binarise` → `CCITTEncoder.encode` → `BilevelPDFComposer.compose`, per page) →
+   otherwise, or on any Rung-2 failure/no-gain, `GhostscriptRunner.run` (`sandbox-exec` +
+   `SeatbeltProfile`) → size/page-count gain check → `OutputValidator.validate` → atomic rename
+   to destination.
 2. **OCR**: `OCRView` (drop/pick) → `OCRViewModel.add` → user taps run → `OCRViewModel.run`
    pre-allocates output names → `ToolQueue.run` (capped at 2) → `OCREngine.ocr` → `OpenGuard.inspect`
    → per page: `PDFService.pageHasText` (skip) or render-upright + `VisionOCR.recognise` →
    `PDFWriter.appendTextLayer` (incremental update) → `OutputValidator.validate` → atomic rename.
-3. **App smoke test**: `PDFToolboxApp.init()` → `CompressSmoke.runIfRequested()` (only when
-   `PDFTOOLBOX_SMOKE=compress`) → synthetic in-process fixture → real `CompressEngine.compress`
+3. **App smoke test**: `ToolboxApp.init()` → `CompressSmoke.runIfRequested()` (only when
+   `TOOLBOX_SMOKE=compress`) → synthetic in-process fixture → real `CompressEngine.compress`
    through the bundled gs under the sandbox → prints `SMOKE PASS`/`SMOKE FAIL` → exits before any
    window opens. Exercised end-to-end from the packaged DMG in CI (`.github/workflows/build.yml`).
 
@@ -63,11 +66,15 @@ empty queue.
   hold the grant.
 - **`Compress` and `OCR` are independent engines that never call each other** — a
   combined compress+OCR pass is out of scope for v1 (spec §2).
-- **`Models` has no dependencies on any other module** — every other module may import
-  it; it must never import `Compress`, `OCR`, `Services`, or `Shared`.
+- **`Models` references nothing outside itself and Foundation.** These are directories in a
+  single Swift module (`project.yml` declares one `Toolbox` target over `Sources/Toolbox`), so
+  there are no local imports and the compiler enforces none of this — it is a review rule,
+  checked by grepping a directory for the foreign type's name. Types in `Models/` must never
+  name a type from `Compress`, `OCR`, `Services` or `Shared`. See `CODE_GUIDELINES.md` §2.3.
 - **`ToolQueue` is generic over its job body** — it knows nothing about PDFs,
   Ghostscript, or Vision; both view models supply the tool-specific closure. See
   [Shared](modules/shared.md).
-- **Rung 2/3 (native JBIG2/CCITT/MRC scan pipeline) is spec'd but not built.** Every
-  document compresses via Rung-1 Ghostscript today, regardless of `PDFContentType`.
-  Do not document or assume a content-routed engine exists until it lands.
+- **Rung 2 (native bilevel scan pipeline: binarise + CCITT G4) is built and routes on
+  `PDFContentType`** — `.scanBilevel` tries it first, falling back to Rung-1
+  Ghostscript on any failure or no gain; every other classification goes straight to
+  Rung 1. **Rung 3 (MRC, for colour scans) is spec'd but not built.**

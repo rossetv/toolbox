@@ -1,0 +1,288 @@
+// Toolbox
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// This file is part of Toolbox, released under the GNU Affero General
+// Public License v3.0 or later. See the LICENSE file in the project root.
+
+import Foundation
+
+struct ProcessResult {
+    let exitCode: Int32
+    let stdout: String
+    let stderr: String
+}
+
+enum GhostscriptError: Error, LocalizedError {
+    case binaryNotFound
+    case launchFailed(String)
+    case timedOut(seconds: TimeInterval)
+
+    var errorDescription: String? {
+        switch self {
+        case .binaryNotFound: return "The bundled Ghostscript binary could not be found."
+        case .launchFailed(let msg): return "Ghostscript failed to launch: \(msg)"
+        case .timedOut(let seconds):
+            return "Ghostscript timed out after \(Int(seconds)) seconds and was terminated."
+        }
+    }
+}
+
+/// The seam `CompressEngine` depends on, so a test can substitute a double that reproduces gs
+/// outcomes the real binary can't be forced to produce deterministically — chiefly an
+/// exit-0-but-no-output *silent* failure. Production always uses `GhostscriptRunner`.
+protocol GhostscriptRunning {
+    func run(arguments: [String],
+             readPaths: [URL],
+             writePaths: [URL],
+             onProgress: ((Int) -> Void)?) async throws -> ProcessResult
+}
+
+/// Shared, lock-guarded handle on the launched gs child.
+///
+/// Task cancellation arrives on a different thread from the one parked in `waitUntilExit()`,
+/// so the two need a rendezvous: the cancellation handler terminates whatever child is running
+/// (or, if none has launched yet, records the cancellation so the launcher terminates it the
+/// moment it appears). `Process.terminate()` raises if the process was never launched, which is
+/// why the child is only adopted *after* `run()` succeeds.
+private final class RunControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+
+    /// Publish the just-launched child; terminates it at once if cancellation already arrived.
+    func adopt(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        self.process = process
+        if cancelled, process.isRunning { GhostscriptRunner.terminateEscalating(process) }
+    }
+
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        cancelled = true
+        if let process, process.isRunning { GhostscriptRunner.terminateEscalating(process) }
+    }
+
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+/// Runs the bundled Ghostscript **only ever** inside a seatbelt sandbox (never a bare
+/// `Process`). Locates gs, wraps the call in `sandbox-exec -p <profile>` with `-dSAFER`,
+/// gives gs a private in-scope scratch directory (via `TMPDIR`) that gs's `pdfwrite`
+/// device needs, enforces a wall-clock cap, and best-effort parses page markers for
+/// progress. The gs path is canonicalised once and used identically as the exec target
+/// and the profile's `process-exec` literal (a symlink mismatch → `execvp Operation not
+/// permitted`).
+struct GhostscriptRunner {
+    /// Canonical path to the bundled gs binary.
+    let gsURL: URL
+
+    /// Wall-clock cap per invocation; a runaway/hung gs is terminated.
+    let wallClockTimeout: TimeInterval
+
+    /// Production: locate gs inside the app bundle (`Contents/Resources/ghostscript/bin/gs`).
+    init(wallClockTimeout: TimeInterval = 300) throws {
+        guard let url = Bundle.main.url(forResource: "gs", withExtension: nil, subdirectory: "ghostscript/bin") else {
+            throw GhostscriptError.binaryNotFound
+        }
+        self.gsURL = url.canonical
+        self.wallClockTimeout = wallClockTimeout
+    }
+
+    /// Test/DI seam: an explicit gs path. NB tests use the bundled gs via `Bundle.main`
+    /// (`init()`), not a repo path — a gs binary under a TCC-protected location such as
+    /// `~/Documents` stalls a non-interactive process's `open()` on a TCC decision.
+    init(gsURL: URL, wallClockTimeout: TimeInterval = 300) throws {
+        let resolved = gsURL.canonical
+        guard FileManager.default.isExecutableFile(atPath: resolved.path) else {
+            throw GhostscriptError.binaryNotFound
+        }
+        self.gsURL = resolved
+        self.wallClockTimeout = wallClockTimeout
+    }
+
+    /// Run gs with `arguments` (device/settings/output/input — the caller must pass canonical
+    /// paths, matching `readPaths`/`writePaths`). `-dSAFER -dBATCH -dNOPAUSE` are always prepended.
+    ///
+    /// `async` and **non-blocking for the caller**: the blocking process wait runs on a global
+    /// dispatch thread and the caller *suspends* (bridged via a continuation), so many
+    /// concurrent compressions under `ToolQueue` never starve the Swift cooperative pool.
+    ///
+    /// **Cancellation terminates the child.** Cancelling the calling task signals the running gs
+    /// process, and the call then throws `CancellationError` — so a cancelled job stops burning a
+    /// core immediately and its caller can discard the output before it is ever placed.
+    /// - Parameters:
+    ///   - readPaths: extra readable paths (typically the input PDF).
+    ///   - writePaths: writable paths (typically the output directory).
+    ///   - onProgress: called with the latest gs page number as pages are emitted (best-effort).
+    func run(arguments: [String],
+             readPaths: [URL],
+             writePaths: [URL],
+             onProgress: ((Int) -> Void)? = nil) async throws -> ProcessResult {
+        let control = RunControl()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let result = try self.runBlocking(arguments: arguments, readPaths: readPaths,
+                                                          writePaths: writePaths, onProgress: onProgress,
+                                                          control: control)
+                        continuation.resume(returning: result)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } onCancel: {
+            control.cancel()
+        }
+    }
+
+    /// How much of gs's stdout/stderr is kept, each. Enough for any real diagnostic; small enough
+    /// that a hostile input cannot make the app retain megabytes of either.
+    private static let outputTailLimit = 4096
+
+    /// Drain `handle` to EOF, keeping at most `limit` trailing bytes.
+    ///
+    /// The pipe must always be drained to EOF or a chatty child blocks on a full pipe buffer — but
+    /// nothing says the bytes must be *kept*. Both of gs's streams are attacker-influenced (a
+    /// malformed PDF can provoke a warning per object, and gs echoes fragments of the input in its
+    /// messages on either stdout or stderr — measured: a bogus `-sDEVICE` puts its whole diagnosis
+    /// on stdout with nothing on stderr) and both end up retained in the job list and rendered in
+    /// the UI, so only the tail of each is kept: a failing gs puts its fatal diagnostic last.
+    static func drainTail(_ handle: FileHandle, limit: Int) -> Data {
+        var tail = Data()
+        while true {
+            let chunk = handle.availableData
+            if chunk.isEmpty { break }                                  // EOF
+            tail.append(chunk)
+            if tail.count > limit { tail.removeFirst(tail.count - limit) }
+        }
+        return tail
+    }
+
+    /// SIGTERM, then SIGKILL if the child is still alive `grace` seconds later. Both the
+    /// wall-clock watchdog and cancellation go through here, so neither is merely cooperative: a
+    /// gs that installs a SIGTERM handler or blocks uninterruptibly would otherwise park the
+    /// waiting thread forever — the continuation never resumes, the queue slot is never freed and
+    /// the scratch directory is never cleaned.
+    ///
+    /// The escalation needs no bookkeeping: it is a no-op once the child has exited, and holding
+    /// `process` until it fires is what makes the pid safe to signal (a reaped pid could be
+    /// recycled, and killing a stranger's process is the one outcome worth engineering against).
+    static func terminateEscalating(_ process: Process, grace: TimeInterval = 5) {
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+    }
+
+    private func runBlocking(arguments: [String],
+                             readPaths: [URL],
+                             writePaths: [URL],
+                             onProgress: ((Int) -> Void)?,
+                             control: RunControl) throws -> ProcessResult {
+        let fm = FileManager.default
+
+        // gs's pdfwrite device writes scratch temp files to $TMPDIR; under (deny default) the
+        // system temp dir is out of scope, so give gs a private, in-scope scratch directory.
+        let scratch = fm.temporaryDirectory
+            .appendingPathComponent("toolbox-gs-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let scratchDir = scratch.canonical
+        defer { try? fm.removeItem(at: scratchDir) }
+
+        let profile = SeatbeltProfile.profile(
+            gsPath: gsURL,
+            readPaths: readPaths + [scratchDir],
+            writePaths: writePaths + [scratchDir])
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+        process.arguments = ["-p", profile, gsURL.path, "-dSAFER", "-dBATCH", "-dNOPAUSE"] + arguments
+        // Minimal environment: gs needs nothing but a writable TMPDIR (spike-verified). Not
+        // inheriting the parent environment keeps the sandboxed child clean.
+        process.environment = ["TMPDIR": scratchDir.path]
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        // Drain both pipes to EOF on background threads — the deadlock-free pattern. (Do NOT
+        // mix a readabilityHandler with readDataToEndOfFile: the handler's dispatch source
+        // consumes EOF and the later read then blocks forever.) Large gs output can exceed the
+        // 64 KB pipe buffer, so draining must run concurrently with the process, not after.
+        var outData = Data()
+        var errData = Data()
+        let ioGroup = DispatchGroup()
+        let ioQueue = DispatchQueue(label: "com.pdftoolbox.gs.io", attributes: .concurrent)
+        ioGroup.enter()
+        ioQueue.async { outData = Self.drainTail(outPipe.fileHandleForReading, limit: Self.outputTailLimit); ioGroup.leave() }
+        ioGroup.enter()
+        ioQueue.async { errData = Self.drainTail(errPipe.fileHandleForReading, limit: Self.outputTailLimit); ioGroup.leave() }
+
+        do {
+            try process.run()
+        } catch {
+            throw GhostscriptError.launchFailed(error.localizedDescription)
+        }
+        // Hand the child to the cancellation handler only now: `terminate()` raises on a process
+        // that was never launched, and a cancel that arrived during launch is honoured here.
+        control.adopt(process)
+
+        // Wall-clock cap without a busy-wait: a watchdog terminates a runaway/hung gs; otherwise
+        // `waitUntilExit` blocks this (global-queue) thread until gs exits. When the watchdog
+        // fires it records the fact under a lock so the timeout can be surfaced as a *dedicated*
+        // error (the UI shows "timed out", not a bare non-zero exit) and the batch continues.
+        let timeoutLock = NSLock()
+        var didTimeout = false
+        let watchdog = DispatchWorkItem {
+            if process.isRunning {
+                timeoutLock.lock(); didTimeout = true; timeoutLock.unlock()
+                Self.terminateEscalating(process)
+            }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + wallClockTimeout, execute: watchdog)
+        process.waitUntilExit()
+        watchdog.cancel()
+        ioGroup.wait()
+
+        // A cancelled run is a cancellation, never a timeout or a result: the child was signalled,
+        // so whatever it left behind is partial and the caller must place none of it.
+        if control.isCancelled { throw CancellationError() }
+
+        // Distinguish a genuine timeout from a job that finished on the wire: a process that
+        // exited cleanly (status 0) at the deadline is a success, never a timeout — so require a
+        // non-zero termination (a terminated gs carries SIGTERM ⇒ non-zero) before throwing.
+        timeoutLock.lock(); let timedOut = didTimeout; timeoutLock.unlock()
+        if timedOut && process.terminationStatus != 0 {
+            throw GhostscriptError.timedOut(seconds: wallClockTimeout)
+        }
+
+        let stdout = String(data: outData, encoding: .utf8) ?? ""
+        // Best-effort progress: report the highest "Page N" gs emitted (coarse but real;
+        // per spec [m10] indeterminate is acceptable when no marker is parseable).
+        if let onProgress {
+            var lastPage = 0
+            for line in stdout.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+                if line.hasPrefix("Page "),
+                   let n = Int(line.dropFirst(5).trimmingCharacters(in: .whitespaces)), n > lastPage {
+                    lastPage = n
+                }
+            }
+            if lastPage > 0 { onProgress(lastPage) }
+        }
+
+        return ProcessResult(
+            exitCode: process.terminationStatus,
+            stdout: stdout,
+            stderr: String(data: errData, encoding: .utf8) ?? "")
+    }
+}
+
+extension GhostscriptRunner: GhostscriptRunning {}

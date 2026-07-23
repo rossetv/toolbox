@@ -1,4 +1,4 @@
-# Brainstorm Sanity Review — PDF Toolbox (Compress), one pass
+# Brainstorm Sanity Review — Toolbox (Compress), one pass
 
 No FATAL finding (the idea can ship something good). But the two most valuable
 issues concern the engine *choice* and a UX-vs-engine gap the ladder hides.

@@ -8,22 +8,23 @@ Cite the file plus a stable, greppable anchor — a function, variable, constant
 check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with grep. -->
 ↑ [INDEX](INDEX.md)
 
-# PDF Toolbox — Overview
+# Toolbox — Overview
 
 ## What & why
 
 Native macOS app (SwiftUI, macOS 14+, Apple Silicon) that compresses and OCRs PDFs
 locally — no cloud upload, no subscription. An extensible sidebar shell; v1 ships two
 tools, **Compress** and **OCR**, sharing a queue/batch/state machine. Named "toolbox"
-because more PDF utilities are planned (Merge/Split are dimmed "Soon" placeholders,
-not built).
+because more PDF utilities are planned — the sidebar lists only tools that are
+actually built (`Tool`), not placeholders for ones that aren't.
 
 ## Domain concepts
 
 | Term | Meaning |
 |------|---------|
-| Rung 1 | The only compression path built in v1: tuned Ghostscript `pdfwrite`, applied to every document regardless of content type. |
-| Rung 2/3 | Spec'd but **not built**: a native scan pipeline (JBIG2/CCITT bilevel, MRC colour) that would bypass Ghostscript for scans. `PDFContentType`'s colour/bilevel split exists only to seed this later. |
+| Rung 1 | Tuned Ghostscript `pdfwrite` — the fallback path for every document, and the only path for any classification other than `.scanBilevel`. |
+| Rung 2 | Built: binarise a visually two-tone (`.scanBilevel`) scan, then encode CCITT G4 via ImageIO — tried first for that content type, falling back to Rung 1 on any failure or no gain. |
+| Rung 3 | Spec'd but **not built**: an MRC pipeline for `.scanColour` scans. |
 | Incremental update | The PDF technique `PDFWriter` uses for OCR: append new objects + a new xref + trailer with `/Prev`; original bytes are an untouched verbatim prefix. |
 | Seatbelt sandbox | The `sandbox-exec` profile every Ghostscript invocation runs inside — no exception. |
 | TCC-protected folder | `~/Documents`, `~/Downloads`, `~/Desktop` — folders macOS gates behind a user consent prompt that a non-interactive sandboxed child process cannot answer. |
@@ -32,16 +33,16 @@ not built).
 
 | External system | Direction | Via |
 |-----------------|-----------|-----|
-| Bundled Ghostscript binary | invoke (subprocess) | `Sources/PDFToolbox/Services/GhostscriptRunner.swift`, confined by `SeatbeltProfile.swift` |
-| Apple Vision (on-device OCR) | read | `Sources/PDFToolbox/OCR/VisionOCR.swift` (`VNRecognizeTextRequest`) — no network |
-| Local filesystem (user-selected PDFs) | read/write | `Sources/PDFToolbox/Compress/CompressEngine.swift`, `Sources/PDFToolbox/OCR/OCREngine.swift` |
+| Bundled Ghostscript binary | invoke (subprocess) | `Sources/Toolbox/Services/GhostscriptRunner.swift`, confined by `SeatbeltProfile.swift` |
+| Apple Vision (on-device OCR) | read | `Sources/Toolbox/OCR/VisionOCR.swift` (`VNRecognizeTextRequest`) — no network |
+| Local filesystem (user-selected PDFs) | read/write | `Sources/Toolbox/Compress/CompressEngine.swift`, `Sources/Toolbox/OCR/OCREngine.swift` |
 
 No network access anywhere in the app; the seatbelt profile explicitly denies it for gs.
 
 ## Process model
 
-1. One process. `PDFToolboxApp.init()` runs a headless self-test hook first
-   (`PDFTOOLBOX_SMOKE=compress` — see `App/CompressSmoke.swift`), then launches the
+1. One process. `ToolboxApp.init()` runs a headless self-test hook first
+   (`TOOLBOX_SMOKE=compress` — see `App/CompressSmoke.swift`), then launches the
    SwiftUI `WindowGroup` (`RootView`).
 2. Each Compress/OCR job spawns a **child process**: `/usr/bin/sandbox-exec` wrapping
    the bundled `gs` (Compress only — OCR never shells out, it calls Vision in-process).
@@ -52,15 +53,15 @@ No network access anywhere in the app; the seatbelt profile explicitly denies it
 ## Repo layout
 
 ```
-Sources/PDFToolbox/App/           # shell: entry point, NavigationSplitView, sidebar, Tool enum, smoke test
-Sources/PDFToolbox/Compress/      # Compress tool: engine, estimator, view, view model
-Sources/PDFToolbox/OCR/           # OCR tool: engine, Vision wrapper, options, view, view model
-Sources/PDFToolbox/Services/      # gs runner + sandbox profile, PDF inspection, output validation, PDF writer
-Sources/PDFToolbox/Shared/        # ToolQueue (batch runner), file naming, canonical-path, system info, logging
-Sources/PDFToolbox/Models/        # tool-agnostic value types (preset, job state/outcome, content type, estimate)
-Sources/PDFToolbox/DesignSystem/  # Theme tokens + reusable SwiftUI components
+Sources/Toolbox/App/           # shell: entry point, sidebar/detail split, window setup, Tool enum, smoke test
+Sources/Toolbox/Compress/      # Compress tool: Rung-1/2 engine, bilevel scan/CCITT/composer, estimator, view, view model
+Sources/Toolbox/OCR/           # OCR tool: engine, Vision wrapper, options, view, view model
+Sources/Toolbox/Services/      # gs runner + sandbox profile, PDF inspection, output validation, PDF writer
+Sources/Toolbox/Shared/        # ToolQueue (batch runner), file naming, canonical-path, system info, logging
+Sources/Toolbox/Models/        # tool-agnostic value types (preset, job state/outcome, content type, estimate)
+Sources/Toolbox/DesignSystem/  # Theme tokens + reusable SwiftUI components
 Resources/ghostscript/            # bundled gs tree — git-ignored, built by scripts/build-ghostscript.sh
-Tests/PDFToolboxTests/            # XCTest suite incl. a real sandboxed-gs run and synthetic fixtures
+Tests/ToolboxTests/            # XCTest suite incl. a real sandboxed-gs run and synthetic fixtures
 scripts/                          # build-ghostscript.sh, package-dmg.sh
 .github/workflows/build.yml       # CI: build gs, xcodebuild test, package DMG, guarded notarised release
 ```

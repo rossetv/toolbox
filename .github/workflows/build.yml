@@ -58,7 +58,7 @@ jobs:
           # pipefail is mandatory: piping xcodebuild into `tail` otherwise returns tail's exit
           # status, so a failing test suite would report success and CI could never go red.
           set -o pipefail
-          xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox \
+          xcodebuild -project Toolbox.xcodeproj -scheme Toolbox \
             -configuration Debug test | tail -40
 
       - name: Package DMG
@@ -71,16 +71,16 @@ jobs:
         run: |
           set -o pipefail
           D="$(mktemp -d)"
-          trap 'hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; rm -rf "$D"' EXIT
-          hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet
-          cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" "$D/"
-          PDFTOOLBOX_SMOKE=compress "$D/PDFToolbox.app/Contents/MacOS/PDFToolbox" | grep -q "SMOKE PASS"
+          trap 'hdiutil detach "/Volumes/Toolbox" -quiet 2>/dev/null; rm -rf "$D"' EXIT
+          hdiutil attach dist/Toolbox.dmg -nobrowse -quiet
+          cp -R "/Volumes/Toolbox/Toolbox.app" "$D/"
+          TOOLBOX_SMOKE=compress "$D/Toolbox.app/Contents/MacOS/Toolbox" | grep -q "SMOKE PASS"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PDFToolbox-dmg
-          path: dist/PDFToolbox.dmg
+          name: Toolbox-dmg
+          path: dist/Toolbox.dmg
           if-no-files-found: error
 
   release:
@@ -102,7 +102,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: PDFToolbox-dmg
+          name: Toolbox-dmg
 
       # Distribution signing + notarisation. Skipped until the repo owner adds the secrets;
       # the unsigned DMG still publishes so a tag always produces a downloadable build.
@@ -118,21 +118,21 @@ jobs:
           echo "$APPLE_CERT_P12" | base64 --decode > cert.p12
           security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
-          codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_ID" PDFToolbox.dmg
+          codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_ID" Toolbox.dmg
           echo "$APPLE_API_KEY" | base64 --decode > key.p8
-          xcrun notarytool submit PDFToolbox.dmg \
+          xcrun notarytool submit Toolbox.dmg \
             --key key.p8 --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --wait
-          xcrun stapler staple PDFToolbox.dmg
+          xcrun stapler staple Toolbox.dmg
           rm -f cert.p12 key.p8
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: PDFToolbox.dmg
+          files: Toolbox.dmg
           generate_release_notes: true
           body: |
-            **PDF Toolbox** — Compress and OCR PDFs on macOS (Apple Silicon, macOS 14+).
+            **Toolbox** — Compress and OCR PDFs on macOS (Apple Silicon, macOS 14+).
 
             If macOS reports the app is damaged or from an unidentified developer, this build is
-            not notarised: run `xattr -dr com.apple.quarantine /Applications/PDFToolbox.app`
+            not notarised: run `xattr -dr com.apple.quarantine /Applications/Toolbox.app`
             after installing, or right-click the app and choose Open.

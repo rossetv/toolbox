@@ -1,4 +1,4 @@
-# Review lessons — PDF Toolbox
+# Review lessons — Toolbox
 
 Standing checks distilled from this repo's review rounds. Read before writing a spec or plan, and
 apply as a checklist during review.

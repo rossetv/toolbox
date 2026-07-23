@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# PDF Toolbox
-# Copyright (C) 2026 PDF Toolbox authors
+# Toolbox
+# Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# This file is part of PDF Toolbox, released under the GNU Affero General
+# This file is part of Toolbox, released under the GNU Affero General
 # Public License v3.0 or later. See the LICENSE file in the project root.
 #
 # Reproducible Ghostscript build (spike-proven). Builds 10.07.1 for arm64 as a
@@ -79,5 +79,14 @@ chmod +x "${GS_BIN}"
 
 echo "Built gs → ${GS_BIN}"
 env -i "${GS_BIN}" --version
-echo "Dependency check (expect only /usr/lib system dylibs):"
-otool -L "${GS_BIN}"
+
+echo "Dependency check (expect only /usr/lib and /System dylibs)…"
+DEPS="$(otool -L "${GS_BIN}" | tail -n +2 | awk '{print $1}')"
+echo "${DEPS}"
+BAD_DEPS="$(echo "${DEPS}" | grep -Ev '^(/usr/lib/|/System/)' || true)"
+if [[ -n "${BAD_DEPS}" ]]; then
+  echo "ERROR: gs links non-system dylibs — this build is not portable (likely Homebrew-linked):" >&2
+  echo "${BAD_DEPS}" >&2
+  exit 1
+fi
+echo "OK: only system dylibs linked."

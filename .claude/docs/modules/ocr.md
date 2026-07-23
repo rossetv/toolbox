@@ -20,11 +20,11 @@ on-device Apple Vision, page by page, then hands the recognised text to
 
 | File | Role |
 |------|------|
-| `Sources/PDFToolbox/OCR/OCREngine.swift` | `OCREngine.ocr(_:to:options:progress:)` — per-page skip/render/recognise/embed loop |
-| `Sources/PDFToolbox/OCR/VisionOCR.swift` | `VisionOCR.recognise(_:options:)` — wraps `VNRecognizeTextRequest`, returns Vision-normalised boxes verbatim |
-| `Sources/PDFToolbox/OCR/OCROptions.swift` | `OCROptions` (accuracy, languages) + `Accuracy` enum |
-| `Sources/PDFToolbox/OCR/OCRViewModel.swift` | `@MainActor` state: queue, options, `OCREngine`; pins batch concurrency to 2 |
-| `Sources/PDFToolbox/OCR/OCRView.swift` | Drop zone, file rows, options panel, run/cancel |
+| `Sources/Toolbox/OCR/OCREngine.swift` | `OCREngine.ocr(_:to:options:progress:)` — per-page skip/render/recognise/embed loop |
+| `Sources/Toolbox/OCR/VisionOCR.swift` | `VisionOCR.recognise(_:options:)` — wraps `VNRecognizeTextRequest`, returns Vision-normalised boxes verbatim |
+| `Sources/Toolbox/OCR/OCROptions.swift` | `OCROptions` (accuracy, languages) + `Accuracy` enum |
+| `Sources/Toolbox/OCR/OCRViewModel.swift` | `@MainActor` state: queue, options, `OCREngine`; pins batch concurrency to 2 |
+| `Sources/Toolbox/OCR/OCRView.swift` | Drop zone, file rows, options panel, run/cancel |
 
 ## Invariants
 

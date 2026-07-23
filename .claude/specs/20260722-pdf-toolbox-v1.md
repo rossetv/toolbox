@@ -1,4 +1,4 @@
-# Spec — PDF Toolbox v1 (Compress + OCR)
+# Spec — Toolbox v1 (Compress + OCR)
 
 Date: 2026-07-22 · Branch: `feat/pdf-toolbox-v1` · Status: draft (spec-reviewer round 2)
 Evidence: `./20260722-pdf-toolbox-v1-evidence/` (engine research ×2, native-lib plumbing probe, brainstorm review, design brief)
@@ -30,7 +30,7 @@ The user wants a **native macOS app to compress large PDFs a lot while preservin
 Three layers; the two tools share most machinery.
 
 ```
-PDF Toolbox (SwiftUI)
+Toolbox (SwiftUI)
 ├─ Shell            NavigationSplitView sidebar: [Compress] [OCR] [Merge·soon] [Split·soon]
 ├─ SHARED (built once, used by both tools)
 │   ├─ ToolQueue          drag-drop · file list · batch runner · per-file state machine · estimate/result display

@@ -17,6 +17,10 @@ xcuserdata/
 # Bundled Ghostscript (built from source by scripts/build-ghostscript.sh; 26 MB — never committed)
 Resources/ghostscript/
 
+# Stray artefacts from the abandoned jbig2enc/leptonica experiment. Kept ignored so a machine
+# that still has the tree from that attempt cannot accidentally commit or link against it.
+Resources/native/
+
 # Swift Package Manager
 .build/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
