@@ -544,46 +544,50 @@ struct PDFThumbnail: View {
 
     @State private var preview: NSImage?
 
-    /// The red card visible around the page — the border of the document container.
-    private let inset: CGFloat = 2.5
-    private var height: CGFloat { (width * 11 / 8.5).rounded() }   // US Letter aspect
+    private var height: CGFloat { (width * 1.29).rounded() }        // roughly A4/Letter proportions
+    private var bandHeight: CGFloat { (height * 0.3).rounded() }
+    private let radius: CGFloat = 4
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 0) {
             page
+            // Flush to the card's edges and centred by its own frame, so the label sits in the
+            // base of the document rather than floating under it.
             Text("PDF")
-                .font(.system(size: 6.5, weight: .bold))
+                .font(.system(size: bandHeight * 0.56, weight: .heavy))
+                .kerning(0.3)
                 .foregroundStyle(.white)
+                .frame(width: width, height: bandHeight)
+                .background(Theme.Colors.documentBadge)
         }
-        .padding(.horizontal, inset)
-        .padding(.top, inset)
-        .padding(.bottom, 2)
         .frame(width: width, height: height)
-        .background(
-            Theme.Colors.documentBadge,
-            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.14), lineWidth: 0.5)
         )
-        .shadow(color: .black.opacity(0.18), radius: 1, x: 0, y: 0.5)
+        .shadow(color: .black.opacity(0.25), radius: 1.5, x: 0, y: 1)
         .task(id: url) { await loadPreview() }
     }
 
-    /// The page itself, sitting on the red document card.
+    /// The page itself, filling the card above the label band.
     private var page: some View {
         ZStack {
             Color.white
             if let preview {
+                // Fill and crop rather than fit: a letterboxed thumbnail leaves grey bars inside
+                // what is meant to read as a sheet of paper. The top of the page is the
+                // recognisable part, so the crop is anchored there.
                 Image(nsImage: preview)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-            } else {
-                // Until the page is ready — or if it cannot be read at all — show a plain sheet
-                // rather than a spinner: a row that flickers a spinner per file makes a whole
-                // batch look broken, and a blank sheet is also the honest preview of a blank page.
-                Color.white
+                    .frame(width: width, height: height - bandHeight, alignment: .top)
             }
+            // No spinner while loading: a row per file each flickering its own spinner makes a
+            // whole batch look broken, and a blank sheet is the honest preview of a blank page.
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 1.5, style: .continuous))
+        .frame(width: width, height: height - bandHeight)
+        .clipped()
     }
 
     private func loadPreview() async {
