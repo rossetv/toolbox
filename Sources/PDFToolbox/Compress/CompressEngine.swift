@@ -204,8 +204,9 @@ struct CompressEngine {
             let maxDimension = min(max(box.width, box.height) * scale, 5000)
             let rendered = try service.render(page, maxDimension: maxDimension)
 
-            guard BilevelScan.isNearBilevel(rendered),
-                  let bitmap = BilevelScan.binarise(rendered),
+            // `binarise` applies the near-bilevel gate itself and returns nil when the page fails
+            // it, so calling `isNearBilevel` first would only repeat the same full-bitmap scan.
+            guard let bitmap = BilevelScan.binarise(rendered),
                   let binarised = bitmap.cgImage,
                   let encoded = try? CCITTEncoder.encode(binarised) else { return nil }
 
