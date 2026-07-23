@@ -55,6 +55,14 @@ Queue up as many files as you like, watch live progress, cancel any time. Result
 
 ## Install
 
+**One line** — downloads the latest release, installs it into Applications, and launches it ([read the script](scripts/install.sh) first if you like):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rossetv/toolbox/main/scripts/install.sh | bash
+```
+
+**Or by hand:**
+
 1. **[Download the latest DMG →](../../releases)**
 2. Open it and drag **Toolbox** into **Applications**.
 3. First launch: macOS will warn that the app isn't notarised yet. **Right-click → Open**, or:
