@@ -164,3 +164,27 @@ read narrowly. The gate's assertion is therefore to be applied by its `why` — 
 identifies the maintainer's machine — not by the literal noun it happens to mention.
 
 **Provenance:** adversarial review (opus) → monocratic fix (opus).
+
+## 2026-07-23 — Gate-command edits: harden two mechanical gates and broaden the semantic one
+
+Logged because `GATES.md` requires that *editing* a gate be recorded, not only removing one.
+All three changes strictly strengthen; none makes a gate easier to satisfy, so no panel was
+convened (same precedent as the stanza-grammar entry above).
+
+- `gate: ghostscript-self-contained` — now prefixed `test -x Resources/ghostscript/bin/gs && …`.
+  Previously, if the binary was **absent**, `otool` produced nothing, the `grep -qv` found no
+  offending line, and the gate reported **green on a missing binary**.
+- `gate: packaged-app-compresses` — now stages into `mktemp -d` under a `trap … EXIT` that
+  detaches the mount and removes the directory. Previously it used a fixed `/tmp/PDFToolbox.app`:
+  on a shared machine a directory owned by another user cannot be removed (`/tmp` is sticky), the
+  `rm` would fail silently and `cp -R` would land beside a stale bundle — a false green.
+- `gate: no-personal-corpus-references` (semantic) — assertion broadened from "the private PDF
+  corpus" to anything identifying the maintainer's machine, and instructs that it be applied by
+  its intent rather than its literal nouns.
+
+**Why the last one:** the original wording named only the PDF corpus, and a second leak (an
+absolute path to a local design-mockup directory, in two shipping source files) was missed
+because it fell outside that literal noun while sitting squarely inside the gate's purpose. A
+rule that can be satisfied on a technicality is not a gate.
+
+**Provenance:** adversarial review (opus) → monocratic fix (opus).

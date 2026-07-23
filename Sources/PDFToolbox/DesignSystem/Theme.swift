@@ -9,7 +9,7 @@ import AppKit
 import SwiftUI
 
 /// The app's design tokens — built from `DESIGN.md` (Apple's design language, the law) and
-/// the Claude Design mockup (kept outside this repository) (the feel).
+/// the Claude Design mockup, kept outside this repository (matching its feel).
 /// Phase 0 shipped a stub (`Colors.background/text/accent`, `Radius.pill/card/control`,
 /// `Spacing.small/medium/large`) so Tracks B/C could style early views without depending on
 /// Track D; those names and types are preserved unchanged below — only expanded.

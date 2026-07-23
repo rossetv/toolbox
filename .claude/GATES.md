@@ -86,7 +86,7 @@ added: 2026-07-23 — monocratic (opus)
 mandated-by-human: no
 
 ```sh
-rm -rf /tmp/PDFToolbox.app; hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; set -e; scripts/package-dmg.sh; hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet; trap 'hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null' EXIT; cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" /tmp/; PDFTOOLBOX_SMOKE=compress /tmp/PDFToolbox.app/Contents/MacOS/PDFToolbox | grep -q "SMOKE PASS"
+D="$(mktemp -d)"; trap 'hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; rm -rf "$D"' EXIT; hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; set -e; scripts/package-dmg.sh; hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet; cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" "$D/"; PDFTOOLBOX_SMOKE=compress "$D/PDFToolbox.app/Contents/MacOS/PDFToolbox" | grep -q "SMOKE PASS"
 ```
 
 ## Semantic gates
@@ -96,7 +96,7 @@ rm -rf /tmp/PDFToolbox.app; hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/
 ### gate: no-personal-corpus-references
 kind: semantic
 why: This repository becomes public. The maintainer's private local PDF corpus must never be identifiable from it, and a regex alone cannot judge whether a description is genuinely anonymised. An earlier round leaked a literal path into a committed document and every commit after it.
-assertion: No file in the diff names, paths to, describes the contents of, or otherwise identifies the maintainer's private local test corpus. Test fixtures must be synthetic and generated in-process. Aggregate measurements are acceptable only when fully anonymised.
+assertion: No file in the diff identifies the maintainer's machine or private material in ANY form — apply this by its intent above, never by the literal nouns it happens to name. That includes absolute home paths, the macOS account name, private directory names (the PDF corpus, design mockups, or anything else outside this repository), and any description of the corpus's contents or subject matter. Test fixtures must be synthetic and generated in-process. Measurements are acceptable only as fully anonymised aggregates. A first scrub missed a second leak precisely by reading an earlier, narrower wording literally.
 added: 2026-07-23 — monocratic (opus)
 mandated-by-human: no
 
