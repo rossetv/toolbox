@@ -48,32 +48,48 @@ struct OutputValidator {
         return true
     }
 
-    /// Ink fraction above which an INPUT page is deemed to carry real content (page-border
-    /// anti-aliasing alone renders at ~1%, so the floor sits above it).
-    private static let contentFloor = 0.02
+    /// Ink fraction above which an INPUT page is deemed to carry real content. With row padding
+    /// no longer miscounted (see `inkRatio`), a truly empty page measures 0.0, so this sits just
+    /// above zero: measured fixtures are blank 0.0, sparse scan 0.020, text page 0.086, photo 0.90.
+    private static let contentFloor = 0.005
     /// The output must retain at least this fraction of the input page's ink; below it, the page
     /// has effectively lost its content (compression corruption). Lossy downsampling preserves the
     /// bulk of a page's ink coverage, so a genuine compressed page stays well above this.
     private static let minRetainedInk = 0.3
 
     /// Fraction of sampled pixels that carry ink (are not near-white).
+    ///
+    /// Rows are addressed via `bytesPerRow` and sampled only across the real `width`. A CGImage
+    /// row is padded to an alignment boundary (measured here: 2496 vs 618×4 = 2472, i.e. 24 bytes
+    /// a row), and those padding bytes are zero — walking the buffer flat reads them as black and
+    /// counts them as ink. That inflated every ratio by roughly the padding fraction (~1%), which
+    /// is the same order as a blank page's true ink, blinding the blank-page check completely.
     private static func inkRatio(_ image: CGImage) -> Double {
-        guard let data = image.dataProvider?.data else { return 0 }
+        guard let data = image.dataProvider?.data,
+              let ptr = CFDataGetBytePtr(data) else { return 0 }
         let length = CFDataGetLength(data)
-        guard let ptr = CFDataGetBytePtr(data), length > 0 else { return 0 }
         let bytesPerPixel = max(1, image.bitsPerPixel / 8)
-        guard bytesPerPixel >= 3 else { return 0 }
+        let width = image.width, height = image.height, rowBytes = image.bytesPerRow
+        guard bytesPerPixel >= 3, length > 0, width > 0, height > 0,
+              rowBytes >= width * bytesPerPixel else { return 0 }
 
+        // Sample on a square grid so roughly `target` pixels are inspected regardless of size.
+        let target = 6000
+        let step = max(1, Int((Double(width) * Double(height) / Double(target)).squareRoot()))
         var nonWhite = 0
         var total = 0
-        let pixelCount = length / bytesPerPixel
-        let stride = max(1, pixelCount / 6000) * bytesPerPixel
-        var offset = 0
-        while offset + 2 < length {
-            let r = Int(ptr[offset]), g = Int(ptr[offset + 1]), b = Int(ptr[offset + 2])
-            if r < 245 || g < 245 || b < 245 { nonWhite += 1 }
-            total += 1
-            offset += stride
+        var y = 0
+        while y < height {
+            let rowStart = y * rowBytes
+            var x = 0
+            while x < width {
+                let o = rowStart + x * bytesPerPixel
+                guard o + 2 < length else { break }
+                if Int(ptr[o]) < 245 || Int(ptr[o + 1]) < 245 || Int(ptr[o + 2]) < 245 { nonWhite += 1 }
+                total += 1
+                x += step
+            }
+            y += step
         }
         return total > 0 ? Double(nonWhite) / Double(total) : 0
     }
