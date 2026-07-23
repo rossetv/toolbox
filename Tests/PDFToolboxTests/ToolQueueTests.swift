@@ -126,4 +126,44 @@ final class ToolQueueTests: XCTestCase {
         }
         watcher.cancel()
     }
+
+    /// M8 — a second `run` while a batch is live must not replace `runTask`, or `cancel()` would
+    /// reach only the newer task and the first batch would become permanently uncancellable.
+    func testSecondRunIsRefusedSoTheLiveBatchStaysCancellable() async {
+        let queue = ToolQueue()
+        queue.add(urls(2, "reentry"))
+
+        let started = XCTestExpectation(description: "a job started running")
+        started.assertForOverFulfill = false
+        let watcher = queue.$jobs.sink { jobs in
+            if jobs.contains(where: { if case .running = $0.state { return true } else { return false } }) {
+                started.fulfill()
+            }
+        }
+
+        let first = Task {
+            await queue.run({ _, _ in
+                // Bounded, so a regression fails on an assertion instead of hanging: if the cancel
+                // never arrives this returns a terminal outcome and the `.queued` checks below fail.
+                let deadline = Date().addingTimeInterval(5)
+                while !Task.isCancelled, Date() < deadline { await Task.yield() }
+                if Task.isCancelled { throw CancellationError() }
+                return .compressed(before: 10, after: 5)
+            }, maxConcurrent: 1)
+        }
+        await fulfillment(of: [started], timeout: 5)
+
+        // Re-entry while the first batch is live: a no-op that returns at once.
+        await queue.run({ _, _ in .compressed(before: 10, after: 5) }, maxConcurrent: 1)
+        XCTAssertFalse(queue.jobs.contains { if case .done = $0.state { return true } else { return false } },
+                       "a refused run must not process the queue behind the live batch's back")
+
+        queue.cancel()
+        await first.value
+
+        for job in queue.jobs {
+            XCTAssertEqual(job.state, .queued, "cancel() must still reach the first batch")
+        }
+        watcher.cancel()
+    }
 }
