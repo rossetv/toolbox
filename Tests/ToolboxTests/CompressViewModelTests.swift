@@ -222,6 +222,45 @@ final class CompressViewModelTests: XCTestCase {
                       "the re-run regenerated the runner-up")
     }
 
+    /// If the runner-up vanished, the switch re-runs the job, but the *final* swap back into the
+    /// switched state can still fail (store contract: a throw means `shipped` is unchanged). That
+    /// must not be recorded as a switch — the row must stay canonical (heavy still shipped).
+    func testSwitchFailingAfterRerunLeavesStateCanonical() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let runnerUpURL = try XCTUnwrap(job.alternateURL)
+        // The runner-up leaves the cache; the next switch cannot swap and must re-run.
+        try FileManager.default.removeItem(at: runnerUpURL)
+
+        // Freeze the re-run after it has rewritten both files, so the runner-up can be deleted
+        // again from under it — the deterministic lever that makes the post-regeneration switch's
+        // promote move fail (no file to move), the same failure mode `RunnerUpStoreTests`
+        // (`testSwitchRestoresOnFailure`) exercises directly against the store.
+        let gate = Gate()
+        env.stub.gate = gate
+        let callsBefore = env.stub.callCount
+
+        model.switchVersion(for: job)
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        // The stub has written both files and is now suspended on the gate — delete the runner-up
+        // it just wrote before releasing it, so the switch that follows finds nothing to promote.
+        try FileManager.default.removeItem(at: runnerUpURL)
+        await gate.open()
+
+        try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
+
+        let settled = try XCTUnwrap(env.doneHeavyJob(model))
+        let versions = try XCTUnwrap(model.heavyVersions(for: settled))
+        XCTAssertTrue(versions.shippedIsHeavy,
+                      "the failed post-regeneration switch must leave the row canonical (heavy shipped)")
+    }
+
     /// Removing a row discards its cached runner-up (R15).
     func testRemoveRowDiscardsRunnerUp() async throws {
         let env = try HeavyEnv()

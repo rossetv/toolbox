@@ -374,13 +374,27 @@ final class CompressViewModel: ObservableObject {
                 }
             }
             do {
-                _ = try await engine.compress(job.url, preset: chosen, to: shipped,
-                                              alternateOutput: runnerUp, mrcReport: nil, progress: report)
-                // Regenerated canonical state: heavy shipped, runner-up present.
-                switched.remove(id)
-                if !wantHeavy {
-                    try? store.switchVersions(shipped: shipped, runnerUp: runnerUp)
-                    switched.insert(id)
+                let outcome = try await engine.compress(job.url, preset: chosen, to: shipped,
+                                                         alternateOutput: runnerUp, mrcReport: nil,
+                                                         progress: report)
+                // The switch's post-regeneration step assumes the re-run reproduces
+                // `.compressedHeavy` with both the shipped and runner-up files written — that's an
+                // assumption about engine determinism, not a guarantee the type gives us. Guard on
+                // the actual outcome: anything else (e.g. `.noGain`) means there is no runner-up to
+                // switch to, so leave the row exactly as the engine left it.
+                if case .compressedHeavy = outcome {
+                    // Regenerated canonical state: heavy shipped, runner-up present.
+                    switched.remove(id)
+                    if !wantHeavy {
+                        do {
+                            try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+                            switched.insert(id)
+                        } catch {
+                            // The switch did not happen (store contract: a throw leaves `shipped`
+                            // unchanged) — heavy is still shipped, so leave `switched` canonical
+                            // rather than record a switch that never took effect.
+                        }
+                    }
                 }
             } catch {
                 // Re-run failed; leave the row's prior state untouched (its shipped file survives).
