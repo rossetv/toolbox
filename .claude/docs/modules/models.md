@@ -32,8 +32,12 @@ presets, content classification, and size estimates. No behaviour, no I/O.
 - `PDFContentType`'s colour/bilevel split is classified by `PDFService.classify`
   ([Services](services.md)) and **is** consumed for routing: `.scanBilevel` routes
   through Rung 2 (binarise + CCITT G4) first, falling back to Rung 1 gs on any
-  failure or no gain; `.bornDigital` and `.scanColour` go straight to Rung 1 (see
-  [Compress](compress.md)). Rung 3 (MRC, for `.scanColour`) is not built.
+  failure or no gain; every other classification goes straight to Rung 1 (see
+  [Compress](compress.md)). Rung 3 (MRC, for colour scans) is not built.
+- `PDFService.classify` never actually returns `.mixedColour` today — only
+  `.bornDigital`, `.scanBilevel` and `.scanColour` are reachable from its current
+  logic. `CompressEstimator` still carries a weight for it (seeding a future,
+  finer-grained classifier), so the case stays in the enum.
 
 ## Related
 

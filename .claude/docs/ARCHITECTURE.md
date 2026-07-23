@@ -73,5 +73,5 @@ empty queue.
   [Shared](modules/shared.md).
 - **Rung 2 (native bilevel scan pipeline: binarise + CCITT G4) is built and routes on
   `PDFContentType`** — `.scanBilevel` tries it first, falling back to Rung-1
-  Ghostscript on any failure or no gain; `.bornDigital`/`.scanColour` go straight to
+  Ghostscript on any failure or no gain; every other classification goes straight to
   Rung 1. **Rung 3 (MRC, for colour scans) is spec'd but not built.**

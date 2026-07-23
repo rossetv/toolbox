@@ -22,7 +22,7 @@ actually built (`Tool`), not placeholders for ones that aren't.
 
 | Term | Meaning |
 |------|---------|
-| Rung 1 | Tuned Ghostscript `pdfwrite` — the fallback path for every document, and the only path for `.bornDigital`/`.scanColour` content. |
+| Rung 1 | Tuned Ghostscript `pdfwrite` — the fallback path for every document, and the only path for any classification other than `.scanBilevel`. |
 | Rung 2 | Built: binarise a visually two-tone (`.scanBilevel`) scan, then encode CCITT G4 via ImageIO — tried first for that content type, falling back to Rung 1 on any failure or no gain. |
 | Rung 3 | Spec'd but **not built**: an MRC pipeline for `.scanColour` scans. |
 | Incremental update | The PDF technique `PDFWriter` uses for OCR: append new objects + a new xref + trailer with `/Prev`; original bytes are an untouched verbatim prefix. |
