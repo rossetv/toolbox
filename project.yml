@@ -32,10 +32,11 @@ targets:
       - path: Resources/ghostscript
         type: folder
         buildPhase: resources
-      # App icon. An asset catalog is used rather than a loose .icns because
-      # GENERATE_INFOPLIST_FILE offers no INFOPLIST_KEY_ for CFBundleIconFile, and switching to a
-      # hand-written Info.plist silently drops every INFOPLIST_KEY_ setting — including the TCC
-      # usage strings.
+      # App icon: an Icon Composer .icon document (glyph centred on a gradient), compiled by
+      # actool into the bundle's icon for every supported OS — older systems get a flattened
+      # rendering. Replaces the previous AppIcon.appiconset; ASSETCATALOG_COMPILER_APPICON_NAME
+      # selects it by base name.
+      - path: Resources/AppIcon.icon
       - path: Resources/Assets.xcassets
     settings:
       base:
