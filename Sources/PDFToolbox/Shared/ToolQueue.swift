@@ -16,7 +16,9 @@ import Foundation
 ///  - each `report(fraction)` sets that job `.running(fraction)`; the body's return sets
 ///    `.done(outcome)`; a **throw sets that one job `.failed` and the batch continues**;
 ///  - `cancel()` stops launching queued jobs and cancels running ones — a cancelled job
-///    returns to `.queued` and (by the engine's atomic-write contract) leaves no partial output.
+///    returns to `.queued` and (by the engine's atomic-write contract) leaves no partial output;
+///  - **one batch at a time**: `run` while a batch is in flight is a no-op, so the live batch can
+///    never be orphaned from `cancel()`. The invariant lives here, in the type that owns the task.
 @MainActor
 final class ToolQueue: ObservableObject {
     @Published private(set) var jobs: [ToolJob] = []
@@ -38,13 +40,21 @@ final class ToolQueue: ObservableObject {
 
     /// Run every currently-queued job through `body`, at most `maxConcurrent` at once.
     /// Returns when all launched jobs have reached a terminal state (or been cancelled).
+    ///
+    /// A call made while a batch is already running returns immediately without touching the
+    /// queue: overwriting `runTask` would leave the live batch running with nothing able to
+    /// cancel it. (Both view models also gate on `isRunning`, but the invariant belongs here.)
     func run(_ body: @escaping (ToolJob, _ report: @escaping (Double) -> Void) async throws -> JobOutcome,
              maxConcurrent: Int = SystemInfo.performanceCoreCount) async {
+        guard runTask == nil else { return }
         let task = Task { [weak self] in
             guard let self else { return }
             await self.execute(body: body, maxConcurrent: max(1, maxConcurrent))
         }
         runTask = task
+        // Cleared on the way out so a later `cancel()` can't cancel a finished task, and the next
+        // batch is admitted.
+        defer { runTask = nil }
         await task.value
     }
 
