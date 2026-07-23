@@ -62,7 +62,7 @@ Sources/Toolbox/Models/        # tool-agnostic value types (preset, job state/ou
 Sources/Toolbox/DesignSystem/  # Theme tokens + reusable SwiftUI components
 Resources/ghostscript/            # bundled gs tree — git-ignored, built by scripts/build-ghostscript.sh
 Tests/ToolboxTests/            # XCTest suite incl. a real sandboxed-gs run and synthetic fixtures
-scripts/                          # build-ghostscript.sh, package-dmg.sh
+scripts/                          # build-ghostscript.sh, package-dmg.sh, install.sh (user-facing one-line installer), make-app-icon.sh/.swift
 .github/workflows/build.yml       # CI: build gs, xcodebuild test, package DMG, guarded notarised release
 ```
 
