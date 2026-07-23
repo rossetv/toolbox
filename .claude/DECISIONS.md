@@ -273,3 +273,13 @@ command token by token. Recorded here so the omission is visible rather than ass
 dispatch-queue label derived from it. A bundle identifier is an identity rather than a name —
 changing it resets TCC grants and user defaults, and the replacement should be a reverse-DNS domain
 the owner controls, which is theirs to choose. Left pending that decision.
+
+## 2026-07-23 — Bundle identifier renamed to `com.toolbox.app`
+
+**Affects:** `project.yml` (`PRODUCT_BUNDLE_IDENTIFIER`, `bundleIdPrefix`), `Sources/Toolbox/Services/GhostscriptRunner.swift` (`ioQueue` label).
+
+The app-rename decision above deliberately left the bundle identifier pending the owner's choice
+of reverse-DNS domain. The owner has now chosen: `com.pdftoolbox.app` → `com.toolbox.app`, with
+`bundleIdPrefix` → `com.toolbox` and the derived dispatch-queue label → `com.toolbox.gs.io`.
+Directed by the owner (mandated-by-human), closing the pending item. Known consequence, accepted:
+a bundle-identifier change resets the app's TCC grants and user defaults.

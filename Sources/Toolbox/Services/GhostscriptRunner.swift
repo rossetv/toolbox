@@ -220,7 +220,7 @@ struct GhostscriptRunner {
         var outData = Data()
         var errData = Data()
         let ioGroup = DispatchGroup()
-        let ioQueue = DispatchQueue(label: "com.pdftoolbox.gs.io", attributes: .concurrent)
+        let ioQueue = DispatchQueue(label: "com.toolbox.gs.io", attributes: .concurrent)
         ioGroup.enter()
         ioQueue.async { outData = Self.drainTail(outPipe.fileHandleForReading, limit: Self.outputTailLimit); ioGroup.leave() }
         ioGroup.enter()

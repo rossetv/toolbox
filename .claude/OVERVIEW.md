@@ -76,5 +76,5 @@ scripts/                          # build-ghostscript.sh, package-dmg.sh
 | OCR render resolution | 300 DPI | `OCR/OCREngine.swift` (`renderDPI`) |
 | Compress estimate time-box | 0.5 s | `Compress/CompressEstimator.swift` (`timeBudget` default) |
 | Output-validation sample pages | 3 | `Services/OutputValidator.swift` (`validate(samplePages:)` default) |
-| App bundle ID | `com.pdftoolbox.app` | `project.yml` (`PRODUCT_BUNDLE_IDENTIFIER`) |
+| App bundle ID | `com.toolbox.app` | `project.yml` (`PRODUCT_BUNDLE_IDENTIFIER`) |
 | Licence | AGPL-3.0-or-later | `LICENSE`, every source file's SPDX header |
