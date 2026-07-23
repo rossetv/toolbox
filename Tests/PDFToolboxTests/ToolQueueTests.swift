@@ -196,4 +196,56 @@ final class ToolQueueTests: XCTestCase {
         XCTAssertEqual(queue.jobs.first?.state, .done(.compressed(before: 10, after: 5)),
                        "a late progress report must not overwrite a terminal state")
     }
+
+    /// MINOR 10 — the sliding window is the entire reason `ToolQueue` exists over a plain
+    /// `TaskGroup` that adds every job at once; nothing previously asserted the cap is honoured,
+    /// so a regression to "launch everything at once" would pass the whole rest of the suite.
+    func testConcurrencyCapIsHonoured() async {
+        let queue = ToolQueue()
+        let total = 6
+        queue.add(urls(total, "cap"))
+
+        actor Counter {
+            private var current = 0
+            private var maxObserved = 0
+            func increment() { current += 1; maxObserved = max(maxObserved, current) }
+            func decrement() { current -= 1 }
+            func peak() -> Int { maxObserved }
+        }
+        let counter = Counter()
+        let cap = 2
+
+        await queue.run({ _, _ in
+            await counter.increment()
+            // Hold the slot open long enough that any jobs launched beyond the cap would overlap
+            // with these — if the window isn't honoured, this is what makes the overrun visible.
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            await counter.decrement()
+            return JobResult(.compressed(before: 10, after: 5))
+        }, maxConcurrent: cap)
+
+        let peak = await counter.peak()
+        XCTAssertEqual(peak, cap, "at most \(cap) of \(total) jobs should ever run concurrently, saw \(peak)")
+    }
+
+    /// MINOR 10 — Reveal-in-Finder depends on `resultURL` being set AND attributed to the correct
+    /// job; nothing previously asserted either. Distinct per-job URLs make misattribution visible.
+    func testResultURLIsAttributedToTheCorrectJob() async {
+        let queue = ToolQueue()
+        let inputs = urls(4, "result-url")
+        queue.add(inputs)
+
+        let expected = Dictionary(uniqueKeysWithValues: inputs.map { input in
+            (input, URL(fileURLWithPath: "/tmp/pdftoolbox-result-\(input.lastPathComponent)"))
+        })
+
+        await queue.run({ job, _ in
+            JobResult(.compressed(before: 10, after: 5), outputURL: expected[job.url])
+        }, maxConcurrent: 3)
+
+        for job in queue.jobs {
+            XCTAssertEqual(job.resultURL, expected[job.url],
+                           "resultURL must be attributed to the job it belongs to")
+        }
+    }
 }
