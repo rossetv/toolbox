@@ -17,6 +17,10 @@ xcuserdata/
 # Bundled Ghostscript (built from source by scripts/build-ghostscript.sh; 26 MB — never committed)
 Resources/ghostscript/
 
+# Bundled native libraries — leptonica and jbig2enc static archives plus headers, built
+# from source by scripts/build-leptonica.sh and scripts/build-jbig2enc.sh (12 MB — never committed)
+Resources/native/
+
 # Swift Package Manager
 .build/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
