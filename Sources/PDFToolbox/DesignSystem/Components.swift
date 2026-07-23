@@ -682,13 +682,31 @@ extension View {
     /// SwiftUI leaves the arrow in place for a tappable card, so a control built from a card
     /// rather than a `Button` gives the user no hover affordance at all.
     func pointingHandCursor() -> some View {
-        onHover { isInside in
-            if isInside {
-                NSCursor.pointingHand.push()
-            } else {
-                NSCursor.pop()
+        modifier(PointingHandCursorModifier())
+    }
+}
+
+/// Backs `pointingHandCursor()`. Uses `NSCursor.set()` rather than `push()`/`pop()`: a pushed
+/// cursor is only balanced by a matching `onHover(false)` on the *same* view instance, but a row
+/// can leave mid-hover with no such event (removed from a list, its modifier swapped out when a
+/// control becomes disabled, an `onOpen` going non-nil to nil) — leaking the hand cursor for the
+/// rest of the session. `set()` has no stack to unbalance, and the `@State` flag plus
+/// `onDisappear` make sure a torn-down view still restores the arrow.
+private struct PointingHandCursorModifier: ViewModifier {
+    @State private var isShowingHandCursor = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { isInside in
+                isShowingHandCursor = isInside
+                (isInside ? NSCursor.pointingHand : NSCursor.arrow).set()
             }
-        }
+            .onDisappear {
+                if isShowingHandCursor {
+                    isShowingHandCursor = false
+                    NSCursor.arrow.set()
+                }
+            }
     }
 }
 
