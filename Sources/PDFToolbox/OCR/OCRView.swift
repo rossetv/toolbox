@@ -9,8 +9,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The OCR tool view: batch drop/pick, an options panel (accuracy + language) in place of
-/// Compress's preset cards, and an "OCR N PDFs" action. Styled with the `Theme` token stub
-/// only; the full design system lands in Track D and is applied in the S.1 polish pass.
+/// Compress's quality presets, and an "OCR N PDFs" action. Shares Compress's design-system
+/// furniture — `ToolHeader`, `DropZone`, `FileRow`, `SegmentedPreset`, `PrimaryButton` — so the
+/// two tools read as one app.
 struct OCRView: View {
     @StateObject private var model = OCRViewModel()
     @State private var isTargeted = false
@@ -29,16 +30,24 @@ struct OCRView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.large) {
-            optionsPanel
-            dropZone
-            if !model.jobs.isEmpty { jobList }
-            Spacer(minLength: 0)
-            actionBar
+        VStack(spacing: 0) {
+            ToolHeader(
+                systemImage: Tool.ocr.systemImage,
+                title: "OCR",
+                subtitle: "Make scanned PDFs searchable. A hidden text layer is added — the page image is untouched."
+            )
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            Divider()
+            footerBar
         }
-        .padding(Theme.Spacing.large)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.Colors.surface)
         .navigationTitle("OCR")
+        .onDrop(of: [.pdf], isTargeted: $isTargeted) { providers in
+            loadDroppedURLs(providers)
+            return true
+        }
+        .overlay { dropHighlight }
         .fileImporter(isPresented: $isImporting,
                       allowedContentTypes: [.pdf],
                       allowsMultipleSelection: true) { result in
@@ -48,35 +57,156 @@ struct OCRView: View {
 
     // MARK: sections
 
-    private var optionsPanel: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-                Text("Accuracy").font(.subheadline).foregroundStyle(.secondary)
-                Picker("Accuracy", selection: $model.options.accuracy) {
-                    ForEach(Accuracy.allCases) { level in
-                        Text(level.title).tag(level)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .disabled(model.isRunning)
-            }
+    @ViewBuilder
+    private var content: some View {
+        if model.jobs.isEmpty {
+            DropZone(
+                isTargeted: isTargeted,
+                title: "Drop PDFs to make searchable",
+                subtitle: "or add them manually · batch supported",
+                buttonTitle: "Choose Files…"
+            ) { isImporting = true }
+                .padding(Theme.Spacing.large)
+        } else {
+            queue
+        }
+    }
 
-            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-                Text("Language").font(.subheadline).foregroundStyle(.secondary)
-                Picker("Language", selection: languageSelection) {
-                    ForEach(languages, id: \.name) { language in
-                        Text(language.name).tag(language.code)
+    private var queue: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Theme.Spacing.large) {
+                summaryRow
+                VStack(spacing: Theme.Spacing.small) {
+                    ForEach(model.jobs) { job in
+                        FileRow(name: job.url.lastPathComponent,
+                                meta: meta(for: job),
+                                status: status(for: job))
                     }
                 }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .frame(maxWidth: 220, alignment: .leading)
-                .disabled(model.isRunning)
+                VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+                    SectionLabel("Accuracy")
+                    SegmentedPreset(options: accuracyOptions,
+                                    selection: accuracySelection,
+                                    isEnabled: !model.isRunning)
+                }
+                languageRow
+            }
+            .padding(Theme.Spacing.large)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var summaryRow: some View {
+        HStack(spacing: Theme.Spacing.medium) {
+            Text(queueSummary).themeFont(.captionBold).foregroundStyle(Theme.Colors.text)
+            Spacer(minLength: Theme.Spacing.small)
+            if !model.isRunning {
+                LinkButton(title: "+ Add") { isImporting = true }
+            }
+            if hasFinishedJobs {
+                LinkButton(title: "Clear finished") { model.clearFinished() }
             }
         }
-        .padding(Theme.Spacing.medium)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.card))
+    }
+
+    private var languageRow: some View {
+        HStack(spacing: Theme.Spacing.small) {
+            Text("Language").themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
+            Spacer(minLength: Theme.Spacing.small)
+            Picker("Language", selection: languageSelection) {
+                ForEach(languages, id: \.name) { language in
+                    Text(language.name).tag(language.code)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 180)
+        }
+        .padding(.horizontal, Theme.Spacing.medium)
+        .padding(.vertical, Theme.Spacing.small + 4)
+        .background(Theme.Colors.background,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.input, style: .continuous))
+        .disabled(model.isRunning)
+        .opacity(model.isRunning ? 0.5 : 1)
+    }
+
+    private var footerBar: some View {
+        HStack(spacing: Theme.Spacing.medium) {
+            Text(footerNote).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+            Spacer(minLength: Theme.Spacing.small)
+            if model.isRunning { ProgressView().controlSize(.small) }
+            PrimaryButton(title: actionTitle, isEnabled: model.canRun) { model.run() }
+        }
+        .padding(.horizontal, Theme.Spacing.large)
+        .padding(.vertical, Theme.Spacing.medium)
+        .background(Theme.Colors.surface)
+    }
+
+    @ViewBuilder
+    private var dropHighlight: some View {
+        if isTargeted, !model.jobs.isEmpty {
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .strokeBorder(Theme.Colors.accent, lineWidth: 2)
+                .padding(2)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // MARK: job → row state
+
+    /// Maps the queue's `JobState`/`JobOutcome` onto the presentational `FileRow.Status`.
+    /// Compress-shaped outcomes can't arise from an OCR run, but the enum is shared, so they
+    /// fall back to a plain "Done" rather than claiming something untrue about the file.
+    private func status(for job: ToolJob) -> FileRow.Status {
+        switch job.state {
+        case .queued:
+            return .queued(detail: "Queued")
+        case .analysing:
+            return .analysing
+        case .running(let fraction):
+            return .inProgress(fraction: fraction > 0 ? fraction : nil)
+        case .done(let outcome):
+            switch outcome {
+            case .ocrAdded(let pages, let skipped):
+                let suffix = skipped > 0 ? " · \(skipped) already had text" : ""
+                return .succeeded("Searchable — \(pages) page\(pages == 1 ? "" : "s")\(suffix)")
+            case .alreadySearchable:
+                return .unchanged("Already searchable")
+            case .compressed, .noGain:
+                return .succeeded("Done")
+            }
+        case .failed(let message):
+            return .error(message)
+        }
+    }
+
+    private func meta(for job: ToolJob) -> String {
+        inputSize(of: job).map(byteString) ?? job.url.deletingLastPathComponent().lastPathComponent
+    }
+
+    // MARK: derived copy
+
+    private var accuracyOptions: [SegmentedPresetOption] {
+        // Exhaustive switch, so a new recognition level can't ship without its blurb.
+        Accuracy.allCases.map { accuracy in
+            switch accuracy {
+            case .fast:
+                return SegmentedPresetOption(id: accuracy.id, title: accuracy.title,
+                                             subtitle: "A quicker pass over each page.",
+                                             hint: "Best on clean, printed text")
+            case .accurate:
+                return SegmentedPresetOption(id: accuracy.id, title: accuracy.title,
+                                             subtitle: "Vision's best recognition.",
+                                             hint: "Recommended")
+            }
+        }
+    }
+
+    private var accuracySelection: Binding<String> {
+        Binding(
+            get: { model.options.accuracy.id },
+            set: { if let accuracy = Accuracy(rawValue: $0) { model.options.accuracy = accuracy } }
+        )
     }
 
     /// Bridges the single-select menu (`String?` code) to `options.languages` (an array).
@@ -87,59 +217,52 @@ struct OCRView: View {
         )
     }
 
-    private var dropZone: some View {
-        RoundedRectangle(cornerRadius: Theme.Radius.card)
-            .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8]))
-            .foregroundStyle(isTargeted ? Theme.Colors.accent : Color.secondary.opacity(0.5))
-            .frame(height: 150)
-            .overlay {
-                VStack(spacing: Theme.Spacing.small) {
-                    Image(systemName: "text.viewfinder")
-                        .font(.system(size: 28))
-                        .foregroundStyle(Theme.Colors.accent)
-                    Text("Drop PDFs to make searchable")
-                        .font(.headline)
-                    Button("Choose PDFs…") { isImporting = true }
-                        .buttonStyle(.bordered)
-                }
-            }
-            .onDrop(of: [.pdf], isTargeted: $isTargeted) { providers in
-                loadDroppedURLs(providers)
-                return true
-            }
-    }
-
-    private var jobList: some View {
-        ScrollView {
-            VStack(spacing: Theme.Spacing.small) {
-                ForEach(model.jobs) { job in
-                    OCRJobRow(job: job)
-                }
-            }
-        }
-        .frame(maxHeight: 240)
-    }
-
-    private var actionBar: some View {
-        HStack {
-            if model.jobs.contains(where: { if case .done = $0.state { return true } else { return false } }) {
-                Button("Clear finished") { model.clearFinished() }
-                    .buttonStyle(.borderless)
-            }
-            Spacer()
-            if model.isRunning { ProgressView().controlSize(.small) }
-            Button(action: model.run) {
-                Text(actionTitle).frame(minWidth: 120)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.Colors.accent)
-            .disabled(!model.canRun)
-        }
+    private var queueSummary: String {
+        let count = model.jobs.count
+        let files = "\(count) file\(count == 1 ? "" : "s")"
+        let total = model.jobs.compactMap(inputSize).reduce(0, +)
+        return total > 0 ? "\(files) · \(byteString(total))" : files
     }
 
     private var actionTitle: String {
         let n = model.pageCandidateCount
         return n > 0 ? "OCR \(n) PDF\(n == 1 ? "" : "s")" : "OCR"
+    }
+
+    private var footerNote: String {
+        if model.isRunning {
+            let current = min(finishedCount + 1, model.jobs.count)
+            return "Reading \(current) of \(model.jobs.count)…"
+        }
+        let searchable = model.jobs.filter { job in
+            if case .done(.ocrAdded) = job.state { return true } else { return false }
+        }.count
+        if searchable > 0 {
+            return "\(searchable) PDF\(searchable == 1 ? " is" : "s are") now searchable."
+        }
+        return "Originals are never modified — a searchable copy is saved alongside."
+    }
+
+    private var finishedCount: Int {
+        model.jobs.filter { job in
+            switch job.state {
+            case .done, .failed: return true
+            case .queued, .analysing, .running: return false
+            }
+        }.count
+    }
+
+    private var hasFinishedJobs: Bool { finishedCount > 0 }
+
+    // MARK: helpers
+
+    /// The input's size on disk — a local `URLResourceValues` read (see `CompressView`).
+    private func inputSize(of job: ToolJob) -> Int? {
+        (try? job.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+    }
+
+    private func byteString(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
     private func loadDroppedURLs(_ providers: [NSItemProvider]) {
@@ -152,54 +275,14 @@ struct OCRView: View {
     }
 }
 
-/// One file's row: name plus a state-dependent trailing detail (mirrors Compress's row).
-private struct OCRJobRow: View {
-    let job: ToolJob
+#Preview("OCR – Light") {
+    OCRView()
+        .frame(width: 720, height: 520)
+        .preferredColorScheme(.light)
+}
 
-    var body: some View {
-        HStack {
-            Image(systemName: "doc.fill").foregroundStyle(.secondary)
-            Text(job.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
-            Spacer()
-            detail
-        }
-        .padding(Theme.Spacing.small)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control))
-    }
-
-    @ViewBuilder
-    private var detail: some View {
-        switch job.state {
-        case .queued:
-            Text("Queued").foregroundStyle(.secondary)
-        case .analysing:
-            Text("Analysing…").foregroundStyle(.secondary)
-        case .running(let fraction):
-            if fraction > 0 {
-                ProgressView(value: fraction).frame(width: 90)
-            } else {
-                ProgressView().controlSize(.small)
-            }
-        case .done(let outcome):
-            outcomeLabel(outcome)
-        case .failed(let message):
-            Label(message, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red).lineLimit(1)
-        }
-    }
-
-    @ViewBuilder
-    private func outcomeLabel(_ outcome: JobOutcome) -> some View {
-        switch outcome {
-        case .ocrAdded(let pages, let skipped):
-            let suffix = skipped > 0 ? "  (\(skipped) already had text)" : ""
-            Label("Searchable — \(pages) page\(pages == 1 ? "" : "s")\(suffix)", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green).lineLimit(1)
-        case .alreadySearchable:
-            Label("Already searchable", systemImage: "checkmark.circle")
-                .foregroundStyle(.secondary)
-        case .compressed, .noGain:
-            Text("Done").foregroundStyle(.green)
-        }
-    }
+#Preview("OCR – Dark") {
+    OCRView()
+        .frame(width: 720, height: 520)
+        .preferredColorScheme(.dark)
 }
