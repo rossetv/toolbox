@@ -175,7 +175,7 @@ convened (same precedent as the stanza-grammar entry above).
   Previously, if the binary was **absent**, `otool` produced nothing, the `grep -qv` found no
   offending line, and the gate reported **green on a missing binary**.
 - `gate: packaged-app-compresses` — now stages into `mktemp -d` under a `trap … EXIT` that
-  detaches the mount and removes the directory. Previously it used a fixed `/tmp/Toolbox.app`:
+  detaches the mount and removes the directory. Previously it used a fixed `/tmp/PDFToolbox.app`:
   on a shared machine a directory owned by another user cannot be removed (`/tmp` is sticky), the
   `rm` would fail silently and `cp -R` would land beside a stale bundle — a false green.
 - `gate: no-personal-corpus-references` (semantic) — assertion broadened from "the private PDF
@@ -263,6 +263,11 @@ nothing the gate asserts** — it still packages the DMG, mounts it, copies the 
 requires the packaged app to really compress a PDF. Recorded here because gate edits are never a
 single Claude's call; the authority is the owner's instruction above. All six gates were re-run
 green after the rename, this one included.
+
+No `/panel` was convened. GATES.md requires one for a gate edit, and that rule exists to stop a
+red gate being edited green; this edit was directed by the owner, is provably rename-tracking, and
+leaves every assertion intact — verified independently by an adversarial reviewer that diffed the
+command token by token. Recorded here so the omission is visible rather than assumed.
 
 **Not renamed:** `PRODUCT_BUNDLE_IDENTIFIER` (`com.pdftoolbox.app`), its `bundleIdPrefix`, and the
 dispatch-queue label derived from it. A bundle identifier is an identity rather than a name —

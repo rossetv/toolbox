@@ -10,11 +10,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-Release}"
-# The Xcode project/scheme, the built .app, and the DMG filename all share this one name (kept
-# space-free so URLs, CI globs and Finder paths stay simple). Only the DMG's *volume* name
-# (shown once it's mounted) carries the display spacing.
+# The Xcode project/scheme, the built .app, the DMG filename and the mounted volume all share
+# this one name. It is kept space-free so URLs, CI globs and Finder paths stay simple — and
+# because a space in the bundle path breaks TEST_HOST, the scheme and these scripts.
 NAME="Toolbox"
-VOL_NAME="Toolbox"
 BUILD_DIR="build"
 DIST_DIR="dist"
 SIGN_ID="${DEVELOPER_ID:--}"          # "-" = ad-hoc
@@ -52,7 +51,7 @@ cp -R "$APP" "$DIST_DIR/stage/"
 ln -s /Applications "$DIST_DIR/stage/Applications"
 
 echo "==> Creating DMG"
-hdiutil create -volname "$VOL_NAME" -srcfolder "$DIST_DIR/stage" \
+hdiutil create -volname "$NAME" -srcfolder "$DIST_DIR/stage" \
   -ov -format UDZO "$DIST_DIR/$NAME.dmg" >/dev/null
 rm -rf "$DIST_DIR/stage"
 

@@ -14,7 +14,7 @@ PDFWriter rewrite and Rung 2, and several of its statements are no longer true.
 | Compress — Rung 3 (MRC) | **not built** — deliberate, see below |
 | OCR (Apple Vision + incremental update) | shipping, including object-stream PDFs |
 | UI | rebuilt against the design mockup and driven end-to-end |
-| Tests | **125, 0 failures** |
+| Tests | **153, 0 failures** |
 | Packaging | DMG builds, installs and compresses |
 | Notarisation | **blocked on your Apple Developer ID** |
 
@@ -22,7 +22,7 @@ PDFWriter rewrite and Rung 2, and several of its statements are no longer true.
 
 Everything here was run and read, not inferred:
 
-- Full suite: **125 tests, 0 failures**.
+- Full suite: **153 tests, 0 failures**.
 - All six mechanical gates in `.claude/GATES.md` pass, including one that packages the DMG and
   asserts the **shipped bundle** really compresses.
 - The packaged app, installed from the DMG to /Applications, compressed a real PDF by roughly
@@ -47,7 +47,8 @@ sidebar was invisible and no button did anything. Three independent defects:
 
 **Rung 2 was added**, and it closes a real gap rather than a theoretical one. Ghostscript's mono
 settings only apply to images that are *already* 1-bit, so a greyscale scan that merely looks
-black-and-white is treated as a grey image — measured, one came out roughly **29% larger** through
+black-and-white is treated as a grey image, and such scans were measured **growing** rather than
+shrinking through
 Rung 1 and the app would report it as "already optimised". Rung 2 binarises first, then encodes
 CCITT G4 via ImageIO and reassembles the page.
 
