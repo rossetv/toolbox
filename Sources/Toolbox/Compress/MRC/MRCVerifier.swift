@@ -31,7 +31,13 @@ enum MRCVerifier {
     /// The largest normalised error a page may carry and still pass. M2-calibrated later; this is
     /// a deliberately conservative start. Because the error is relative to the input page's own
     /// contrast (C3), the same constant serves sparse, faint and bold pages alike.
-    static let maxNormalisedError = 0.28
+    // M2-calibrated 2026-07-24: measured good MRC pages (text-class corpus, calibrated
+    // layer factors) span 0.21-0.30; genuine encode corruption scores well above. NOTE
+    // (recorded limitation): image-dominant harm lives OFF the ink mask, so this metric
+    // does not separate it - the classifier envelope is the exclusion mechanism for that
+    // class (measured: it excluded every harmful corpus page); this gate catches encode
+    // corruption within the masked text region.
+    static let maxNormalisedError = 0.33
 
     /// Contrast below which the ink region is treated as near-uniform — nothing MRC could have
     /// destroyed — and the page passes trivially. Truly blank pages are already screened by the

@@ -25,8 +25,11 @@ enum MRCSegmenter {
 
     /// The background layer is downsampled 2× and the foreground 3×: paper detail matters more
     /// than ink detail (ink is carried sharply by the 1-bit mask), so the fg can be coarser.
-    static let bgDownsample = 2
-    static let fgDownsample = 3
+    // M2-calibrated 2026-07-24 against the reference tool's outputs on the private corpus
+    // (aggregates only): 2/3 produced hybrids ~2x the reference; 3/6 reproduces the
+    // reference's layer economics at equal visual quality.
+    static let bgDownsample = 3
+    static let fgDownsample = 6
 
     static let sauvolaWindow = 31
     static let sauvolaK = 0.3

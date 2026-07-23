@@ -300,10 +300,10 @@ final class MRCSegmenterTests: XCTestCase {
         let image = try grey(width: width, height: height) { x, _ in (x % 20) < 6 ? 0 : 255 }
         let seg = try XCTUnwrap(MRCSegmenter.segment(image))
 
-        XCTAssertEqual(seg.foreground.width, 31, "fg width = ceil(91/3)")
-        XCTAssertEqual(seg.foreground.height, 34, "fg height = ceil(100/3)")
-        XCTAssertEqual(seg.background.width, 46, "bg width = ceil(91/2)")
-        XCTAssertEqual(seg.background.height, 50, "bg height = ceil(100/2)")
+        XCTAssertEqual(seg.foreground.width, 16, "fg width = ceil(91/6)")
+        XCTAssertEqual(seg.foreground.height, 17, "fg height = ceil(100/6)")
+        XCTAssertEqual(seg.background.width, 31, "bg width = ceil(91/3)")
+        XCTAssertEqual(seg.background.height, 34, "bg height = ceil(100/3)")
     }
 
     /// `segment` fails closed. Its only nil path is `binarise` → `greyBuffer` failing to build a
