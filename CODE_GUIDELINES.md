@@ -51,11 +51,16 @@ app (which holds the grant) stages I/O through a private temp working directory 
 copies results back out (`Sources/Toolbox/Compress/CompressEngine.swift`, the `work`
 directory in `compress`).
 
-**§2.3 — Module dependencies point one way.** `Models` imports no other module; everyone
-may import it. `ToolQueue` is generic over its job body and knows nothing of PDFs,
-Ghostscript or Vision — the view models supply the tool-specific closure. `Compress` and
-`OCR` never call each other. A change that breaks any of these arrows is an architecture
-change and needs the owner's agreement first.
+**§2.3 — Layering is by directory, and the arrows point one way.** This is a single Swift
+module — `project.yml` declares one `Toolbox` application target over `Sources/Toolbox` —
+so there is no import graph to inspect and the compiler enforces none of this; review
+does. Three arrows: types in `Models/` reference nothing outside `Models/` and Foundation;
+`Shared/ToolQueue.swift` names no PDF, Ghostscript or Vision type, taking its job body as
+a closure (`ToolQueue.run`) that the view models supply; `Compress/` and `OCR/` reference
+none of each other's types. Check by grepping the directory for the foreign type's name —
+a mention in a comment is prose and fine, a reference in code is the violation. A change
+that breaks any of these arrows is an architecture change and needs the owner's agreement
+first.
 
 **§2.4 — The repository builds from a fresh clone.** Every compile source and search path
 in `project.yml` must resolve in a clean checkout. The one exception is
@@ -77,15 +82,18 @@ mid-batch reintroduces the check-then-use race the reservation exists to close.
 
 **§3.2 — Outputs are placed by atomic rename, and a failed or cancelled job leaves
 nothing behind.** Write to a hidden temp file in the destination directory (same volume,
-so the rename cannot cross-device-fail), `defer` its removal, check cancellation as the
-last step before `moveItem`. Both engines follow the same shape
-(`Compress/CompressEngine.swift` `destTemp`/`placed`; `OCR/OCREngine.swift`
-`tempURL`/`renamed`).
+so the rename cannot cross-device-fail), `defer` its removal, and check cancellation as
+the last step before `moveItem`. Every placement site meets this; the Rung-1 gs placement
+in `Compress/CompressEngine.swift` (`destTemp`/`placed`) is the reference shape. The check
+must be the *last* step, not merely present: cancellation is cooperative, so an unchecked
+window between validating the output and renaming it never throws, the `defer` never
+fires, and the job the user cancelled delivers its file anyway.
 
 **§3.3 — Never deliver a larger file.** No gain means keep the original and write nothing
 (`JobOutcome.noGain`). The not-smaller output must still be a *valid* PDF before it is
 called no-gain — otherwise a silent gs corruption that happens to be ≥ the input
-masquerades as "already optimised" (`CompressEngine.compress`, step 5).
+masquerades as "already optimised" (`CompressEngine.compress`, the
+`outputSize < inputSize` guard).
 
 **§3.4 — Every output is validated before it is placed, and validation is bounded in both
 directions.** `Sources/Toolbox/Services/OutputValidator.swift` compares each sampled
@@ -156,32 +164,29 @@ bugs this codebase has had — pages that rendered blank while the job reported 
 **§4.4 — Every allocation, recursion or walk the input can scale carries a named bound.**
 New code whose memory or depth the file controls ships with a constant and a test that
 exercises it; the unbounded version is a defect even if no current fixture trips it. The
-existing bounds:
+bounds in force are registered in `.claude/docs/modules/services.md` ("Input-scaled
+bounds"), which is maintained beside the code — an inventory kept here instead would rot
+the first time a constant was renamed, and a law that cites dead constants teaches nobody
+anything.
 
-| Bound | Guards against | Where |
-|---|---|---|
-| `maxInputBytes` | one OCR job taking the machine | `Services/PDFWriter.swift` |
-| `maxObjects` | an index that scales with file size, not page count | `Services/PDFWriter.swift` |
-| `maxPageTreeDepth` / `maxPageTreeNodes` | stack overflow / unbounded walk from a crafted page tree | `Services/PDFWriter.swift` |
-| `maxObjectStreamBytes` (whole-file budget) | decompression bombs spread across many `/ObjStm` | `Services/PDFWriter.swift` (`indexObjectStreams`) |
-| `PDFFlate.inflate(limit:)` + `maxCompressedToOutputRatio` | output bombs, and copying a whole file as "compressed" input | `Services/PDFFlate.swift` |
-| `maxRasterPixels` | a hostile `/MediaBox` (the spec's largest legal page is ~14 GB at 300 DPI) | `OCR/OCREngine.swift` |
-| `maxBilevelPixels` | the same, on the Rung-2 render | `Compress/CompressEngine.swift` |
-| `stderrLimit` + `failureMessage` | unbounded attacker-influenced text retained and shown | `Services/GhostscriptRunner.swift`, `Compress/CompressEngine.swift` |
-| `wallClockTimeout` | a hung or runaway gs child | `Services/GhostscriptRunner.swift` |
-
-**§4.5 — Untrusted arithmetic must not trap.** `Int(digits)` on a 19-digit object number
-yields `Int.max`, and the first `+= 1` takes the whole process down — a crash reachable
-from 27 bytes of input. Parse with overflow-reporting operations and a plausibility
-ceiling (`PDFSyntax.parseInt`, `maxPlausibleInteger`); offset sums go through
+**§4.5 — Untrusted arithmetic must not trap.** A PDF may name object
+`9223372036854775807` — which *is* `Int.max`, so `Int(digits)` parses it happily and the
+allocator's first `+= 1` traps, taking the whole process down: a crash reachable from 27
+bytes of input (`Tests/ToolboxTests/PDFWriterTests.swift`, the `S4` fixture). The failure
+mode is a *successful* parse, not an overflow — Swift's `Int(String)` returns nil above
+`Int.max` rather than clamping to it, so a nil-check alone would not have caught this.
+Parse with overflow-reporting operations and a plausibility ceiling
+(`PDFSyntax.parseInt`, `maxPlausibleInteger`); offset sums go through
 `PDFWriter.addingWithinBounds`. Nothing legitimate needs values that large, so refusing
 them costs nothing.
 
-**§4.6 — Attacker-influenced text is bounded before it is kept or shown.** gs's stderr
-quotes fragments of the input and a malformed PDF can provoke a warning per object; only
-a bounded tail is retained (`GhostscriptRunner.drainTail`) and only the last lines reach
-the UI (`CompressEngine.failureMessage`). Any new channel that carries input-derived text
-to the user gets the same treatment.
+**§4.6 — Attacker-influenced text is bounded before it is kept or shown.** gs quotes
+fragments of the input in its diagnostics and a malformed PDF can provoke a warning per
+object; only a bounded tail of each stream is retained (`GhostscriptRunner.drainTail`,
+applied to stdout and stderr alike) and only the last lines reach the UI
+(`CompressEngine.failureMessage`). Bound both streams, not just stderr: a bogus
+`-sDEVICE` puts its whole diagnosis on stdout with nothing on stderr at all. Any new
+channel that carries input-derived text to the user gets the same treatment.
 
 ## §5 Platform truths
 
@@ -226,7 +231,8 @@ on a GCD queue and are bridged with a continuation (`GhostscriptRunner.run`,
 `OCREngine.renderUpright`); a body that parks a cooperative thread starves every other
 job in the app.
 
-**§6.2 — Terminal job states are absorbing.** A progress tick is an untracked `Task` and
+**§6.2 — A late progress tick can never resurrect a finished job.** A progress tick is an
+untracked `Task` and
 can land after the job is `.done` — applying it resurrected finished jobs to `.running`,
 where `removeCompleted()` could never reach them, stranding them forever.
 `ToolQueue.setState` accepts `.running` only from `.queued` or `.running`; keep it that
@@ -250,8 +256,8 @@ adopted by the cancellation handler only after launch (`RunControl.adopt`), beca
 
 **§7.1 — Exit 0 is not success; output is.** A gs that exits cleanly but produces no
 output, or invalid output, is a failure — never "already optimised"
-(`CompressEngine.compress`, step 4). Success is claimed only after the output exists and
-validates.
+(`CompressEngine.compress`, the `outputSize > 0` guard throwing `ghostscriptFailed`).
+Success is claimed only after the output exists and validates.
 
 **§7.2 — Error kinds tell the user the truth.** `.unsupportedStructure` ("this writer
 cannot amend this file") and `.malformedPDF` ("this file is broken") are different facts
@@ -283,9 +289,11 @@ than attaching a second copy of the capability elsewhere.
 **§8.3 — Window behaviour is enforced on the `NSWindow`, in one place.** SwiftUI's
 `.frame(minWidth:minHeight:)` constrains the *content*, not the window, and
 `.defaultSize` is a hint that loses to content — a window restored too small simply
-clips, and the sidebar is the casualty. All window sizing, titling and focus rules live
-in `Sources/Toolbox/App/WindowConfigurator.swift` (`WindowSetup.applyMinimumSize`)
-with each workaround's why documented beside it.
+clips, and the sidebar is the casualty. All `NSWindow`-level sizing, titling and focus
+enforcement lives in `Sources/Toolbox/App/WindowConfigurator.swift`
+(`WindowSetup.applyMinimumSize`) with each workaround's why documented beside it — the
+SwiftUI `.frame` and `.defaultSize` declarations at the view layer constrain content and
+hint at a size; they do not enforce anything, and are not a second home for these rules.
 
 **§8.4 — The visual language is `DESIGN.md`'s; divergence is recorded, never silent.**
 Reuse `Theme` tokens and existing components; a colour literal beside an existing token
@@ -293,6 +301,17 @@ is a defect (that exact fix: `Theme.Colors.documentBadge`). A deliberate diverge
 per-tool sidebar tints against the single-accent rule — exists only because it is
 recorded in `.claude/DECISIONS.md` (2026-07-23) on the owner's instruction. Match that
 bar or don't diverge.
+
+**§8.5 — A declared identifier is checked against what the system actually vends.** A
+`UTType`, pasteboard type, `NSItemProvider` identifier, Info.plist key or environment key
+that does not match is not an error — it is silence: the code is never called, and the
+feature looks present while doing nothing. Both drop zones matched `.pdf` while a drag
+from Finder advertises `public.file-url`, so every drop was rejected before the handler
+could run (`Compress/CompressView.swift`, `OCR/OCRView.swift`, the
+`.onDrop(of: [.fileURL])` comment). Confirm the identifier by observing what the system
+actually sends — log the offered types, drive the real interaction — never by reading the
+API's name and assuming. This is §8.1's failure mode in its quietest form: nothing is red,
+and only driving the app finds it.
 
 ## §9 Tests
 
@@ -302,8 +321,10 @@ generation, a deterministic PRNG (`Fixtures.RNG`), a fresh directory per fixture
 (`Fixtures.uniqueURL`). Nothing that identifies a maintainer's machine or private
 material ever enters the repository — no personal paths, account names, directory names,
 or descriptions of private documents. This is also a gate
-(`gate: no-personal-corpus-references`, `.claude/GATES.md`); it has been violated twice
-and both times cost a history rewrite. Aggregated, anonymised measurements are fine.
+(`gate: no-personal-corpus-references`, `.claude/GATES.md`); it has been violated twice,
+and the second time the branch history had to be rewritten with `git filter-repo` before
+the first push (`.claude/DECISIONS.md`, 2026-07-23). Aggregated, anonymised measurements
+are fine.
 
 **§9.2 — Assert fixture invariants; never skip on a condition we control.** An
 `XCTSkipIf` on an in-process fixture's size would silently retire the only test of a
@@ -354,14 +375,17 @@ copy it verbatim into every new file. Distribution obligations are recorded in
 
 **§11.1 — Prose is British English.** Comments, documentation, commit messages, PR
 descriptions: "colour", "behaviour", "organise", "analyse". User-facing strings follow
-the same rule.
+the same rule. Human-owned documents — `DESIGN.md`, `README.md`, `LICENSE` — keep whatever
+spelling they have; they are not ours to edit unasked (`.claude/DECISIONS.md`,
+2026-07-23), so their American spellings are not violations to be hunted.
 
 **§11.2 — Identifiers follow the platform, then the surrounding code.** API names are
 fixed spellings (`CGColorSpace`, `-dColorImageResolution`) — never "correct" them. Our
-own identifiers are predominantly British (`scanColour`, `colourDPI`, `colourSpace`);
-`Theme.Colors` is an established exception. Extend whichever convention the surface you
-are touching already uses — a type with `getColor()` next to `setColour()` is the rot
-this rule prevents.
+own identifiers are British (`scanColour`, `colourDPI`, `colourSpace`), with one exact
+carve-out: where the thing named *is* a SwiftUI `Color`, the platform's spelling wins —
+the `Theme.Colors` namespace and the `Color`-typed properties `Theme.Shadow.color` and
+`StatPill.Tone.color`. Extend whichever convention the surface you are touching already
+uses — a type with `getColor()` next to `setColour()` is the rot this rule prevents.
 
 **§11.3 — Test names are behaviour sentences.** `testCancelLeavesRemainingQueued`,
 `testSecondRunIsRefusedSoTheLiveBatchStaysCancellable` — the name states the guaranteed

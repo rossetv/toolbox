@@ -91,6 +91,31 @@ output re-validation, and the hand-written PDF incremental-update writer. Both
   budget (`maxObjectStreamBytes`, 64 MiB) across the **whole file**, not per stream,
   so many small object streams can't add up past the ceiling either.
 
+## Input-scaled bounds
+
+The register of every named bound on an allocation, recursion or walk that an untrusted
+PDF can scale. `CODE_GUIDELINES.md` §4.4 is the rule (new code of this kind ships with a
+constant and a test that exercises it) and points here for the inventory, so the list
+lives beside the code rather than rotting in the law. It is deliberately cross-module: the
+two render caps belong to the engines, not to Services, but they are the same class of
+bound and are easiest to keep honest in one table.
+
+| Bound | Guards against | Where |
+|---|---|---|
+| `maxInputBytes` | one OCR job taking the machine | `Sources/Toolbox/Services/PDFWriter.swift` |
+| `maxObjects` | an index that scales with file size, not page count | `Sources/Toolbox/Services/PDFWriter.swift` |
+| `maxPageTreeDepth` / `maxPageTreeNodes` | stack overflow / unbounded walk from a crafted page tree | `Sources/Toolbox/Services/PDFWriter.swift` |
+| `maxObjectStreamBytes` (spent across the whole file, not per stream) | decompression bombs spread across many `/ObjStm` | `Sources/Toolbox/Services/PDFWriter.swift` (`indexObjectStreams`) |
+| `PDFFlate.inflate` + `maxCompressedToOutputRatio` | output bombs, and copying a whole file as "compressed" input | `Sources/Toolbox/Services/PDFFlate.swift` |
+| `maxRasterPixels` | a hostile `/MediaBox` (the spec's largest legal page is ~14 GB at 300 DPI) | `Sources/Toolbox/OCR/OCREngine.swift` |
+| `maxBilevelPixels` | the same, on the Rung-2 render | `Sources/Toolbox/Compress/CompressEngine.swift` |
+| `outputTailLimit` (applied to stdout **and** stderr) + `failureMessage` | unbounded attacker-influenced text retained and shown | `Sources/Toolbox/Services/GhostscriptRunner.swift`, `Sources/Toolbox/Compress/CompressEngine.swift` |
+| `wallClockTimeout` | a hung or runaway gs child | `Sources/Toolbox/Services/GhostscriptRunner.swift` |
+
+Both gs streams are bounded, not just stderr: a bogus `-sDEVICE` puts its whole diagnosis
+on stdout with nothing on stderr at all (`GhostscriptRunner.drainTail`, applied to both
+pipes; `CompressEngine.failureMessage`'s doc comment records the measurement).
+
 ## Gotchas
 
 - **Object-stream (`/ObjStm`) PDFs are now OCR-able.** `PDFWriter` indexes every
