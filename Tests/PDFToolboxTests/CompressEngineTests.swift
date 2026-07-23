@@ -193,6 +193,48 @@ final class CompressEngineTests: XCTestCase {
         }
     }
 
+    /// Regression: `SeatbeltProfile` must scope a directory as `(subpath …)` even when it
+    /// doesn't exist on disk yet — exactly the case for the scratch/output dirs
+    /// `GhostscriptRunner`/`CompressEngine` build with `isDirectory: true` and profile before
+    /// creating. The decision must depend on how the caller constructed the URL, not a
+    /// filesystem stat that a not-yet-created path always fails.
+    func testSeatbeltProfileScopesANotYetCreatedDirectoryAsSubpath() throws {
+        let gs = URL(fileURLWithPath: "/Applications/PDFToolbox.app/Contents/Resources/ghostscript/bin/gs")
+        let missingDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdftoolbox-seatbelt-test-\(UUID().uuidString)", isDirectory: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingDir.path),
+                       "fixture precondition: the directory must not exist yet")
+
+        let profile = SeatbeltProfile.profile(gsPath: gs, readPaths: [], writePaths: [missingDir])
+
+        let expectedPath = missingDir.canonical.path
+        XCTAssertTrue(profile.contains("(subpath \"\(expectedPath)\")"),
+                     "a not-yet-created directory must be scoped as a subpath, got:\n\(profile)")
+        XCTAssertFalse(profile.contains("(literal \"\(expectedPath)\")"),
+                      "a not-yet-created directory must not be scoped as a literal file")
+    }
+
+    /// Regression: gs sometimes puts its actual diagnosis on STDOUT with nothing on stderr at
+    /// all (measured: a bogus `-sDEVICE` → exit 1, 236 B on stdout, 0 B on stderr). The failure
+    /// message must not collapse to a bare "exit 1" when the real reason is sitting on the
+    /// stream the old code discarded.
+    func testGhostscriptFailureMessageIncludesStdoutWhenStderrIsEmpty() async throws {
+        let runner = StubRunner(exitCode: 1, output: .none,
+                                stdout: "Unrecoverable error: Unknown device requested\n")
+        let engine = CompressEngine(runner: runner)
+        let input = try Fixtures.blankPDF(pages: 1)
+        let output = input.deletingLastPathComponent().appendingPathComponent("stdout-diag-compressed.pdf")
+
+        do {
+            let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+            XCTFail("expected a failure for a non-zero gs exit, got \(outcome)")
+        } catch let error as CompressError {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("Unknown device requested"),
+                          "the message must surface gs's stdout diagnosis, got: \(message.debugDescription)")
+        }
+    }
+
     /// A hand-built one-page PDF (~350 bytes) — smaller than anything CoreGraphics or PDFKit
     /// emits, so a stub "compression" of a blank fixture is a genuine size gain. Offsets are
     /// computed, never hand-counted, so the xref is correct by construction.
@@ -264,6 +306,7 @@ private struct StubRunner: GhostscriptRunning {
     let exitCode: Int32
     let output: Output
     var stderr: String = ""
+    var stdout: String = ""
 
     func run(arguments: [String],
              readPaths: [URL],
@@ -272,7 +315,7 @@ private struct StubRunner: GhostscriptRunning {
         if case let .bytes(data) = output, let path = Self.outputPath(from: arguments) {
             try? data.write(to: URL(fileURLWithPath: path))
         }
-        return ProcessResult(exitCode: exitCode, stdout: "", stderr: stderr)
+        return ProcessResult(exitCode: exitCode, stdout: stdout, stderr: stderr)
     }
 
     private static func outputPath(from arguments: [String]) -> String? {
@@ -356,6 +399,73 @@ extension CompressEngineTests {
         // kept its rotation value but lost the geometry it applies to.
         XCTAssertEqual(after.bounds(for: .mediaBox).size.width,
                        before.bounds(for: .mediaBox).size.width, accuracy: 1)
+    }
+
+    /// Regression: cancelling the task while Rung 2 is mid-binarise must propagate
+    /// `CancellationError` directly, never be swallowed into "Rung 2 declined" and then burn a
+    /// whole Ghostscript pass anyway. `bilevelCompress` checks cancellation at the top of its
+    /// per-page loop, before any per-page work, so cancelling immediately after dispatch is
+    /// deterministic here — no gate/timing dependency needed.
+    func testCancelDuringRungTwoPropagatesCancellationRatherThanFallingBackToRungOne() async throws {
+        let engine = try makeEngine()
+        let input = try Fixtures.greyscaleBilevelScanPDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("cancelled-bilevel-compressed.pdf")
+
+        let handle = Task {
+            try await engine.compress(input, preset: .balanced, to: output) { _ in }
+        }
+        handle.cancel()
+
+        do {
+            let outcome = try await handle.value
+            XCTFail("expected the cancelled Rung-2 attempt to propagate cancellation, got \(outcome)")
+        } catch is CancellationError {
+            // expected
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "a cancelled job must leave no output file")
+    }
+
+    /// Regression: Rung 2 can process several pages — driving progress up — before declining on
+    /// a LATER page (here, one that carries an annotation `bilevelCompress` refuses to touch)
+    /// and falling through to Rung 1. The caller's progress callback must never see a value
+    /// lower than one already reported. Uses a deterministic stub for Rung 1 so the assertion
+    /// doesn't depend on real Ghostscript's own (best-effort) page-marker parsing.
+    func testProgressNeverRegressesWhenRungTwoDeclinesAfterPartialProgress() async throws {
+        let scan = try Fixtures.greyscaleBilevelScanPDF()
+        let document = try XCTUnwrap(PDFDocument(url: scan))
+        let page0 = try XCTUnwrap(document.page(at: 0))
+        for _ in 0..<4 {
+            document.insert(try XCTUnwrap(page0.copy() as? PDFPage), at: document.pageCount)
+        }
+        // 5 identical clean pages; the last one gets an annotation, which `bilevelCompress`
+        // refuses to touch — Rung 2 processes pages 0–3 (progress climbs to 0.8) before
+        // declining on page 4, and the engine falls through to Rung 1.
+        let lastPage = try XCTUnwrap(document.page(at: document.pageCount - 1))
+        lastPage.addAnnotation(PDFAnnotation(bounds: CGRect(x: 10, y: 10, width: 20, height: 20),
+                                             forType: .text, withProperties: nil))
+        let input = scan.deletingLastPathComponent().appendingPathComponent("mixed.pdf")
+        XCTAssertTrue(document.write(to: input))
+        XCTAssertEqual(PDFDocument(url: input)?.pageCount, 5)
+
+        struct ProgressStubRunner: GhostscriptRunning {
+            func run(arguments: [String], readPaths: [URL], writePaths: [URL],
+                     onProgress: ((Int) -> Void)?) async throws -> ProcessResult {
+                for page in 1...5 { onProgress?(page) }
+                return ProcessResult(exitCode: 0, stdout: "", stderr: "")
+            }
+        }
+        let engine = CompressEngine(runner: ProgressStubRunner())
+        let output = scan.deletingLastPathComponent().appendingPathComponent("mixed-compressed.pdf")
+
+        var observed: [Double] = []
+        _ = try? await engine.compress(input, preset: .balanced, to: output) { observed.append($0) }
+
+        XCTAssertFalse(observed.isEmpty, "expected progress to be reported")
+        for (previous, next) in zip(observed, observed.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(next, previous,
+                                        "progress regressed from \(previous) to \(next) in \(observed)")
+        }
     }
 
     /// A colour photo must never be binarised — that would destroy it. It must fall through to

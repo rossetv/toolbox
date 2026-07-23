@@ -10,11 +10,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-Release}"
-# Three distinct names: the Xcode project/scheme (unchanged), the product as the user sees it
-# (spaces and all), and the DMG filename (kept space-free so URLs and CI globs stay simple).
-PROJECT="PDFToolbox"
-APP_NAME="PDFToolbox"
-DMG_NAME="PDFToolbox"
+# The Xcode project/scheme, the built .app, and the DMG filename all share this one name (kept
+# space-free so URLs, CI globs and Finder paths stay simple). Only the DMG's *volume* name
+# (shown once it's mounted) carries the display spacing.
+NAME="PDFToolbox"
 VOL_NAME="PDF Toolbox"
 BUILD_DIR="build"
 DIST_DIR="dist"
@@ -31,12 +30,12 @@ xcodegen generate
 
 echo "==> Building $CONFIG"
 rm -rf "$BUILD_DIR" "$DIST_DIR"
-xcodebuild -project "$PROJECT.xcodeproj" -scheme "$PROJECT" \
+xcodebuild -project "$NAME.xcodeproj" -scheme "$NAME" \
   -configuration "$CONFIG" -derivedDataPath "$BUILD_DIR" \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
   build >/dev/null
 
-APP="$BUILD_DIR/Build/Products/$CONFIG/$APP_NAME.app"
+APP="$BUILD_DIR/Build/Products/$CONFIG/$NAME.app"
 [ -d "$APP" ] || { echo "build produced no app at $APP"; exit 1; }
 
 echo "==> Signing (identity: $SIGN_ID) — nested code first, then the bundle"
@@ -54,8 +53,8 @@ ln -s /Applications "$DIST_DIR/stage/Applications"
 
 echo "==> Creating DMG"
 hdiutil create -volname "$VOL_NAME" -srcfolder "$DIST_DIR/stage" \
-  -ov -format UDZO "$DIST_DIR/$DMG_NAME.dmg" >/dev/null
+  -ov -format UDZO "$DIST_DIR/$NAME.dmg" >/dev/null
 rm -rf "$DIST_DIR/stage"
 
-echo "==> Done: $DIST_DIR/$DMG_NAME.dmg"
-ls -lh "$DIST_DIR/$DMG_NAME.dmg" | awk '{print "    size:", $5}'
+echo "==> Done: $DIST_DIR/$NAME.dmg"
+ls -lh "$DIST_DIR/$NAME.dmg" | awk '{print "    size:", $5}'

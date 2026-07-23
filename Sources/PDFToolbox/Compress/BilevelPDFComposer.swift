@@ -26,7 +26,12 @@ enum BilevelPDFComposer {
         var rotation: Int = 0
     }
 
-    enum Failure: Error { case noPages }
+    enum Failure: Error {
+        case noPages
+        /// A page whose size is non-finite or not strictly positive — clamping it (the old
+        /// behaviour) silently changed the geometry instead of catching the degenerate input.
+        case invalidPageSize(CGSize)
+    }
 
     static func compose(pages: [Page]) throws -> Data {
         guard !pages.isEmpty else { throw Failure.noPages }
@@ -58,11 +63,19 @@ enum BilevelPDFComposer {
             let contentObject = pageObject + 1
             let imageObject = pageObject + 2
 
-            // Emitted as reals rather than rounded to whole points: A4 is 595.276 x 841.89pt, and
-            // rounding would ship a page up to half a point off the original with the image
-            // stretched to match — a silent geometry change on a path that promises not to make one.
-            let width = Self.number(max(1, page.size.width))
-            let height = Self.number(max(1, page.size.height))
+            // Reject a degenerate or non-finite page size rather than clamping it: clamping a
+            // tiny page up to 1pt is itself a silent geometry change (a 0.5×0.5pt page would
+            // become 1×1 — a 2× stretch), and `max(1, .infinity)` is still infinity, which
+            // formats as the non-PDF token "inf". Emitted as reals rather than rounded to whole
+            // points: A4 is 595.276 x 841.89pt, and rounding would ship a page up to half a
+            // point off the original with the image stretched to match — a silent geometry
+            // change on a path that promises not to make one.
+            guard page.size.width.isFinite, page.size.height.isFinite,
+                  page.size.width > 0, page.size.height > 0 else {
+                throw Failure.invalidPageSize(page.size)
+            }
+            let width = Self.number(page.size.width)
+            let height = Self.number(page.size.height)
 
             // Normalised to the 0/90/180/270 the format allows; a negative or over-turn value is
             // legal in the wild and `-90 % 360` is -90 in Swift, hence the second modulo.

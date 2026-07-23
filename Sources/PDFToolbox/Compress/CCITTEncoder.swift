@@ -27,31 +27,26 @@ enum CCITTEncoder {
         let blackIs1: Bool
     }
 
-    enum Failure: Error {
-        case destinationUnavailable
-        case encodingFailed
-        case stripNotFound
-    }
-
-    /// Encode a bilevel bitmap as CCITT G4. Returns nil rather than throwing for a degenerate
-    /// image, so callers can simply fall back.
-    static func encode(_ image: CGImage) throws -> Encoded {
-        guard image.width > 0, image.height > 0 else { throw Failure.encodingFailed }
+    /// Encode a bilevel bitmap as CCITT G4. Returns `nil` — never throws — for a degenerate
+    /// image, an unavailable ImageIO destination, or a TIFF strip that couldn't be recovered
+    /// intact, so callers can simply fall back; no caller has ever needed to distinguish why.
+    static func encode(_ image: CGImage) -> Encoded? {
+        guard image.width > 0, image.height > 0 else { return nil }
 
         let buffer = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             buffer, UTType.tiff.identifier as CFString, 1, nil
-        ) else { throw Failure.destinationUnavailable }
+        ) else { return nil }
 
         let properties: [CFString: Any] = [
             kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 4] as [CFString: Any],
             kCGImagePropertyDepth: 1,
         ]
         CGImageDestinationAddImage(destination, image, properties as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { throw Failure.encodingFailed }
+        guard CGImageDestinationFinalize(destination) else { return nil }
 
         let tiff = buffer as Data
-        guard let strip = try Self.strip(fromTIFF: tiff) else { throw Failure.stripNotFound }
+        guard let strip = Self.strip(fromTIFF: tiff) else { return nil }
         return Encoded(data: strip.data,
                        width: image.width,
                        height: image.height,
@@ -60,17 +55,23 @@ enum CCITTEncoder {
 
     // MARK: TIFF strip extraction
 
-    private struct Strip {
+    struct Strip {
         let data: Data
         let photometric: Int
     }
 
     /// Pull the single compressed strip out of a baseline TIFF.
     ///
+    /// Internal rather than private so the parser hardening below — bounds-checked offsets, a
+    /// declared-count bound, and the single-strip requirement — is directly unit-testable: the
+    /// TIFF `encode(_:)` feeds it is always ImageIO's own well-formed output, so none of those
+    /// guards can currently be exercised end-to-end through `encode(_:)` itself.
+    ///
     /// Deliberately a minimal reader: this parses only the TIFF *we* just produced, so it needs
-    /// nothing beyond the first IFD and a handful of tags. Every offset is bounds-checked anyway —
-    /// the parser must not be the weak point even on input it is supposed to trust.
-    private static func strip(fromTIFF tiff: Data) throws -> Strip? {
+    /// nothing beyond the first IFD and a handful of tags. Every offset and declared count is
+    /// bounds-checked anyway — the parser must not be the weak point even on input it is
+    /// supposed to trust.
+    static func strip(fromTIFF tiff: Data) -> Strip? {
         guard tiff.count >= 8 else { return nil }
         let little: Bool
         switch (tiff[0], tiff[1]) {
@@ -107,6 +108,15 @@ enum CCITTEncoder {
             // holds a pointer to it.
             let width = (type == 3) ? 2 : 4
             func values() -> [Int] {
+                // Bound the declared value count against what the buffer could possibly hold
+                // before ever iterating it: an unbounded `count` (up to UInt32.max) would
+                // otherwise turn this into a multi-million-iteration loop over a TIFF a few KB
+                // in size. Scoped to `values()` — called only for the three tags read below —
+                // rather than every entry: `width` above is only correct for SHORT/LONG (types
+                // 3/4), so bounding every entry by it would wrongly reject a legitimate
+                // large-count BYTE/UNDEFINED metadata tag this parser never reads (an embedded
+                // ICC profile, say — exactly what a real ImageIO TIFF carries).
+                guard count >= 0, count <= tiff.count / max(width, 1) else { return [] }
                 let inline = count * width <= 4
                 let base = inline ? entry + 8 : (u32(entry + 8) ?? -1)
                 guard base >= 0 else { return [] }
@@ -122,7 +132,12 @@ enum CCITTEncoder {
             }
         }
 
-        guard !offsets.isEmpty, offsets.count == counts.count else { return nil }
+        // Exactly one strip: G4 strips are independently coded from a fresh all-white reference
+        // line and byte-aligned, so a multi-strip TIFF concatenated naively would decode as
+        // garbage past the first boundary — the composer emits a single `/Rows <full height>`
+        // that assumes one continuous bitstream. ImageIO emits a single strip at every size
+        // tested, so this never fires today; it is the fallback the moment that changes.
+        guard offsets.count == 1, offsets.count == counts.count else { return nil }
         var payload = Data()
         for (offset, count) in zip(offsets, counts) {
             guard offset >= 0, count >= 0, offset + count <= tiff.count else { return nil }

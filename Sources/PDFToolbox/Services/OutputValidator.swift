@@ -30,27 +30,48 @@ struct OutputValidator {
             return false
         }
 
+        // Returns how many of `indices` actually carried content to compare (see the loop body),
+        // and whether every one of those comparisons passed.
+        func check(_ indices: [Int]) throws -> (compared: Int, ok: Bool) {
+            var compared = 0
+            for i in indices {
+                guard let outPage = outputDoc.page(at: i),
+                      let inPage = inputDoc.page(at: i) else { return (compared, false) }
+                // Per-page render/release. Detect content-loss corruption by comparing ink to the
+                // SAME input page, NOT against an absolute floor: a legitimately sparse page (a
+                // few lines of text with wide margins) renders below any fixed "blank" threshold
+                // yet is valid, so a fixed floor falsely rejects it. Instead: if the input page
+                // carried real content and the output kept less than `minRetainedInk` of it, the
+                // output lost its content → corrupt.
+                let inInk = try Self.inkRatio(service.render(inPage, maxDimension: 800))
+                guard inInk >= Self.contentFloor else { continue }   // nothing here to lose
+                compared += 1
+                let outInk = try Self.inkRatio(service.render(outPage, maxDimension: 800))
+                if outInk < inInk * Self.minRetainedInk { return (compared, false) }
+                // Bounded upwards too. A one-sided floor passes the worst corruption there is: an
+                // inverted or ink-flooded page measures near 1.0 and sails through, so any future
+                // polarity or bitstream regression would be delivered as a success rather than
+                // falling back. Compression never multiplies a page's ink; this only catches damage.
+                if outInk > inInk * Self.maxRetainedInk { return (compared, false) }
+            }
+            return (compared, true)
+        }
+
         let indices = PDFService.sampleIndices(count: outputDoc.pageCount,
                                                sample: min(outputDoc.pageCount, samplePages))
-        for i in indices {
-            guard let outPage = outputDoc.page(at: i),
-                  let inPage = inputDoc.page(at: i) else { return false }
-            // Per-page render/release. Detect content-loss corruption by comparing ink to the SAME
-            // input page, NOT against an absolute floor: a legitimately sparse page (a few lines of
-            // text with wide margins) renders below any fixed "blank" threshold yet is valid, so a
-            // fixed floor falsely rejects it. Instead: if the input page carried real content and the
-            // output kept less than `minRetainedInk` of it, the output lost its content → corrupt.
-            let inInk = try Self.inkRatio(service.render(inPage, maxDimension: 800))
-            guard inInk >= Self.contentFloor else { continue }   // input had no real content to lose
-            let outInk = try Self.inkRatio(service.render(outPage, maxDimension: 800))
-            if outInk < inInk * Self.minRetainedInk { return false }
-            // Bounded upwards too. A one-sided floor passes the worst corruption there is: an
-            // inverted or ink-flooded page measures near 1.0 and sails through, so any future
-            // polarity or bitstream regression would be delivered as a success rather than
-            // falling back. Compression never multiplies a page's ink; this only catches damage.
-            if outInk > inInk * Self.maxRetainedInk { return false }
-        }
-        return true
+        let (compared, ok) = try check(indices)
+        guard ok else { return false }
+        if compared > 0 { return true }
+
+        // Every sampled INPUT page rendered below the content floor: `.sampleIndices` always
+        // includes just the first and last page, so a document whose only real content sits
+        // strictly between them can reach here with no content signal at all — "opens + same
+        // page count" is not proof of anything. Widen to the whole document before passing: a
+        // document that is genuinely blank throughout (no comparable page anywhere) still passes,
+        // but real content hiding outside the narrow sample gets its chance to be checked.
+        guard indices.count < outputDoc.pageCount else { return true }   // already checked everything
+        let (_, wideOk) = try check(Array(0..<outputDoc.pageCount))
+        return wideOk
     }
 
     /// Ink fraction above which an INPUT page is deemed to carry real content. With row padding

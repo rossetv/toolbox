@@ -79,5 +79,14 @@ chmod +x "${GS_BIN}"
 
 echo "Built gs → ${GS_BIN}"
 env -i "${GS_BIN}" --version
-echo "Dependency check (expect only /usr/lib system dylibs):"
-otool -L "${GS_BIN}"
+
+echo "Dependency check (expect only /usr/lib and /System dylibs)…"
+DEPS="$(otool -L "${GS_BIN}" | tail -n +2 | awk '{print $1}')"
+echo "${DEPS}"
+BAD_DEPS="$(echo "${DEPS}" | grep -Ev '^(/usr/lib/|/System/)' || true)"
+if [[ -n "${BAD_DEPS}" ]]; then
+  echo "ERROR: gs links non-system dylibs — this build is not portable (likely Homebrew-linked):" >&2
+  echo "${BAD_DEPS}" >&2
+  exit 1
+fi
+echo "OK: only system dylibs linked."

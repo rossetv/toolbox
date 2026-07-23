@@ -142,17 +142,18 @@ struct GhostscriptRunner {
         }
     }
 
-    /// How much gs stderr is kept. Enough for any real diagnostic; small enough that a hostile
-    /// input cannot make the app retain megabytes of it.
-    private static let stderrLimit = 4096
+    /// How much of gs's stdout/stderr is kept, each. Enough for any real diagnostic; small enough
+    /// that a hostile input cannot make the app retain megabytes of either.
+    private static let outputTailLimit = 4096
 
     /// Drain `handle` to EOF, keeping at most `limit` trailing bytes.
     ///
     /// The pipe must always be drained to EOF or a chatty child blocks on a full pipe buffer — but
-    /// nothing says the bytes must be *kept*. gs's stderr is attacker-influenced (a malformed PDF
-    /// can provoke a warning per object, and gs echoes fragments of the input in its messages) and
-    /// it ends up retained in the job list and rendered in the UI, so only the tail is kept: a
-    /// failing gs puts its fatal diagnostic in its last words.
+    /// nothing says the bytes must be *kept*. Both of gs's streams are attacker-influenced (a
+    /// malformed PDF can provoke a warning per object, and gs echoes fragments of the input in its
+    /// messages on either stdout or stderr — measured: a bogus `-sDEVICE` puts its whole diagnosis
+    /// on stdout with nothing on stderr) and both end up retained in the job list and rendered in
+    /// the UI, so only the tail of each is kept: a failing gs puts its fatal diagnostic last.
     static func drainTail(_ handle: FileHandle, limit: Int) -> Data {
         var tail = Data()
         while true {
@@ -221,9 +222,9 @@ struct GhostscriptRunner {
         let ioGroup = DispatchGroup()
         let ioQueue = DispatchQueue(label: "com.pdftoolbox.gs.io", attributes: .concurrent)
         ioGroup.enter()
-        ioQueue.async { outData = outPipe.fileHandleForReading.readDataToEndOfFile(); ioGroup.leave() }
+        ioQueue.async { outData = Self.drainTail(outPipe.fileHandleForReading, limit: Self.outputTailLimit); ioGroup.leave() }
         ioGroup.enter()
-        ioQueue.async { errData = Self.drainTail(errPipe.fileHandleForReading, limit: Self.stderrLimit); ioGroup.leave() }
+        ioQueue.async { errData = Self.drainTail(errPipe.fileHandleForReading, limit: Self.outputTailLimit); ioGroup.leave() }
 
         do {
             try process.run()

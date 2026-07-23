@@ -79,6 +79,17 @@ struct CompressEngine {
         let inputSize = Self.fileSize(input)
         let outputDir = output.deletingLastPathComponent().canonical
 
+        // Rung 2 can process several pages — driving progress up — before declining on a LATER
+        // page and falling through to Rung 1, which then starts its own progress back near 0.
+        // The caller's progress bar must never regress, so every progress call in this function
+        // goes through a monotonic (never-decreasing) filter rather than the raw callback.
+        var progressHighWaterMark = 0.0
+        func reportProgress(_ value: Double) {
+            guard value > progressHighWaterMark else { return }
+            progressHighWaterMark = value
+            progress(value)
+        }
+
         // 2. Stage all gs I/O through a private working dir under the system temp dir
         //    (`NSTemporaryDirectory`, under ~/Library — TCC-exempt). A seatbelt-sandboxed gs
         //    child cannot inherit the app's TCC grant, so it must never be handed a path in a
@@ -100,9 +111,20 @@ struct CompressEngine {
         //    representative sample at roughly 29% growth. Binarising first and encoding CCITT G4
         //    is where the large saving is. Any failure, or a result that is not smaller and valid,
         //    falls through to Rung 1 — no document is ever left unhandled or worse off (R2-N1).
-        if (try? service.classify(input)) == .scanBilevel,
-           let bilevel = try? await bilevelCompress(input, preset: preset, to: work, progress: progress),
-           bilevel < inputSize {
+        var bilevelOutcome: Int?
+        if (try? service.classify(input)) == .scanBilevel {
+            do {
+                bilevelOutcome = try await bilevelCompress(input, preset: preset, to: work,
+                                                           progress: reportProgress)
+            } catch let cancellation as CancellationError {
+                // A cancelled Rung-2 attempt must not be swallowed into "decline, try Rung 1" —
+                // that would burn a whole Ghostscript pass after the caller has already given up.
+                throw cancellation
+            } catch {
+                bilevelOutcome = nil   // any other failure declines Rung 2; falls through to Rung 1
+            }
+        }
+        if let bilevel = bilevelOutcome, bilevel < inputSize {
             let staged = work.appendingPathComponent("bilevel.pdf")
             if (try? validator.validate(input: input, output: staged, samplePages: 3)) == true {
                 try Task.checkCancellation()
@@ -110,9 +132,13 @@ struct CompressEngine {
                 var placed = false
                 defer { if !placed { try? fm.removeItem(at: destTemp) } }
                 try fm.copyItem(at: staged, to: destTemp)
+                // Immediately before the rename, matching the Rung-1 path below. Checking only
+                // before the copy leaves the copy itself — which for a large scan is the slow
+                // part — as a window where a cancel is never observed and the file still ships.
+                try Task.checkCancellation()
                 try fm.moveItem(at: destTemp, to: output)
                 placed = true
-                progress(1.0)
+                reportProgress(1.0)
                 return .compressed(before: inputSize, after: bilevel)
             }
         }
@@ -124,7 +150,7 @@ struct CompressEngine {
             readPaths: [workIn],
             writePaths: [work],
             onProgress: { page in
-                if pageCount > 0 { progress(min(1.0, Double(page) / Double(pageCount))) }
+                if pageCount > 0 { reportProgress(min(1.0, Double(page) / Double(pageCount))) }
             })
         // A cancel that landed while gs was running (or just as it finished) must produce nothing:
         // the work dir's `defer` discards the staged output and the job returns to `.queued`.
@@ -166,24 +192,30 @@ struct CompressEngine {
         try fm.moveItem(at: destTemp, to: output)
         placed = true
 
-        progress(1.0)
+        reportProgress(1.0)
         return .compressed(before: inputSize, after: outputSize)
     }
 
     /// What the user is shown — and what the job list retains — when gs fails.
     ///
-    /// gs's stderr is attacker-influenced text (it quotes fragments of the input), and it is the
-    /// only such text that reaches the UI, so the message is the last couple of lines and nothing
-    /// more: the earlier lines of a long gs failure are repetition, the diagnosis is at the end.
-    /// The runner already caps what it captures; this caps what is displayed.
+    /// Both gs's stdout AND stderr are attacker-influenced text (gs quotes fragments of the
+    /// input in its messages on either stream — measured: a bogus `-sDEVICE` puts its whole
+    /// diagnosis on stdout with nothing on stderr at all), so the message combines the tail of
+    /// both: the earlier lines of a long gs failure are repetition, the diagnosis is at the end.
+    /// The runner already caps what it captures on each stream; this caps what is displayed.
     private static func failureMessage(_ result: ProcessResult) -> String {
-        let lines = result.stderr
-            .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        func tail(_ text: String) -> String {
+            text.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .suffix(2)
+                .joined(separator: " ")
+        }
+        let combined = [tail(result.stderr), tail(result.stdout)]
             .filter { !$0.isEmpty }
-        let tail = lines.suffix(2).joined(separator: " ")
-        guard !tail.isEmpty else { return "exit \(result.exitCode)" }
-        return tail.count > 300 ? String(tail.prefix(300)) + "…" : tail
+            .joined(separator: " — ")
+        guard !combined.isEmpty else { return "exit \(result.exitCode)" }
+        return combined.count > 300 ? String(combined.prefix(300)) + "…" : combined
     }
 
     /// Rung 2: binarise every page and re-encode it as CCITT G4. Returns the output size, or nil
@@ -235,7 +267,7 @@ struct CompressEngine {
             // it, so calling `isNearBilevel` first would only repeat the same full-bitmap scan.
             guard let bitmap = BilevelScan.binarise(rendered),
                   let binarised = bitmap.cgImage,
-                  let encoded = try? CCITTEncoder.encode(binarised) else { return nil }
+                  let encoded = CCITTEncoder.encode(binarised) else { return nil }
 
             pages.append(.init(image: encoded, size: box.size, rotation: page.rotation))
             progress(Double(index + 1) / Double(document.pageCount))

@@ -128,6 +128,13 @@ enum BilevelScan {
         let length = CFDataGetLength(data)
         let bytesPerPixel = max(1, image.bitsPerPixel / 8)
         let width = image.width, height = image.height, rowBytes = image.bytesPerRow
+        // Fail CLOSED on a short buffer rather than open: this is a destructive rebuild (the
+        // page is about to be replaced by whatever this produces), so a data provider shorter
+        // than the image it claims to back must abort, not silently return a bitmap padded with
+        // white for the rows it couldn't read. Hoisted to a single upfront guard rather than a
+        // per-row break, which left every unread row as pre-filled white — a wrong answer
+        // returned as success. Unreachable with real CoreGraphics buffers.
+        guard length >= rowBytes * height else { return nil }
         let threshold = otsuThreshold(stats.histogram)
 
         let outRow = (width + 7) / 8
@@ -137,7 +144,6 @@ enum BilevelScan {
             let outStart = y * outRow
             for x in 0..<width {
                 let o = rowStart + x * bytesPerPixel
-                guard o + 2 < length else { break }
                 let luminance = (Int(ptr[o]) * 299 + Int(ptr[o + 1]) * 587 + Int(ptr[o + 2]) * 114) / 1000
                 if luminance <= threshold {
                     bits[outStart + x / 8] &= ~(UInt8(0x80) >> UInt8(x % 8))   // 0 = black
