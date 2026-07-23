@@ -43,7 +43,10 @@ final class RunnerUpStore {
     }
 
     /// Atomically exchange the shipped file's content with the runner-up's (the UI switch).
-    /// Either both moves land or the shipped file is restored — never a lost output.
+    ///
+    /// Throws only when the switch did not happen (shipped file unchanged). A successful switch
+    /// never throws; if the demoted version cannot take the cache slot it is discarded, leaving
+    /// the runner-up absent — callers already handle a missing runner-up.
     func switchVersions(shipped: URL, runnerUp: URL) throws {
         let fm = FileManager.default
         let parked = root.appendingPathComponent(".swap-\(UUID().uuidString).pdf")
@@ -54,7 +57,14 @@ final class RunnerUpStore {
             try? fm.moveItem(at: parked, to: shipped)     // restore; the user's file survives
             throw error
         }
-        try fm.moveItem(at: parked, to: runnerUp)         // demote the old winner into the cache slot
+        do {
+            try fm.moveItem(at: parked, to: runnerUp)     // demote the old winner into the cache slot
+        } catch {
+            // The switch already succeeded from the user's perspective — shipped holds the new
+            // content. Discard the stranded parked file rather than throw; a missing runner-up is
+            // already a designed-for state (R10's re-run path).
+            try? fm.removeItem(at: parked)
+        }
     }
 
     func discard(_ url: URL) {

@@ -76,6 +76,42 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: shipped), Data("shipped-content".utf8))
     }
 
+    /// If the final move (parked -> runner-up slot) fails, the switch has already succeeded from
+    /// the user's perspective (shipped holds the new content) — the function must not throw. The
+    /// reviewer's suggested lever (pre-existing non-empty directory at the runner-up path) cannot
+    /// isolate this: promoting the runner-up always fully vacates that path first, so nothing is
+    /// left to block the demote. Instead this uses a macOS ACL that denies adding entries to the
+    /// runner-up's directory while still permitting removal of existing ones — asymmetric in
+    /// exactly the way needed: the promote (which removes the runner-up entry) succeeds, and only
+    /// the demote (which creates a new entry there) fails.
+    func testDemoteFailureDoesNotThrowAndShippedHoldsNewContent() throws {
+        let root = try tempRoot()
+        let store = RunnerUpStore(rootOverride: root)
+
+        let runDir = root.appendingPathComponent("rundir", isDirectory: true)
+        try FileManager.default.createDirectory(at: runDir, withIntermediateDirectories: true)
+
+        let shipped = root.appendingPathComponent("shipped.pdf")
+        let runnerUp = runDir.appendingPathComponent("runner-up.pdf")
+        try Data("shipped-content".utf8).write(to: shipped)
+        try Data("runner-up-content".utf8).write(to: runnerUp)
+
+        let acl = Process()
+        acl.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        acl.arguments = ["+a", "everyone deny add_file,add_subdirectory", runDir.path]
+        try acl.run()
+        acl.waitUntilExit()
+        XCTAssertEqual(acl.terminationStatus, 0, "setting up the ACL must succeed for the test to be meaningful")
+
+        XCTAssertNoThrow(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("runner-up-content".utf8))
+
+        let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix(".swap-") }
+        XCTAssertTrue(leftoverSwapFiles.isEmpty, "the parked file must be discarded, not stranded")
+    }
+
     func testSweepStaleEmptiesDirectory() throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
