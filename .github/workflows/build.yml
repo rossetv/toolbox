@@ -55,6 +55,9 @@ jobs:
 
       - name: Test
         run: |
+          # pipefail is mandatory: piping xcodebuild into `tail` otherwise returns tail's exit
+          # status, so a failing test suite would report success and CI could never go red.
+          set -o pipefail
           xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox \
             -configuration Debug test | tail -40
 

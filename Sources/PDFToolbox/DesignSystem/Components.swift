@@ -8,7 +8,7 @@
 import SwiftUI
 
 /// Reusable components built on `Theme`, rebuilt from the Claude Design mockup
-/// (`(kept outside this repository)`) — matching its feel, not its pixels.
+/// (kept outside this repository) — matching its feel, not its pixels.
 /// Presentation-only: none of these depend on `ToolJob`/`CompressPreset`/view-model state, so
 /// they stay reusable across Compress, OCR and future tools. Application to the real views
 /// (`CompressView`, `OCRView`, `RootView`, `SidebarView`) is the S.1 polish pass, not this task.

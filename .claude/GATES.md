@@ -46,7 +46,7 @@ added: 2026-07-23 — monocratic (opus)
 mandated-by-human: no
 
 ```sh
-otool -L Resources/ghostscript/bin/gs | tail -n +2 | grep -qv -e '/usr/lib/' -e '/System/' && exit 1 || exit 0
+test -x Resources/ghostscript/bin/gs && { otool -L Resources/ghostscript/bin/gs | tail -n +2 | grep -qv -e '/usr/lib/' -e '/System/' && exit 1 || exit 0; }
 ```
 
 ### gate: project-generates
@@ -86,7 +86,7 @@ added: 2026-07-23 — monocratic (opus)
 mandated-by-human: no
 
 ```sh
-scripts/package-dmg.sh && hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet && cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" /tmp/ && hdiutil detach "/Volumes/PDF Toolbox" -quiet && PDFTOOLBOX_SMOKE=compress /tmp/PDFToolbox.app/Contents/MacOS/PDFToolbox | grep -q "SMOKE PASS"
+rm -rf /tmp/PDFToolbox.app; hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null; set -e; scripts/package-dmg.sh; hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet; trap 'hdiutil detach "/Volumes/PDF Toolbox" -quiet 2>/dev/null' EXIT; cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" /tmp/; PDFTOOLBOX_SMOKE=compress /tmp/PDFToolbox.app/Contents/MacOS/PDFToolbox | grep -q "SMOKE PASS"
 ```
 
 ## Semantic gates

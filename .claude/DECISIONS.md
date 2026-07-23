@@ -123,8 +123,8 @@ outright — "no gates and no `no-gates:` claim" — so the repository effective
 parseable gates at all**. Rewritten into the required `### gate: <id>` stanza grammar.
 
 The rewrite deletes 35 lines of prose, which the validator's line-count heuristic reports
-as a possible removal. It is not one. Every previously stated check is preserved, two are
-strengthened, and two are new:
+as a possible removal. It is not one. Of the seven gates now declared, four preserve a previous
+check unchanged, two strengthen a check that was previously only prose, and one is new:
 
 | previous check | now | change |
 |---|---|---|
@@ -143,3 +143,24 @@ increased, and every mechanical command was run before being written here.
 **Provenance:** monocratic (opus). No panel was convened because nothing was removed or
 weakened — the panel requirement guards against lowering a standard, and this raises it.
 Flagged explicitly in the build report so the maintainer can review and object.
+
+## 2026-07-23 — Scrub a second personal-path leak (design-mockup directory)
+
+A pre-push adversarial review found a second, independent leak the first scrub missed: the
+absolute path to the maintainer's local design-mockup directory, exposing the macOS account
+name and home-folder layout. It sat in `.claude/plans/` and — worse — in two **shipping source
+files** (`DesignSystem/Components.swift`, `DesignSystem/Theme.swift`), across 35 branch commits.
+
+The first scrub missed it because the search deliberately excluded the mockup directory as
+"not the PDF corpus". That was a rationalisation of exactly the kind `GATES.md` warns about:
+`gate: no-personal-corpus-references` exists because **this repository becomes public**, and the
+path identifies the maintainer's machine regardless of which directory it names.
+
+**Resolution:** all three sites abstracted to "the Claude Design mockup (kept outside this
+repository)", and the branch history rewritten with `git filter-repo` before the first push.
+
+**Why it matters beyond this instance:** a privacy rule scoped to one named artefact will be
+read narrowly. The gate's assertion is therefore to be applied by its `why` — nothing that
+identifies the maintainer's machine — not by the literal noun it happens to mention.
+
+**Provenance:** adversarial review (opus) → monocratic fix (opus).
