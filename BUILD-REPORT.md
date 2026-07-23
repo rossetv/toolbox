@@ -36,7 +36,7 @@ About 60% of your files are already small and lean, which drags the *median* dow
 3. **Not notarised — this needs you.** There is no Apple Developer ID certificate on this machine, so the app is ad-hoc signed. That is enough to run it locally; it is not enough to distribute. CI has the signing and notarisation steps written and waiting on credentials.
 4. **Rung 2 (JBIG2/CCITT) and Rung 3 (MRC) are not built.** The spec set Rung 1 as the v1 floor. MRC is where the large wins on colour scans would come from — it is the obvious next step.
 5. **I could not visually verify the UI.** Screenshotting is gated behind macOS Screen Recording permission, which needs a human click. The app builds, launches cleanly, and the design system is applied across every view and state — but you are the first person to actually *look* at it.
-6. **Your commits carry `vrosset@ebay.com`.** That is your corporate address, on a repository you intend to make public. I did not rewrite your commit authorship — that is your identity and your call, and you did not ask me to. The repo is still private, so it is cheap to change now if you want to.
+6. **Your commits are authored with your corporate email address**, on a repository you intend to make public — check it with `git log -1 --format='%an <%ae>'`. I have deliberately not written the address here, because this file is itself committed. I did not rewrite your commit authorship either: that is your identity and your call, and you did not ask me to. The repo is still private, so it is cheap to change now if you want to.
 
 ## How to test it
 
