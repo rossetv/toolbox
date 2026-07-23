@@ -63,7 +63,7 @@ final class ToolQueue: ObservableObject {
     /// A call made while a batch is already running returns immediately without touching the
     /// queue: overwriting `runTask` would leave the live batch running with nothing able to
     /// cancel it. (Both view models also gate on `isRunning`, but the invariant belongs here.)
-    func run(_ body: @escaping (ToolJob, _ report: @escaping (Double) -> Void) async throws -> JobResult,
+    func run(_ body: @escaping (ToolJob, _ report: @escaping @Sendable (Double) -> Void) async throws -> JobResult,
              maxConcurrent: Int = SystemInfo.performanceCoreCount) async {
         guard runTask == nil else { return }
         let task = Task { [weak self] in
@@ -83,7 +83,7 @@ final class ToolQueue: ObservableObject {
 
     // MARK: private
 
-    private func execute(body: @escaping (ToolJob, @escaping (Double) -> Void) async throws -> JobResult,
+    private func execute(body: @escaping (ToolJob, @escaping @Sendable (Double) -> Void) async throws -> JobResult,
                          maxConcurrent: Int) async {
         let queuedIDs: [UUID] = jobs.compactMap { job in
             if case .queued = job.state { return job.id } else { return nil }
@@ -107,12 +107,14 @@ final class ToolQueue: ObservableObject {
     }
 
     private func process(id: UUID,
-                         body: @escaping (ToolJob, @escaping (Double) -> Void) async throws -> JobResult) async {
+                         body: @escaping (ToolJob, @escaping @Sendable (Double) -> Void) async throws -> JobResult) async {
         guard let job = jobs.first(where: { $0.id == id }) else { return }
         if Task.isCancelled { return }   // cancelled before starting → stays .queued
 
         setState(id, .running(0))
-        let report: (Double) -> Void = { [weak self] fraction in
+        // Formed here on @MainActor but invoked by the engines from `DispatchQueue.global` — must
+        // be `@Sendable` to cross that boundary legitimately.
+        let report: @Sendable (Double) -> Void = { [weak self] fraction in
             Task { @MainActor in self?.setState(id, .running(fraction)) }
         }
 
