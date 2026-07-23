@@ -50,8 +50,15 @@ struct PDFService {
         }
         if textPages > 0 && textPages >= imagePages { return .bornDigital }
 
+        // Judged at 1500 px, not a thumbnail. Whether a page is two-tone is a question about the
+        // page, but at low resolution the answer is dominated by the *downsampler*: every glyph
+        // shrinks to a few anti-aliased mid-grey pixels, so the measured two-tone fraction climbs
+        // steadily with resolution. Measured on the greyscale-scan fixture: 0.893 at 500 px
+        // (below the gate — the scan Rung 2 exists for would have been routed away from it),
+        // 0.928 at 1000 px, 0.970 at 1500 px. A photo reads ~0.10 at every one of those, so the
+        // separation is never in doubt; only the true positives were being lost.
         if let first = indices.first, let page = doc.page(at: first),
-           let image = try? render(page, maxDimension: 500), Self.isNearBilevel(image) {
+           let image = try? render(page, maxDimension: 1500), BilevelScan.isNearBilevel(image) {
             return .scanBilevel
         }
         return .scanColour
@@ -125,30 +132,5 @@ struct PDFService {
             i += step
         }
         return set.sorted()
-    }
-
-    /// True when the rendered page is overwhelmingly near-black/near-white (a bilevel scan),
-    /// judged on luminance, not raw bit depth (content-based, spec R2-N5).
-    private static func isNearBilevel(_ image: CGImage) -> Bool {
-        guard let data = image.dataProvider?.data else { return false }
-        let length = CFDataGetLength(data)
-        guard let ptr = CFDataGetBytePtr(data), length > 0 else { return false }
-        let bytesPerPixel = max(1, image.bitsPerPixel / 8)
-        guard bytesPerPixel >= 3 else { return false }
-
-        var extreme = 0
-        var total = 0
-        // Sample roughly 4000 pixels across the image.
-        let pixelCount = length / bytesPerPixel
-        let stride = max(1, pixelCount / 4000) * bytesPerPixel
-        var offset = 0
-        while offset + 2 < length {
-            let r = Int(ptr[offset]), g = Int(ptr[offset + 1]), b = Int(ptr[offset + 2])
-            let luminance = (r * 299 + g * 587 + b * 114) / 1000
-            if luminance < 40 || luminance > 215 { extreme += 1 }
-            total += 1
-            offset += stride
-        }
-        return total > 0 && Double(extreme) / Double(total) > 0.92
     }
 }

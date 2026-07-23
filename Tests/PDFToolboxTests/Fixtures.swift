@@ -143,6 +143,69 @@ enum Fixtures {
         return try embedImagePDF(image, name: "bilevel.pdf")
     }
 
+    /// One page carrying an **8-bit greyscale** scan that is *visually* two-tone: dark ink on
+    /// light paper, with realistic paper/ink grain so the image is genuinely continuous-tone and
+    /// not secretly 1-bit.
+    ///
+    /// This is the case Rung 1 cannot help with and Rung 2 exists for (spec §5.1): Ghostscript's
+    /// `MonoImage*` settings only reach images that are *already* 1-bit, so a greyscale scan that
+    /// looks black-and-white is treated as a grey image and can come out **larger** than it went
+    /// in. Binarising first, then encoding CCITT G4, is where the large win is.
+    ///
+    /// The grain is kept well clear of the middle of the range (paper 232…250, ink 6…26) so the
+    /// Otsu threshold lands in an empty valley and binarisation does not produce salt-and-pepper.
+    static func greyscaleScanPDF(pages: Int = 1) throws -> URL {
+        let url = try uniqueURL("greyscale-scan.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        var rng = RNG()
+        for page in 1...max(1, pages) {
+            let pxW = 1700, pxH = 2200
+            guard let grey = CGContext(data: nil, width: pxW, height: pxH, bitsPerComponent: 8,
+                                       bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+                                       bitmapInfo: CGImageAlphaInfo.none.rawValue) else {
+                throw FixtureError.contextCreation
+            }
+            grey.setFillColor(CGColor(gray: 0.95, alpha: 1))
+            grey.fill(CGRect(x: 0, y: 0, width: pxW, height: pxH))
+            let font = CTFontCreateWithName("Helvetica" as CFString, 46, nil)
+            var y: CGFloat = 2000
+            for line in 0..<22 {
+                drawText("Page \(page) greyscale scan line \(line) — 0123456789.",
+                         in: grey, at: CGPoint(x: 150, y: y), font: font, color: .black)
+                y -= 84
+            }
+            guard let image = grey.makeImage(), let provider = image.dataProvider,
+                  let raw = provider.data, let base = CFDataGetBytePtr(raw) else {
+                throw FixtureError.imageRender
+            }
+            // Re-emit the rendered page with per-pixel grain, so the embedded image is a real
+            // 8-bit contone scan rather than two exact values a codec can trivially collapse.
+            let rowBytes = image.bytesPerRow, length = CFDataGetLength(raw)
+            var grained = [UInt8](repeating: 0, count: length)
+            for i in 0..<length {
+                let v = Int(base[i])
+                grained[i] = v > 127 ? UInt8(232 + Int(rng.next() * 18))    // paper
+                                     : UInt8(6 + Int(rng.next() * 20))     // ink
+            }
+            guard let grainProvider = CGDataProvider(data: Data(grained) as CFData),
+                  let scan = CGImage(width: pxW, height: pxH, bitsPerComponent: 8, bitsPerPixel: 8,
+                                     bytesPerRow: rowBytes, space: CGColorSpaceCreateDeviceGray(),
+                                     bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                                     provider: grainProvider, decode: nil,
+                                     shouldInterpolate: false, intent: .defaultIntent) else {
+                throw FixtureError.imageRender
+            }
+            ctx.beginPDFPage(nil)
+            ctx.draw(scan, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
+        return url.canonical
+    }
+
     /// One page whose only content is a rasterised image containing the rendered words
     /// "HELLO WORLD" — no text layer, for OCR tests (Track B).
     static func textImagePDF() throws -> URL {
