@@ -19,3 +19,4 @@ Hard byte ceiling: ≤4,000 B — shares its SessionStart block with decision ti
 # PDF Toolbox — Memory
 
 - [AGPL distribution posture](memory/20260722-agpl-distribution-posture.md) — private dev, public at release, MAS foreclosed permanently, never write about the user's personal test PDFs.
+- [Review lessons](memory/review-lessons.md) — standing checks from this repo's review rounds: sandbox profiles must be proven by running the binary, never walk a CGImage buffer flat, build the shared layer before the parallel fork, prefer an invariant fail-loud net to patching a parser under time pressure.
