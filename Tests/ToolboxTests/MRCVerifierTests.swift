@@ -128,7 +128,11 @@ final class MRCVerifierTests: XCTestCase {
 
         XCTAssertEqual(faintScore.normalisedError, boldScore.normalisedError, accuracy: 0.02,
                        "equal relative degradation must score the same regardless of contrast")
-        XCTAssertEqual(faintScore.pass, boldScore.pass, "and land the same side of the threshold")
+        // Both must FAIL — the point of the test. Without C3 normalisation the faint page's small
+        // absolute diff would slip under an absolute threshold and wrongly pass; contrast-relative
+        // scoring makes it fail exactly as the bold page does.
+        XCTAssertFalse(boldScore.pass, "bold page must fail, got \(boldScore.normalisedError)")
+        XCTAssertFalse(faintScore.pass, "faint page must fail the same way, got \(faintScore.normalisedError)")
     }
 
     /// A candidate whose size differs from the input fails closed rather than resampling.
