@@ -828,9 +828,13 @@ struct PDFWriter {
     where C.Element == UInt8, C.Index == Int {
         let packed = objects.packed[objNum]
         if let info = objects.topLevel[objNum] {
-            // Only when the top-level copy is genuinely the later of the two.
+            // Only when the top-level copy is genuinely the later of the two. The generation
+            // stays the top-level one: a packed object is always generation 0 (§7.5.7), but
+            // reporting 0 for an object the file declares at a nonzero generation would have the
+            // caller re-emit it as `N 0 obj`, and every `N G R` reference in the untouched prefix
+            // would stop resolving.
             if let packed, packed.containerStart > info.headerStart {
-                return (packed.bytes, 0)
+                return (packed.bytes, info.gen)
             }
             let start = PDFSyntax.skipSpace(b, from: info.bodyStart)
             guard start + 1 < info.bodyEnd, b[start] == 0x3C, b[start + 1] == 0x3C,
@@ -874,15 +878,17 @@ struct PDFWriter {
         // bound, so the budget is spent across the whole file.
         var budget = maxObjectStreamBytes
 
-        // In FILE order, for two reasons. Recency: when two object streams both carry object N,
-        // the one later in the file is the live definition, so it must be the one that overwrites
-        // — ordering by object number instead would let a low-numbered stream from an incremental
-        // update lose to a high-numbered one from the base revision. Determinism: Swift seeds its
-        // hasher per process, so dictionary order would decide *which* streams get indexed once a
-        // file exceeds the budget below, and the same document would OCR on one launch and fail on
-        // the next.
-        let containersInFileOrder = topLevel.sorted { $0.value.headerStart < $1.value.headerStart }
-        for (num, container) in containersInFileOrder where budget > 0 {
+        // REVERSE file order, keeping the first definition seen — which makes the latest
+        // definition win, and spends the budget on the newest streams rather than the oldest.
+        //
+        // Both halves matter. Recency: when two object streams carry object N, the one later in
+        // the file is live. Budget: `maxObjectStreamBytes` is finite, so walking forwards would
+        // spend it on the base revision's streams and then refuse the incremental update's — and
+        // the definitions left indexed would be precisely the stale ones, re-opening the very bug
+        // the ordering exists to prevent. Determinism comes free: `headerStart` is unique per
+        // object, so this is a total order regardless of the per-process hash seed.
+        let containersNewestFirst = topLevel.sorted { $0.value.headerStart > $1.value.headerStart }
+        for (num, container) in containersNewestFirst where budget > 0 {
             guard let obj = objectDict(b, objects: bare, objNum: num),
                   PDFSyntax.dictName(of: "Type", in: obj.bytes, dictAt: 0) == "ObjStm",
                   isPlainFlate(obj.bytes),
@@ -917,8 +923,12 @@ struct PDFWriter {
                 guard start + 1 < end, inflated[start] == 0x3C, inflated[start + 1] == 0x3C,
                       let dictEnd = PDFSyntax.endOfDictionary(inflated, from: start),
                       dictEnd <= end else { continue }        // not a dictionary — nothing to use
-                packed[entry.num] = PackedObject(bytes: Array(inflated[start..<dictEnd]),
-                                                 containerStart: container.headerStart)
+                // First seen wins: containers are walked newest-first, so an earlier revision's
+                // copy must not overwrite the one already taken from a later revision.
+                if packed[entry.num] == nil {
+                    packed[entry.num] = PackedObject(bytes: Array(inflated[start..<dictEnd]),
+                                                     containerStart: container.headerStart)
+                }
             }
         }
         return packed
