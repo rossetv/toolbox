@@ -1,66 +1,61 @@
 # PDF Toolbox
 
-A native macOS app that makes PDFs smaller and makes scans searchable — without touching your originals. Fully offline; nothing is uploaded.
+A native macOS app that makes PDFs smaller and makes scans searchable — without touching your originals.
 
-**SwiftUI · Apple Silicon · macOS 14+ · AGPL-3.0**
+Everything runs on your Mac. Nothing is uploaded.
 
-- **Compress** — three quality presets, with a size prediction before you commit.
-- **OCR** — adds an invisible searchable text layer to scans, leaving every page image byte-for-byte identical.
+**Apple Silicon · macOS 14+**
 
-Drop files in, pick a preset, go. Batch queue, cancellable, results saved alongside the originals.
+## What it does
+
+**Compress** — shrink PDFs with three quality presets. You see the predicted size and saving for each file *before* you run it.
+
+**OCR** — make scanned PDFs searchable by adding an invisible text layer. The pages look exactly the same; you can just select and search the text.
 
 ## Install
 
-Download the DMG from [Releases](../../releases) and drag **PDF Toolbox** to Applications.
+1. Download the DMG from [Releases](../../releases).
+2. Open it and drag **PDF Toolbox** to Applications.
 
-Builds are ad-hoc signed and **not notarised**, so Gatekeeper will object to a downloaded copy — right-click → **Open**, or:
+The app isn't notarised yet, so macOS will warn you the first time. Right-click it and choose **Open**, or run:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/PDFToolbox.app
 ```
 
-## How it works
+## How to use it
 
-Compression routes by content. **Ghostscript** (bundled, built from source) handles born-digital and mixed documents. Pages that are visually two-tone are instead **binarised and CCITT G4 encoded** — Ghostscript's mono settings only apply to images that are *already* 1-bit, so a greyscale scan that merely looks black-and-white gets treated as a grey image and can come out larger. Binarising first is where the large saving on document scans lives.
+1. Pick **Compress** or **OCR** in the sidebar.
+2. Drag PDFs in, or click **Choose Files**.
+3. For Compress, pick a preset — *Smallest*, *Balanced* (recommended), or *High quality*.
+4. Press the button.
 
-That path is conservative: every page must independently read as near-two-tone or the attempt is abandoned, because binarising a photo destroys it. Anything that fails, or fails to get smaller, falls back to Ghostscript.
+Results are saved next to your originals as `<name>-compressed.pdf` or `<name>-ocr.pdf`, or into a folder you choose. Click any file's name to open it, or use **Reveal in Finder**.
 
-**OCR** uses Apple's Vision framework on-device and embeds text by PDF *incremental update* — the original file is the verbatim byte prefix of the output, which is what makes "your images are untouched" literally true.
+You can queue up as many files as you like and cancel at any point.
 
-**Ghostscript runs sandboxed.** PDFs are untrusted input, so every invocation is confined by a `sandbox-exec` profile: deny-by-default, no network, filesystem scoped to a private temp directory, plus `-dSAFER` and a watchdog.
+**Your originals are never modified.** If a file can't be made smaller, it's left alone and reported as already optimised.
 
-### Safety rules
+## Good to know
 
-Enforced in code and covered by tests:
-
-- Originals are never modified; output is written to a temp file and moved into place atomically.
-- No output is ever larger than its input — if compression can't win, nothing is written.
-- Every output is re-opened and validated before it's accepted.
-- OCR output is rejected unless the original is its verbatim byte prefix and every page that received text still renders and yields text. A writer bug becomes "file skipped", never a corrupted document.
-
-## Limitations
-
-- Not notarised (see Install) — needs an Apple Developer ID.
-- **MRC not implemented** — where the big wins on *colour* scans would come from. Needs a segmentation-quality spike first; omitting it is deliberate.
-- **JBIG2 not implemented** — better than CCITT on bilevel scans, but needs viewer-support verification. CCITT is universal.
-- Non-Latin OCR (CJK, Arabic) is recognised but not embedded.
-- Apple Silicon only.
+- Compression is tuned per document — text stays sharp, and black-and-white scans get special treatment that can shrink them dramatically.
+- OCR skips pages that already have text.
+- Colour scans compress well, but the very best results for those (MRC) aren't implemented yet.
+- OCR recognises non-Latin scripts but doesn't yet embed them.
 
 ## Build from source
 
 Requires Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```sh
-scripts/build-ghostscript.sh   # pins + verifies the release, then builds (~5-10 min)
+scripts/build-ghostscript.sh
 xcodegen generate
 xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox -configuration Debug test
 scripts/package-dmg.sh         # → dist/PDFToolbox.dmg
 ```
 
-Ghostscript is built from source, not vendored, and links only system libraries — no Homebrew dependency at runtime. Built artefacts are git-ignored; the repository contains no binaries.
-
 ## Licence
 
-**AGPL-3.0-or-later** ([LICENSE](LICENSE)). Not a preference — bundling [Ghostscript](https://www.ghostscript.com/) (AGPL) obliges the whole app to be AGPL. Consequence: the Mac App Store is permanently unavailable, so distribution is by DMG.
+AGPL-3.0-or-later — see [LICENSE](LICENSE). Bundles [Ghostscript](https://www.ghostscript.com/).
 
 Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
