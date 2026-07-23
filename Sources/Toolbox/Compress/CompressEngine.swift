@@ -46,6 +46,15 @@ struct CompressEngine {
     static let maxBilevelPixels: CGFloat = 5000
     /// Effective resolution below which Rung 2 declines rather than shipping a degraded rebuild.
     static let minBilevelDPI: CGFloat = 150
+    /// Most pages Rung 2 will attempt in one document.
+    ///
+    /// Unlike Rung 1, which streams through Ghostscript, Rung 2 holds every page's encoded payload
+    /// until the whole document can be composed, and the composer builds the output in a single
+    /// in-memory `Data`. Peak is therefore about twice the encoded document, multiplied by the
+    /// queue's concurrency. `maxBilevelPixels` bounds one page's raster and nothing bounds the
+    /// count, so a very long scan is the one shape that can still exhaust memory here. Beyond this
+    /// the document goes to Rung 1, which has no such ceiling.
+    static let maxBilevelPages = 1200
 
     let runner: any GhostscriptRunning
     let service: PDFService
@@ -228,7 +237,8 @@ struct CompressEngine {
                                  preset: CompressPreset,
                                  to work: URL,
                                  progress: @escaping (Double) -> Void) async throws -> Int? {
-        guard let document = PDFDocument(url: input), document.pageCount > 0 else { return nil }
+        guard let document = PDFDocument(url: input), document.pageCount > 0,
+              document.pageCount <= Self.maxBilevelPages else { return nil }
 
         // Rung 2 repaints each page as a bitmap, so everything that is not painted pixels is gone:
         // a searchable text layer — including one this app's own OCR added — annotations, form

@@ -80,6 +80,9 @@ struct PDFWriter {
     static let maxObjects = 5_000_000
     /// Largest input this writer will accept. See `appendTextLayer` for the whole bound.
     static let maxInputBytes = 2 << 30                 // 2 GiB
+    /// Highest object generation the format allows, and the widest the appended xref's fixed
+    /// `%05ld` field can hold (PDF 32000-1 §7.5.4).
+    static let maxGeneration = 65535
 
     /// Append the text layer, holding **no full copy of the input in memory**.
     ///
@@ -643,12 +646,23 @@ struct PDFWriter {
     }
 
     /// Everything an object number can resolve against — the two places an object can live.
+    /// An object lifted out of a compressed object stream.
+    struct PackedObject: Equatable {
+        /// The object's dictionary bytes.
+        let bytes: [UInt8]
+        /// Byte position of the containing `/ObjStm`'s own `N G obj` header. This is what makes a
+        /// packed definition comparable against a top-level one: recency in a PDF is file order,
+        /// and without the container's position there is no way to tell which of two definitions
+        /// of the same object number is the live one.
+        let containerStart: Int
+    }
+
     struct ObjectIndex {
         /// Objects written as `N G obj … endobj` in the file itself.
         let topLevel: [Int: IndexedObject]
-        /// Objects packed into a compressed object stream, as their dictionary bytes. A packed
-        /// object always has generation 0 (PDF 32000-1 §7.5.7).
-        let packed: [Int: [UInt8]]
+        /// Objects packed into a compressed object stream. A packed object always has generation 0
+        /// (PDF 32000-1 §7.5.7).
+        let packed: [Int: PackedObject]
 
         /// The highest object number the file uses, from either place.
         var highestObjectNumber: Int { max(topLevel.keys.max() ?? 0, packed.keys.max() ?? 0) }
@@ -782,13 +796,27 @@ struct PDFWriter {
         guard let gen = readIntBackwards() else { return nil }
         skipWS()
         guard let num = readIntBackwards() else { return nil }
+        // A generation above 65535 is out of specification (PDF 32000-1 §7.5.4), and accepting one
+        // would corrupt the output rather than merely mis-read the input: the appended xref writes
+        // fixed-width `%010ld %05ld n\r\n` entries, so a six-digit generation makes that entry 21
+        // bytes and misaligns every entry after it. A repairing reader may still open the result,
+        // which means it ships as delivered corruption instead of a decline.
+        guard gen.value <= maxGeneration else { return nil }
         return (num.value, gen.value, num.start)
     }
 
     /// The dictionary bytes and generation of an object, from wherever it lives.
     ///
-    /// A top-level definition wins outright: it can only be *later* in the file than the object
-    /// stream's copy, and the newest definition of an object number is the live one.
+    /// The newest definition of an object number is the live one (PDF 32000-1 §7.5.6), and newest
+    /// means **later in the file** — so whichever of the two definitions sits further on wins.
+    ///
+    /// A top-level definition is *not* automatically the later one. An incremental update written
+    /// with compressed object streams — which Acrobat and signing tools produce — places the new
+    /// copy inside an `/ObjStm` far past an older plain `N G obj` from the base revision.
+    /// Preferring top-level unconditionally hands back the stale bytes, and the writer then
+    /// re-emits them as the current object: the update's annotations, `/Rotate` or `/Contents`
+    /// changes silently revert. The verbatim-prefix invariant does not catch this, because the
+    /// loss is in the appended object rather than the preserved prefix.
     ///
     /// The top-level scan is bounded to the object's own `obj … endobj` extent, and required to
     /// *start* there: an unbounded forward search for `<<` runs straight into the next object and
@@ -798,7 +826,12 @@ struct PDFWriter {
     static func objectDict<C: RandomAccessCollection>(
         _ b: C, objects: ObjectIndex, objNum: Int) -> (bytes: [UInt8], gen: Int)?
     where C.Element == UInt8, C.Index == Int {
+        let packed = objects.packed[objNum]
         if let info = objects.topLevel[objNum] {
+            // Only when the top-level copy is genuinely the later of the two.
+            if let packed, packed.containerStart > info.headerStart {
+                return (packed.bytes, 0)
+            }
             let start = PDFSyntax.skipSpace(b, from: info.bodyStart)
             guard start + 1 < info.bodyEnd, b[start] == 0x3C, b[start + 1] == 0x3C,
                   let end = PDFSyntax.endOfDictionary(b, from: start), end <= info.bodyEnd else {
@@ -806,8 +839,8 @@ struct PDFWriter {
             }
             return (Array(b[start..<end]), info.gen)
         }
-        guard let packed = objects.packed[objNum] else { return nil }
-        return (packed, 0)
+        guard let packed else { return nil }
+        return (packed.bytes, 0)
     }
 
     // MARK: - Compressed object streams
@@ -833,18 +866,23 @@ struct PDFWriter {
     /// needed, that surfaces at the point of use as `.unsupportedStructure`; if it did not, the
     /// file OCRs fine and there is nothing to report.
     static func indexObjectStreams<C: RandomAccessCollection>(
-        _ b: C, topLevel: [Int: IndexedObject]) -> [Int: [UInt8]]
+        _ b: C, topLevel: [Int: IndexedObject]) -> [Int: PackedObject]
     where C.Element == UInt8, C.Index == Int {
-        var packed: [Int: [UInt8]] = [:]
+        var packed: [Int: PackedObject] = [:]
         let bare = ObjectIndex(topLevel: topLevel, packed: [:])
         // A per-stream cap alone still lets a file with many object streams inflate without
         // bound, so the budget is spent across the whole file.
         var budget = maxObjectStreamBytes
 
-        // Sorted, not dictionary order: Swift seeds its hasher per process, so once a file's
-        // object streams exceed the budget below, *which* ones get indexed would otherwise vary
-        // run to run — the same document would OCR on one launch and fail on the next.
-        for num in topLevel.keys.sorted() where budget > 0 {
+        // In FILE order, for two reasons. Recency: when two object streams both carry object N,
+        // the one later in the file is the live definition, so it must be the one that overwrites
+        // — ordering by object number instead would let a low-numbered stream from an incremental
+        // update lose to a high-numbered one from the base revision. Determinism: Swift seeds its
+        // hasher per process, so dictionary order would decide *which* streams get indexed once a
+        // file exceeds the budget below, and the same document would OCR on one launch and fail on
+        // the next.
+        let containersInFileOrder = topLevel.sorted { $0.value.headerStart < $1.value.headerStart }
+        for (num, container) in containersInFileOrder where budget > 0 {
             guard let obj = objectDict(b, objects: bare, objNum: num),
                   PDFSyntax.dictName(of: "Type", in: obj.bytes, dictAt: 0) == "ObjStm",
                   isPlainFlate(obj.bytes),
@@ -879,7 +917,8 @@ struct PDFWriter {
                 guard start + 1 < end, inflated[start] == 0x3C, inflated[start + 1] == 0x3C,
                       let dictEnd = PDFSyntax.endOfDictionary(inflated, from: start),
                       dictEnd <= end else { continue }        // not a dictionary — nothing to use
-                packed[entry.num] = Array(inflated[start..<dictEnd])
+                packed[entry.num] = PackedObject(bytes: Array(inflated[start..<dictEnd]),
+                                                 containerStart: container.headerStart)
             }
         }
         return packed
@@ -963,10 +1002,14 @@ struct PDFWriter {
         if let catalog = latestObject(b, objects: objects, ofType: "Catalog") {
             return (catalog.num, catalog.gen)
         }
-        if let packed = objects.packed.first(where: {
-            PDFSyntax.dictName(of: "Type", in: $0.value, dictAt: 0) == "Catalog"
+        // Sorted, not dictionary order: with two packed catalogs — an object-stream file that has
+        // been incrementally updated — hash order would pick a different `/Root` per process
+        // launch, and the appended trailer could point at the stale catalog.
+        if let num = objects.packed.keys.sorted().first(where: {
+            guard let entry = objects.packed[$0] else { return false }
+            return PDFSyntax.dictName(of: "Type", in: entry.bytes, dictAt: 0) == "Catalog"
         }) {
-            return (packed.key, 0)
+            return (num, 0)
         }
         throw PDFWriterError.malformedPDF
     }

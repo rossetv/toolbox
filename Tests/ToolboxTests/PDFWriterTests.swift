@@ -342,7 +342,7 @@ final class PDFWriterTests: XCTestCase {
 
         let packed = PDFWriter.indexObjectStreams(bytes, topLevel: topLevel)
         XCTAssertEqual(Set(packed.keys), [1, 2, 3], "the catalog, page tree and page are packed")
-        XCTAssertTrue(String(decoding: packed[3]!, as: UTF8.self).contains("/MediaBox"))
+        XCTAssertTrue(String(decoding: packed[3]!.bytes, as: UTF8.self).contains("/MediaBox"))
     }
 
     /// The feature: a document whose page lives in an object stream used to be refused outright
@@ -692,6 +692,58 @@ final class PDFWriterTests: XCTestCase {
         let oversized = [UInt8](repeating: 0x78, count: 4096)
         XCTAssertNil(PDFFlate.inflate(oversized, limit: 16),
                      "a body far larger than its permitted output must be refused, not copied")
+    }
+
+    /// Recency in a PDF is file order (§7.5.6), and a top-level definition is not automatically
+    /// later than a packed one: an incremental update written with object streams puts the new
+    /// copy inside an `/ObjStm` past an older plain `N G obj`. Preferring top-level unconditionally
+    /// hands back stale bytes, which the writer then re-emits — silently reverting the update.
+    func testTheLaterDefinitionWinsRegardlessOfWhereItLives() throws {
+        let input = try Fixtures.rawPDF([
+            Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>"),
+            Fixtures.rawObject(3, "<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+                                + "/Contents 4 0 R /Resources << >> /Rev (stale) >>"),
+            Fixtures.rawStream(4, body: Data("q Q".utf8)),
+        ], root: 1, name: "stale-toplevel.pdf")
+        let bytes = [UInt8](try Data(contentsOf: input))
+        let topLevel = try PDFWriter.indexTopLevelObjects(bytes)
+        let plain = try XCTUnwrap(topLevel[3])
+        let packedBody = [UInt8](("<< /Type /Page /Parent 2 0 R /MediaBox [ 0 0 612 792 ] "
+                                + "/Contents 4 0 R /Resources << >> /Rev (fresh) >>").utf8)
+
+        // Container AFTER the plain definition — the incremental-update shape.
+        let later = PDFWriter.ObjectIndex(
+            topLevel: topLevel,
+            packed: [3: PDFWriter.PackedObject(bytes: packedBody,
+                                               containerStart: plain.headerStart + 1)])
+        let fromLater = try XCTUnwrap(PDFWriter.objectDict(bytes, objects: later, objNum: 3))
+        XCTAssertTrue(String(decoding: fromLater.bytes, as: UTF8.self).contains("fresh"),
+                      "a packed copy later in the file is the live one")
+
+        // Container BEFORE it — the plain definition is the update, and must still win.
+        let earlier = PDFWriter.ObjectIndex(
+            topLevel: topLevel,
+            packed: [3: PDFWriter.PackedObject(bytes: packedBody,
+                                               containerStart: max(0, plain.headerStart - 1))])
+        let fromEarlier = try XCTUnwrap(PDFWriter.objectDict(bytes, objects: earlier, objNum: 3))
+        XCTAssertTrue(String(decoding: fromEarlier.bytes, as: UTF8.self).contains("stale"),
+                      "a packed copy earlier in the file must not displace a later top-level one")
+    }
+
+    /// A generation above 65535 is out of specification, and the appended xref writes fixed-width
+    /// `%010ld %05ld n\r\n` entries — six digits makes that entry 21 bytes and misaligns every
+    /// entry after it, which a repairing reader may still open. That ships corruption rather than
+    /// declining, so such an object is refused at index time.
+    func testAnOutOfRangeGenerationIsRefusedAtIndexTime() throws {
+        let input = try Fixtures.rawOnePagePDF(pageDict: Fixtures.plainPageDict, name: "bad-gen.pdf")
+        var data = try Data(contentsOf: input)
+        data.append(Data("\n9 999999 obj\n<< /Type /Bogus >>\nendobj\n".utf8))
+        let armed = try sibling(of: input, "bad-gen-armed.pdf")
+        try data.write(to: armed)
+
+        let index = try PDFWriter.indexTopLevelObjects([UInt8](data))
+        XCTAssertNil(index[9], "a six-digit generation cannot be written into a %05ld xref field")
     }
 
     private func fullIndex(_ bytes: [UInt8]) throws -> PDFWriter.ObjectIndex {
