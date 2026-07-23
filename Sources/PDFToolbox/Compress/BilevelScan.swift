@@ -14,7 +14,25 @@ struct BilevelBitmap: Equatable {
     let width: Int
     let height: Int
     let bytesPerRow: Int
+    /// One bit per pixel, MSB first: 1 is white, 0 is black — `/DeviceGray` semantics.
     let bits: [UInt8]
+
+    /// The bitmap as a 1-bit `/DeviceGray` image, ready for CCITT encoding.
+    var cgImage: CGImage? {
+        guard width > 0, height > 0, bits.count >= bytesPerRow * height else { return nil }
+        guard let provider = CGDataProvider(data: Data(bits) as CFData) else { return nil }
+        return CGImage(width: width,
+                       height: height,
+                       bitsPerComponent: 1,
+                       bitsPerPixel: 1,
+                       bytesPerRow: bytesPerRow,
+                       space: CGColorSpaceCreateDeviceGray(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                       provider: provider,
+                       decode: nil,
+                       shouldInterpolate: false,
+                       intent: .defaultIntent)
+    }
 }
 
 /// Deciding whether a rendered page is *visually* two-tone, and reducing it to one bit per

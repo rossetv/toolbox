@@ -86,7 +86,30 @@ struct CompressEngine {
         let workOut = work.appendingPathComponent("out.pdf")
         try fm.copyItem(at: input, to: workIn)
 
-        // 3. Run gs sandboxed, scoped to the work dir only (all content types → Rung-1 in v1).
+        // 3. Rung 2 first for scans that are visually two-tone. Ghostscript's mono settings only
+        //    apply to images that are ALREADY 1-bit, so a greyscale scan that merely looks
+        //    black-and-white is treated as a grey image and can come out LARGER (measured:
+        //    43,458 → 56,084 bytes). Binarising first and encoding CCITT G4 is where the large
+        //    saving is. Any failure, or a result that is not smaller and valid, falls through to
+        //    Rung 1 — no document is ever left unhandled or worse off (spec R2-N1).
+        if (try? service.classify(input)) == .scanBilevel,
+           let bilevel = try? await bilevelCompress(input, preset: preset, to: work, progress: progress),
+           bilevel < inputSize {
+            let staged = work.appendingPathComponent("bilevel.pdf")
+            if (try? validator.validate(input: input, output: staged, samplePages: 3)) == true {
+                try Task.checkCancellation()
+                let destTemp = outputDir.appendingPathComponent(".pdftoolbox-\(UUID().uuidString).pdf").canonical
+                var placed = false
+                defer { if !placed { try? fm.removeItem(at: destTemp) } }
+                try fm.copyItem(at: staged, to: destTemp)
+                try fm.moveItem(at: destTemp, to: output)
+                placed = true
+                progress(1.0)
+                return .compressed(before: inputSize, after: bilevel)
+            }
+        }
+
+        // 4. Otherwise run gs sandboxed, scoped to the work dir only (Rung 1).
         let arguments = preset.gsArguments() + ["-sOutputFile=\(workOut.path)", workIn.path]
         let result = try await runner.run(
             arguments: arguments,
@@ -153,6 +176,47 @@ struct CompressEngine {
         let tail = lines.suffix(2).joined(separator: " ")
         guard !tail.isEmpty else { return "exit \(result.exitCode)" }
         return tail.count > 300 ? String(tail.prefix(300)) + "…" : tail
+    }
+
+    /// Rung 2: binarise every page and re-encode it as CCITT G4. Returns the output size, or nil
+    /// when the document is not a good fit — in which case the caller falls back to Rung 1.
+    ///
+    /// Binarisation is irreversible in appearance terms, so a page that is not genuinely
+    /// near-two-tone aborts the whole attempt: a wrongly-binarised photograph is a far worse
+    /// outcome than a missed saving.
+    private func bilevelCompress(_ input: URL,
+                                 preset: CompressPreset,
+                                 to work: URL,
+                                 progress: @escaping (Double) -> Void) async throws -> Int? {
+        guard let document = PDFDocument(url: input), document.pageCount > 0 else { return nil }
+
+        var pages: [BilevelPDFComposer.Page] = []
+        pages.reserveCapacity(document.pageCount)
+
+        for index in 0..<document.pageCount {
+            try Task.checkCancellation()
+            guard let page = document.page(at: index) else { return nil }
+            let box = page.bounds(for: .mediaBox)
+            guard box.width > 0, box.height > 0 else { return nil }
+
+            // Render at the preset's bilevel DPI, bounded so a hostile /MediaBox cannot blow memory.
+            let scale = CGFloat(preset.bilevelDPI) / 72.0
+            let maxDimension = min(max(box.width, box.height) * scale, 5000)
+            let rendered = try service.render(page, maxDimension: maxDimension)
+
+            guard BilevelScan.isNearBilevel(rendered),
+                  let bitmap = BilevelScan.binarise(rendered),
+                  let binarised = bitmap.cgImage,
+                  let encoded = try? CCITTEncoder.encode(binarised) else { return nil }
+
+            pages.append(.init(image: encoded, size: box.size))
+            progress(Double(index + 1) / Double(document.pageCount))
+        }
+
+        let data = try BilevelPDFComposer.compose(pages: pages)
+        let staged = work.appendingPathComponent("bilevel.pdf")
+        try data.write(to: staged, options: .atomic)
+        return data.count
     }
 
     private static func fileSize(_ url: URL) -> Int {

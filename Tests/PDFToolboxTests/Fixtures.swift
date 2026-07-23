@@ -240,6 +240,26 @@ enum Fixtures {
     /// `pages` empty white pages. Two uses: the `OutputValidator` blank-page check, and the
     /// no-gain path — gs's `pdfwrite` structure/metadata makes a blank page *larger* than the
     /// compact CoreGraphics original (verified), so compressing it yields `.noGain`.
+    /// An 8-bit GREYSCALE page whose content is visually black-and-white — the case Ghostscript
+    /// cannot serve, because its mono settings only apply to images that are already 1-bit.
+    static func greyscaleBilevelScanPDF() throws -> URL {
+        let w = 1700, h = 2200
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceGray(),
+                            bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.setFillColor(gray: 0, alpha: 1)
+        for line in 0..<45 {
+            for word in 0..<28 {
+                ctx.fill(CGRect(x: 120 + Double(word) * 54, y: 2000 - Double(line) * 44,
+                                width: Double.random(in: 18...44), height: 12))
+            }
+        }
+        let image = ctx.makeImage()!
+        return try embedImagePDF(image, name: "grey-bilevel.pdf")
+    }
+
     static func blankPDF(pages: Int = 1) throws -> URL {
         let url = try uniqueURL("blank.pdf")
         var media = letter

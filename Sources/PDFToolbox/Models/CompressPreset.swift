@@ -54,6 +54,9 @@ enum CompressPreset: String, CaseIterable, Identifiable {
     }
 
     /// Bilevel/mono images keep a higher resolution (text edges) than contone images.
+    /// Target DPI for bilevel/mono content — also the render resolution for the Rung-2 binarise.
+    var bilevelDPI: Int { monoDPI }
+
     private var monoDPI: Int {
         switch self {
         case .maximumQuality: return 600

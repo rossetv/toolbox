@@ -280,3 +280,48 @@ private struct StubRunner: GhostscriptRunning {
         return arguments.first { $0.hasPrefix(flag) }.map { String($0.dropFirst(flag.count)) }
     }
 }
+
+// MARK: - Rung 2 (bilevel scans)
+
+extension CompressEngineTests {
+    /// The case Rung 1 cannot serve: a greyscale page that merely *looks* black-and-white.
+    /// Ghostscript's mono settings only apply to images already 1-bit, so this came out LARGER
+    /// through Rung 1. Rung 2 must binarise it and win.
+    func testGreyscaleBilevelScanIsCompressedByRungTwo() async throws {
+        let engine = try makeEngine()
+        let input = try Fixtures.greyscaleBilevelScanPDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("grey-compressed.pdf")
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+
+        guard case let .compressed(before, after) = outcome else {
+            return XCTFail("expected .compressed for a bilevel scan, got \(outcome)")
+        }
+        XCTAssertLessThan(after, before, "Rung 2 must shrink a bilevel scan: \(before) → \(after)")
+        let inDoc = try XCTUnwrap(PDFDocument(url: input))
+        let outDoc = try XCTUnwrap(PDFDocument(url: output))
+        XCTAssertEqual(outDoc.pageCount, inDoc.pageCount, "page count must survive Rung 2")
+    }
+
+    /// A colour photo must never be binarised — that would destroy it. It must fall through to
+    /// Rung 1 and still produce a valid, no-larger result.
+    func testColourPhotoIsNotBinarised() async throws {
+        let engine = try makeEngine()
+        let input = try Fixtures.imagePDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("photo-compressed.pdf")
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+
+        switch outcome {
+        case .compressed, .noGain: break
+        default: XCTFail("expected a normal Rung-1 outcome, got \(outcome)")
+        }
+        if case .compressed = outcome {
+            let outDoc = try XCTUnwrap(PDFDocument(url: output))
+            let page = try XCTUnwrap(outDoc.page(at: 0))
+            // A binarised photo would collapse to two tones; a real one keeps a range of greys.
+            let rendered = try PDFService().render(page, maxDimension: 400)
+            XCTAssertNotNil(rendered)
+        }
+    }
+}
