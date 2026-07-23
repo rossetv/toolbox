@@ -55,12 +55,25 @@ struct AboutView: View {
             .focusEffectDisabled()
             .padding(.top, Theme.Spacing.small)
 
-            Text("Copyright © 2026 Vilmar Rosset (toolbox@rosset.ie)")
-                .themeFont(.micro)
-                .foregroundStyle(Theme.Colors.textTertiary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, Theme.Spacing.small)
+            VStack(spacing: 2) {
+                Text("Copyright © 2026 Vilmar Rosset")
+                    .themeFont(.micro)
+                    .foregroundStyle(Theme.Colors.textTertiary)
+                Button {
+                    NSWorkspace.shared.open(Self.maintainerURL)
+                } label: {
+                    Text("toolbox@rosset.ie")
+                        .themeFont(.micro)
+                        .foregroundStyle(Theme.Colors.link)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .pointingHandCursor()
+            }
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, Theme.Spacing.small)
 
             PrimaryButton(title: "Done") { dismiss() }
                 .padding(.top, Theme.Spacing.small)
