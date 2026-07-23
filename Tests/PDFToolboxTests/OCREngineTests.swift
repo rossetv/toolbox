@@ -98,3 +98,35 @@ final class OCREngineTests: XCTestCase {
         }
     }
 }
+
+// MARK: - fail-loud validation net
+
+extension OCREngineTests {
+    /// The net's core check: a genuine incremental-update output keeps the original file as its
+    /// verbatim prefix, and ANY tampering inside that region is detected. This is what turns a
+    /// writer desync into a loud per-file failure instead of a silently corrupt document.
+    func testVerbatimPrefixDetectsTamperedOriginalRegion() throws {
+        let input = try Fixtures.textImagePDF()
+        let original = try Data(contentsOf: input)
+
+        // A faithful append: original bytes, verbatim, plus appended content.
+        let good = input.deletingLastPathComponent().appendingPathComponent("good-\(UUID().uuidString).pdf")
+        try (original + Data("\n% appended incremental section\n".utf8)).write(to: good)
+        XCTAssertTrue(try OCREngine.hasVerbatimPrefix(of: input, in: good),
+                      "a verbatim append must validate")
+
+        // A desynced write: one byte altered inside the original region.
+        var tampered = original
+        tampered[tampered.count / 2] = tampered[tampered.count / 2] &+ 1
+        let bad = input.deletingLastPathComponent().appendingPathComponent("bad-\(UUID().uuidString).pdf")
+        try (tampered + Data("\n% appended\n".utf8)).write(to: bad)
+        XCTAssertFalse(try OCREngine.hasVerbatimPrefix(of: input, in: bad),
+                       "a single altered byte in the original region must be caught")
+
+        // A truncated write must not pass either.
+        let short = input.deletingLastPathComponent().appendingPathComponent("short-\(UUID().uuidString).pdf")
+        try original.prefix(original.count / 2).write(to: short)
+        XCTAssertFalse(try OCREngine.hasVerbatimPrefix(of: input, in: short),
+                       "an output shorter than the original must be caught")
+    }
+}
