@@ -26,6 +26,11 @@ enum CompressError: Error, LocalizedError {
     }
 }
 
+/// A page attempt that cannot even fall back — the full-page render itself failed, so there is
+/// no JPEG to ship. Thrown by `mrcPage` and caught in `mrcCompress`, where it becomes a
+/// whole-document decline (D10): a hybrid missing one page is never composed.
+private struct MRCDecline: Error {}
+
 /// Rung-1 compression: tuned Ghostscript `pdfwrite`, wholly inside the seatbelt sandbox.
 ///
 /// Safety contract (spec §5.4): inspects the input first (encrypted/corrupt rejected); **stages
@@ -55,6 +60,11 @@ struct CompressEngine {
     /// count, so a very long scan is the one shape that can still exhaust memory here. Beyond this
     /// the document goes to Rung 1, which has no such ceiling.
     static let maxBilevelPages = 1200
+    /// Most pages Rung 3 will attempt in one document (≈ `maxBilevelPages` / 3, R13). MRC holds
+    /// three encoded layers per page until the whole document composes and recomposes each page to
+    /// verify it, so its per-page peak is several times Rung 2's — hence the tighter ceiling.
+    /// Beyond this the document declines to the gs path, which streams and has no such limit.
+    static let maxMRCPages = 400
 
     let runner: any GhostscriptRunning
     let service: PDFService
@@ -294,6 +304,140 @@ struct CompressEngine {
         let staged = work.appendingPathComponent("bilevel.pdf")
         try data.write(to: staged, options: .atomic)
         return data.count
+    }
+
+    /// Rung 3: per-page MRC with own-render JPEG fallback (spec §5). Returns the composed hybrid's
+    /// byte count and per-page report, or nil to decline the whole document. Only `CancellationError`
+    /// escapes; every other failure is a decline (D10).
+    ///
+    /// Reached directly by tests until the routing/D7 gate (Task 15) wires it behind `compress`; it
+    /// is `internal` rather than `private` for exactly that reason. `forceEligible` and
+    /// `verifierOverride` are test-only seams (both default off): the former pushes a page past the
+    /// classifier envelope, the latter rewrites a page's verifier score so the verify→fallback swap
+    /// (spec §9) can be exercised deterministically. Neither has a production caller.
+    func mrcCompress(_ input: URL,
+                     preset: CompressPreset,
+                     to work: URL,
+                     forceEligible: Bool = false,
+                     verifierOverride: ((MRCVerifier.Score) -> MRCVerifier.Score)? = nil,
+                     progress: @escaping (Double) -> Void) async throws
+                     -> (url: URL, bytes: Int, report: MRCDocumentReport)? {
+        guard let document = PDFDocument(url: input), document.pageCount > 0,
+              document.pageCount <= Self.maxMRCPages,
+              // The composed output is a fresh document: bookmarks cannot be carried, so a
+              // bookmarked scan must take the gs path or it silently loses its outline — the same
+              // guard, for the same reason, as `bilevelCompress`.
+              document.outlineRoot == nil else { return nil }
+
+        // R2 structural sweep first — cheap, and one complex page kills the whole attempt before
+        // any rasterising, because the fallback path rasterises and rasterising text is destruction.
+        for index in 0..<document.pageCount {
+            try Task.checkCancellation()
+            guard let page = document.page(at: index),
+                  MRCClassifier.structure(of: page) == .simpleSingleImage else { return nil }
+        }
+
+        var pages: [MRCComposer.Page] = []
+        var verdicts: [MRCPageVerdict] = []
+        var anyMRC = false
+        for index in 0..<document.pageCount {
+            try Task.checkCancellation()
+            guard let page = document.page(at: index) else { return nil }
+            let box = page.bounds(for: .mediaBox)
+            guard box.width > 0, box.height > 0 else { return nil }
+
+            // Rendered bounded exactly like Rung 2 (R13): preset DPI, clamped to maxBilevelPixels.
+            let scale = CGFloat(preset.bilevelDPI) / 72.0
+            let maxDimension = min(max(box.width, box.height) * scale, Self.maxBilevelPixels)
+
+            let content: MRCComposer.PageContent
+            let verdict: MRCPageVerdict
+            do {
+                (content, verdict) = try mrcPage(page, box: box, maxDimension: maxDimension,
+                                                 preset: preset, forceEligible: forceEligible,
+                                                 verifierOverride: verifierOverride)
+            } catch is MRCDecline {
+                return nil                              // a page with no fallback → decline the document
+            }
+            pages.append(MRCComposer.Page(content: content, size: box.size, rotation: page.rotation))
+            verdicts.append(verdict)
+            if case .mrcEncoded = verdict { anyMRC = true }
+            progress(Double(index + 1) / Double(document.pageCount))
+        }   // per-page rasters go out of scope here — only the encoded payloads are retained (R13)
+
+        guard anyMRC else { return nil }                // R7: no MRC page → nothing to gain over gs
+        let data = try MRCComposer.compose(pages: pages)
+        let out = work.appendingPathComponent("mrc.pdf")
+        try data.write(to: out, options: .atomic)
+        return (out, data.count, MRCDocumentReport(verdicts: verdicts))
+    }
+
+    /// One page: classify → segment → encode → verify (D6), else the fallback JPEG (R5). Returns
+    /// the composed content and the verdict recorded for it. Throws only `MRCDecline`, and only when
+    /// even the full-page render fails so no fallback is possible.
+    private func mrcPage(_ page: PDFPage, box: CGRect, maxDimension: CGFloat,
+                         preset: CompressPreset, forceEligible: Bool,
+                         verifierOverride: ((MRCVerifier.Score) -> MRCVerifier.Score)?) throws
+                         -> (MRCComposer.PageContent, MRCPageVerdict) {
+        // The full render feeds both the MRC split and the fallback; if it fails there is nothing
+        // to ship for this page, so the whole document declines.
+        guard let full = try? service.render(page, maxDimension: maxDimension) else { throw MRCDecline() }
+
+        // One tiny classifier render (R14) yields the eligibility signals — also recorded on an
+        // MRC verdict as the debugging trail (spec §6).
+        let classifierDimension = MRCClassifier.renderDimension(for: page)
+        let features = (try? service.render(page, maxDimension: classifierDimension))
+            .flatMap(MRCClassifier.features(of:))
+
+        if !forceEligible {
+            guard let features else {
+                return (try fallbackJPEG(page, box: box, preset: preset), .fallback(.renderFailed))
+            }
+            if let reason = MRCClassifier.verdict(features: features) {
+                return (try fallbackJPEG(page, box: box, preset: preset), .fallback(reason))
+            }
+        }
+
+        // Eligible (or forced). A missing feature record only arises on the forced path, where the
+        // classifier render was skipped or failed; the verdict still needs one, so default to zeros.
+        let recorded = features ?? MRCPageFeatures(inkCoverage: 0, meanComponentSize: 0,
+                                                   componentCount: 0, colourCoverage: 0)
+
+        guard let segmented = MRCSegmenter.segment(full) else {
+            return (try fallbackJPEG(page, box: box, preset: preset), .fallback(.segmentationFailed))
+        }
+        guard let encoded = MRCPageEncoder.encode(segmented, preset: preset),
+              let candidate = MRCPageEncoder.recompose(encoded) else {
+            return (try fallbackJPEG(page, box: box, preset: preset), .fallback(.encodeFailed))
+        }
+
+        // Verify the recomposed hybrid against the original over the ink region (D6) — the smear
+        // gate. A dimension mismatch (never expected: candidate, input and mask share the render
+        // size) has no meaningful score, so it is treated as a rejection, not a silent pass.
+        var score = MRCVerifier.score(candidate: candidate, input: full, mask: segmented.mask)
+            ?? MRCVerifier.Score(normalisedError: .infinity, pass: false)
+        if let verifierOverride { score = verifierOverride(score) }
+        guard score.pass else {
+            return (try fallbackJPEG(page, box: box, preset: preset),
+                    .fallback(.verifierRejected(score: score.normalisedError)))
+        }
+
+        let content = MRCComposer.PageContent.mrc(background: encoded.background,
+                                                  foreground: encoded.foreground, mask: encoded.mask)
+        return (content, .mrcEncoded(recorded))
+    }
+
+    /// The R5 fallback: re-render the page at the preset's contone DPI (below the MRC render's mono
+    /// DPI, so genuinely smaller) and JPEG it at the background layer's quality. A render failure
+    /// here leaves the page with nothing to ship, so it declines the whole document.
+    private func fallbackJPEG(_ page: PDFPage, box: CGRect,
+                              preset: CompressPreset) throws -> MRCComposer.PageContent {
+        let scale = CGFloat(preset.imageDPI) / 72.0
+        let maxDimension = min(max(box.width, box.height) * scale, Self.maxBilevelPixels)
+        guard let image = try? service.render(page, maxDimension: maxDimension),
+              let jpeg = MRCPageEncoder.encodeJPEG(image, quality: MRCPageEncoder.layerQualities(for: preset).bg)
+        else { throw MRCDecline() }
+        return .jpeg(jpeg)
     }
 
     private static func fileSize(_ url: URL) -> Int {
