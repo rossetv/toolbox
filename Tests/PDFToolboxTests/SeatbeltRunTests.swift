@@ -111,6 +111,34 @@ final class SeatbeltRunTests: XCTestCase {
         XCTAssertLessThan(elapsed, 60, "should terminate near the cap, well under the 300s production bound")
     }
 
+    // MARK: S10 — a child that ignores SIGTERM is escalated to SIGKILL
+
+    /// gs itself dies on SIGTERM (proved by the timeout test above), so the escalation is tested
+    /// against a shell that deliberately ignores it — the case the watchdog would otherwise hang
+    /// on forever.
+    func testTerminateEscalatesToSIGKILL() async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "trap '' TERM; while :; do sleep 0.2; done"]
+        try process.run()
+        defer { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }
+        // Let the trap be installed: signalling before it exists would kill the shell with plain
+        // SIGTERM and the test would pass without exercising the escalation at all.
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let start = Date()
+        GhostscriptRunner.terminateEscalating(process, grace: 0.5)
+
+        let deadline = Date().addingTimeInterval(10)
+        while process.isRunning, Date() < deadline {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertFalse(process.isRunning, "a child ignoring SIGTERM must not survive the grace period")
+        XCTAssertEqual(process.terminationReason, .uncaughtSignal)
+        XCTAssertEqual(process.terminationStatus, SIGKILL, "expected SIGKILL, not a plain SIGTERM exit")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5, "escalation should land just after the grace period")
+    }
+
     // MARK: M1 — cancelling the caller terminates the running gs child
 
     /// The wall-clock cap is deliberately **generous** here: if the watchdog were what stopped the

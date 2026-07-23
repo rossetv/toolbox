@@ -54,13 +54,13 @@ private final class RunControl: @unchecked Sendable {
     func adopt(_ process: Process) {
         lock.lock(); defer { lock.unlock() }
         self.process = process
-        if cancelled, process.isRunning { process.terminate() }
+        if cancelled, process.isRunning { GhostscriptRunner.terminateEscalating(process) }
     }
 
     func cancel() {
         lock.lock(); defer { lock.unlock() }
         cancelled = true
-        if let process, process.isRunning { process.terminate() }
+        if let process, process.isRunning { GhostscriptRunner.terminateEscalating(process) }
     }
 
     var isCancelled: Bool {
@@ -142,6 +142,22 @@ struct GhostscriptRunner {
         }
     }
 
+    /// SIGTERM, then SIGKILL if the child is still alive `grace` seconds later. Both the
+    /// wall-clock watchdog and cancellation go through here, so neither is merely cooperative: a
+    /// gs that installs a SIGTERM handler or blocks uninterruptibly would otherwise park the
+    /// waiting thread forever — the continuation never resumes, the queue slot is never freed and
+    /// the scratch directory is never cleaned.
+    ///
+    /// The escalation needs no bookkeeping: it is a no-op once the child has exited, and holding
+    /// `process` until it fires is what makes the pid safe to signal (a reaped pid could be
+    /// recycled, and killing a stranger's process is the one outcome worth engineering against).
+    static func terminateEscalating(_ process: Process, grace: TimeInterval = 5) {
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
+    }
+
     private func runBlocking(arguments: [String],
                              readPaths: [URL],
                              writePaths: [URL],
@@ -205,7 +221,7 @@ struct GhostscriptRunner {
         let watchdog = DispatchWorkItem {
             if process.isRunning {
                 timeoutLock.lock(); didTimeout = true; timeoutLock.unlock()
-                process.terminate()
+                Self.terminateEscalating(process)
             }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + wallClockTimeout, execute: watchdog)
