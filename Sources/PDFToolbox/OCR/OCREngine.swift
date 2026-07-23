@@ -38,6 +38,34 @@ struct OCREngine {
     /// fixed value today, so it stays a constant rather than a config knob.
     private static let renderDPI: CGFloat = 300
 
+    /// Upper bound on the raster produced for one page.
+    ///
+    /// `/MediaBox` comes from the untrusted file and the render scales straight off it, so
+    /// without a ceiling the allocation is whatever the document asks for: the specification's
+    /// own largest legal page, 14400 pt, is 60,000 px a side at 300 DPI — roughly 14 GB for one
+    /// page, and a larger declared box grows quadratically from there.
+    ///
+    /// 40 megapixels renders every page up to about A2 at the full 300 DPI; beyond that the
+    /// resolution degrades instead of the memory. Vision gains nothing from a 60,000-px page.
+    static let maxRasterPixels: CGFloat = 40_000_000
+
+    /// The raster size for a page of `displayed` points at `dpi`, clamped to `maxRasterPixels`,
+    /// or nil when the page is degenerate.
+    static func rasterSize(displayed: CGSize, dpi: CGFloat) -> CGSize? {
+        guard displayed.width > 0, displayed.height > 0,
+              displayed.width.isFinite, displayed.height.isFinite else { return nil }
+        var scale = dpi / 72.0
+        let pixels = displayed.width * scale * displayed.height * scale
+        if pixels > maxRasterPixels {
+            scale *= (maxRasterPixels / pixels).squareRoot()
+        }
+        // Round *down*: a ceiling that rounding can step over is not a ceiling.
+        let size = CGSize(width: (displayed.width * scale).rounded(.down),
+                          height: (displayed.height * scale).rounded(.down))
+        guard size.width >= 1, size.height >= 1 else { return nil }
+        return size
+    }
+
     let service: PDFService
     let vision: VisionOCR
     let writer: PDFWriter
@@ -173,10 +201,7 @@ struct OCREngine {
                     let displayed = (rotation == 90 || rotation == 270)
                         ? CGSize(width: box.height, height: box.width)
                         : box.size
-                    let scale = dpi / 72.0
-                    let size = CGSize(width: (displayed.width * scale).rounded(),
-                                      height: (displayed.height * scale).rounded())
-                    guard size.width >= 1, size.height >= 1 else { return nil }
+                    guard let size = Self.rasterSize(displayed: displayed, dpi: dpi) else { return nil }
                     let thumbnail = page.thumbnail(of: size, for: .mediaBox)
                     return thumbnail.cgImage(forProposedRect: nil, context: nil, hints: nil)
                 }

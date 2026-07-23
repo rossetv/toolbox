@@ -123,6 +123,39 @@ final class OCREngineTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
                        "a cancelled OCR job must leave no output file")
     }
+
+    // MARK: - Raster bound (S8)
+
+    /// An ordinary page is unaffected: Letter at 300 DPI is still exactly 2550 × 3300.
+    func testOrdinaryPageRastersAtFullResolution() {
+        let size = OCREngine.rasterSize(displayed: CGSize(width: 612, height: 792), dpi: 300)
+        XCTAssertEqual(size, CGSize(width: 2550, height: 3300))
+    }
+
+    /// `/MediaBox` is attacker-controlled. At the specification's own maximum page — 14400 pt —
+    /// an unclamped 300-DPI render is 60,000 px a side, about 14 GB for one page.
+    func testHugeMediaBoxIsClampedRatherThanAllocated() throws {
+        let size = try XCTUnwrap(OCREngine.rasterSize(displayed: CGSize(width: 14400, height: 14400),
+                                                      dpi: 300))
+        XCTAssertLessThanOrEqual(size.width * size.height, OCREngine.maxRasterPixels)
+        XCTAssertEqual(size.width, size.height, accuracy: 1, "the aspect ratio must be preserved")
+        XCTAssertGreaterThan(size.width, 1000, "clamped, not collapsed")
+    }
+
+    /// A wildly out-of-range box is clamped on total pixels, not on either edge alone.
+    func testExtremeAspectRatioIsClampedOnTotalPixels() throws {
+        let size = try XCTUnwrap(OCREngine.rasterSize(displayed: CGSize(width: 200_000, height: 400),
+                                                      dpi: 300))
+        XCTAssertLessThanOrEqual(size.width * size.height, OCREngine.maxRasterPixels)
+    }
+
+    func testDegeneratePageSizesAreRefused() {
+        XCTAssertNil(OCREngine.rasterSize(displayed: CGSize(width: 0, height: 792), dpi: 300))
+        XCTAssertNil(OCREngine.rasterSize(displayed: CGSize(width: -1, height: 792), dpi: 300))
+        XCTAssertNil(OCREngine.rasterSize(displayed: CGSize(width: CGFloat.nan, height: 792), dpi: 300))
+        XCTAssertNil(OCREngine.rasterSize(displayed: CGSize(width: CGFloat.infinity, height: 792), dpi: 300))
+        XCTAssertNil(OCREngine.rasterSize(displayed: CGSize(width: 0.01, height: 0.01), dpi: 1))
+    }
 }
 
 // MARK: - fail-loud validation net
