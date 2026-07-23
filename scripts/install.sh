@@ -9,43 +9,61 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/rossetv/toolbox/main/scripts/install.sh | bash
 #
-# Deliberately boring: no sudo, fails loud, cleans up after itself.
+# Deliberately boring: no sudo, fails loud, cleans up after itself. The whole body
+# lives in main(), invoked on the last line, so a connection that drops mid-download
+# can never execute a truncated script.
 set -euo pipefail
 
 REPO="rossetv/toolbox"
-VOLUME="/Volumes/Toolbox"
 
 fail() { echo "error: $*" >&2; exit 1; }
 
-[ "$(uname -s)" = "Darwin" ] || fail "Toolbox is a macOS app."
-[ "$(uname -m)" = "arm64" ] || fail "Toolbox requires Apple Silicon."
-macos_major=$(sw_vers -productVersion | cut -d. -f1)
-[ "$macos_major" -ge 14 ] || fail "Toolbox requires macOS 14 or later (you have $(sw_vers -productVersion))."
+main() {
+    [ "$(uname -s)" = "Darwin" ] || fail "Toolbox is a macOS app."
+    [ "$(uname -m)" = "arm64" ] || fail "Toolbox requires Apple Silicon."
+    local macos_major
+    macos_major=$(sw_vers -productVersion | cut -d. -f1)
+    [ "$macos_major" -ge 14 ] || fail "Toolbox requires macOS 14 or later (you have $(sw_vers -productVersion))."
 
-echo "Finding the latest release…"
-dmg_url=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
-    grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | cut -d'"' -f4)
-[ -n "$dmg_url" ] || fail "no DMG found in the latest release — see https://github.com/${REPO}/releases"
+    echo "Finding the latest release…"
+    local dmg_url
+    dmg_url=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
+        grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | cut -d'"' -f4)
+    [ -n "$dmg_url" ] || fail "no DMG found in the latest release — see https://github.com/${REPO}/releases"
 
-workdir=$(mktemp -d)
-trap 'hdiutil detach "$VOLUME" -quiet 2>/dev/null || true; rm -rf "$workdir"' EXIT
+    local workdir mount=""
+    workdir=$(mktemp -d)
+    # shellcheck disable=SC2064 — expand workdir now; mount is re-read at trap time via the file.
+    trap '[ -s "$workdir/mount" ] && hdiutil detach "$(cat "$workdir/mount")" -quiet 2>/dev/null; rm -rf "$workdir"' EXIT
 
-echo "Downloading $(basename "$dmg_url")…"
-curl -fL --progress-bar -o "$workdir/Toolbox.dmg" "$dmg_url"
+    echo "Downloading $(basename "$dmg_url")…"
+    curl -fL --progress-bar -o "$workdir/Toolbox.dmg" "$dmg_url"
 
-hdiutil detach "$VOLUME" -quiet 2>/dev/null || true
-hdiutil attach "$workdir/Toolbox.dmg" -nobrowse -quiet
-[ -d "$VOLUME/Toolbox.app" ] || fail "the DMG did not contain Toolbox.app"
+    # Ask hdiutil where it actually mounted the volume rather than assuming a name:
+    # a busy /Volumes/Toolbox would otherwise silently become "/Volumes/Toolbox 1".
+    # Parsed with sed alone — a stock Mac has no developer tools to lean on.
+    mount=$(hdiutil attach "$workdir/Toolbox.dmg" -nobrowse -plist |
+        grep -A1 '<key>mount-point</key>' |
+        sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -1)
+    [ -n "$mount" ] || fail "could not mount the DMG"
+    printf '%s' "$mount" > "$workdir/mount"
+    [ -d "$mount/Toolbox.app" ] || fail "the DMG did not contain Toolbox.app"
 
-dest="/Applications"
-[ -w "$dest" ] || { dest="$HOME/Applications"; mkdir -p "$dest"; }
-echo "Installing to $dest…"
-rm -rf "${dest:?}/Toolbox.app"
-ditto "$VOLUME/Toolbox.app" "$dest/Toolbox.app"
-hdiutil detach "$VOLUME" -quiet
+    local dest="/Applications"
+    [ -w "$dest" ] || { dest="$HOME/Applications"; mkdir -p "$dest"; }
+    echo "Installing to $dest…"
+    rm -rf "${dest:?}/Toolbox.app"
+    ditto "$mount/Toolbox.app" "$dest/Toolbox.app"
 
-# The app isn't notarised yet; without this, Gatekeeper blocks the first launch.
-xattr -dr com.apple.quarantine "$dest/Toolbox.app"
+    # The app isn't notarised yet; without this, Gatekeeper blocks the first launch.
+    xattr -dr com.apple.quarantine "$dest/Toolbox.app"
 
-echo "Done — launching Toolbox."
-open "$dest/Toolbox.app"
+    # Best-effort: Spotlight can hold the volume busy for a moment; the EXIT trap retries,
+    # and a still-mounted volume must not fail an install that has already succeeded.
+    hdiutil detach "$mount" -quiet 2>/dev/null || true
+
+    echo "Done — launching Toolbox."
+    open "$dest/Toolbox.app"
+}
+
+main "$@"
