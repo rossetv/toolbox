@@ -66,6 +66,21 @@ final class BilevelPDFComposerTests: XCTestCase {
         XCTAssertEqual(bounds.height, 792, accuracy: 1)
     }
 
+    /// The geometry regression. Most real page sizes are not whole numbers of points — A4 is
+    /// 595.276 x 841.89 — so rounding the MediaBox ships a page up to half a point off the
+    /// original with the image stretched to fill it. The tolerance is deliberately far below one
+    /// point, because one point is precisely the error being guarded against.
+    func testPreservesNonIntegerPageGeometry() throws {
+        let encoded = try CCITTEncoder.encode(barsImage())
+        let a4 = CGSize(width: 595.276, height: 841.89)
+        let data = try BilevelPDFComposer.compose(pages: [.init(image: encoded, size: a4)])
+
+        let document = try XCTUnwrap(PDFDocument(data: data))
+        let bounds = try XCTUnwrap(document.page(at: 0)).bounds(for: .mediaBox)
+        XCTAssertEqual(bounds.width, a4.width, accuracy: 0.001)
+        XCTAssertEqual(bounds.height, a4.height, accuracy: 0.001)
+    }
+
     /// The polarity check. An inverted `/BlackIs1` still produces a perfectly valid PDF — it just
     /// renders as white-on-black. Only rendering the result and comparing ink against the source
     /// catches that, which is why this test exists rather than an assertion about the flag.

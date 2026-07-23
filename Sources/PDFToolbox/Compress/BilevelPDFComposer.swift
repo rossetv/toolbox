@@ -54,8 +54,11 @@ enum BilevelPDFComposer {
             let contentObject = pageObject + 1
             let imageObject = pageObject + 2
 
-            let width = max(1, Int(page.size.width.rounded()))
-            let height = max(1, Int(page.size.height.rounded()))
+            // Emitted as reals rather than rounded to whole points: A4 is 595.276 x 841.89pt, and
+            // rounding would ship a page up to half a point off the original with the image
+            // stretched to match — a silent geometry change on a path that promises not to make one.
+            let width = Self.number(max(1, page.size.width))
+            let height = Self.number(max(1, page.size.height))
 
             beginObject(pageObject)
             append("""
@@ -93,5 +96,11 @@ enum BilevelPDFComposer {
         }
         append("trailer\n<< /Size \(objectCount) /Root 1 0 R >>\nstartxref\n\(startxref)\n%%EOF\n")
         return out
+    }
+
+    /// A PDF real, written with an explicitly nil locale: the format requires "." as the decimal
+    /// separator, which a locale-aware conversion would not guarantee.
+    private static func number(_ value: CGFloat) -> String {
+        String(format: "%.4f", locale: nil, Double(value))
     }
 }
