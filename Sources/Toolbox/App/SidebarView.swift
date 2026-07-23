@@ -24,6 +24,7 @@ struct SidebarView: View {
     // selection. Tab/arrow-key navigation is untouched by that reset — it drives this same state
     // from the other direction and still shows the system focus ring.
     @FocusState private var focusedTool: Tool?
+    @State private var isShowingAbout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -31,10 +32,17 @@ struct SidebarView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { isCollapsed.toggle() }
             } label: {
                 HStack(spacing: 9) {
-                    ToolIconTile(systemImage: isCollapsed ? "sidebar.left" : "doc.on.doc.fill",
-                                 size: 22,
-                                 tint: isCollapsed ? Theme.Colors.textSecondary : Theme.Colors.accent)
-                    if !isCollapsed {
+                    if isCollapsed {
+                        ToolIconTile(systemImage: "sidebar.left",
+                                     size: 22,
+                                     tint: Theme.Colors.textSecondary)
+                    } else {
+                        // The real bundle icon, so the header always matches the Dock/Finder
+                        // artwork without a duplicated asset.
+                        Image(nsImage: NSApp.applicationIconImage)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: 22, height: 22)
                         Text("Toolbox").themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
                     }
                 }
@@ -73,9 +81,32 @@ struct SidebarView: View {
             }
 
             Spacer(minLength: 0)
+
+            Button {
+                isShowingAbout = true
+            } label: {
+                HStack(spacing: 9) {
+                    ToolIconTile(systemImage: "info.circle",
+                                 size: 22,
+                                 tint: Theme.Colors.textSecondary)
+                    if !isCollapsed {
+                        Text("About")
+                            .themeFont(.caption)
+                            .foregroundStyle(Theme.Colors.textSecondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pointingHandCursor()
+            .help("About Toolbox")
+            .padding(.horizontal, isCollapsed ? 17 : 16)
+            .padding(.bottom, 14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Theme.Colors.background)
+        .sheet(isPresented: $isShowingAbout) { AboutView() }
     }
 
     private func row(for tool: Tool) -> some View {
