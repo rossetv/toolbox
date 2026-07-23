@@ -8,24 +8,32 @@
 import AppKit
 import SwiftUI
 
-/// The shell: a sidebar of tools beside the selected tool's detail view.
+/// The shell: a sidebar of tools beside the selected tool's detail view, with an
+/// update banner across the top whenever a newer release exists.
 struct RootView: View {
     @State private var selectedTool: Tool? = .compress
     @State private var sidebarCollapsed = false
+    @StateObject private var updateChecker = UpdateChecker()
 
     var body: some View {
-        // An explicit split rather than NavigationSplitView: that container laid the sidebar out
-        // a titlebar's height too high and, on a slightly-too-small window, collapsed it to zero
-        // width — the app shipped looking as though it had no sidebar.
-        HStack(spacing: 0) {
-            SidebarView(selection: $selectedTool, isCollapsed: $sidebarCollapsed)
-                .frame(width: sidebarCollapsed ? 56 : 220)
-            Divider()
-            detail(for: selectedTool ?? .compress)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            if let release = updateChecker.available {
+                UpdateBanner(release: release)
+            }
+            // An explicit split rather than NavigationSplitView: that container laid the sidebar
+            // out a titlebar's height too high and, on a slightly-too-small window, collapsed it
+            // to zero width — the app shipped looking as though it had no sidebar.
+            HStack(spacing: 0) {
+                SidebarView(selection: $selectedTool, isCollapsed: $sidebarCollapsed)
+                    .frame(width: sidebarCollapsed ? 56 : 220)
+                Divider()
+                detail(for: selectedTool ?? .compress)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(minWidth: sidebarCollapsed ? 660 : 820, minHeight: 560)
         .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 820, height: 560)) }
+        .task { await updateChecker.check() }
     }
 
     @ViewBuilder
@@ -36,5 +44,42 @@ struct RootView: View {
         case .ocr:
             OCRView()
         }
+    }
+}
+
+/// Full-width accent strip — deliberately unmissable (the owner's requirement: users must
+/// not overlook updates). Notify-only: the button opens the release page; the app never
+/// downloads or replaces its own binary (see `UpdateChecker`).
+private struct UpdateBanner: View {
+    let release: UpdateChecker.Release
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.medium) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+            Text("Toolbox \(release.version) is available.")
+                .themeFont(.captionBold)
+            Spacer(minLength: Theme.Spacing.small)
+            Button {
+                NSWorkspace.shared.open(release.pageURL)
+            } label: {
+                Text("Update")
+                    .themeFont(.captionBold)
+                    .foregroundStyle(Theme.Colors.accent)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(.white))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .pointingHandCursor()
+            .help("Open the release page")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, Theme.Spacing.medium)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(Theme.Colors.accent)
     }
 }

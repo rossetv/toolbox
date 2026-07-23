@@ -25,7 +25,7 @@ Every "free PDF compressor" on the web wants you to **upload your documents to s
 
 Toolbox is different:
 
-- 🔒 **Private by design.** Everything runs on your Mac. The app makes no network connections — your documents are never uploaded, analysed, or seen by anyone but you.
+- 🔒 **Private by design.** Everything runs on your Mac. Your documents are never uploaded, analysed, or seen by anyone but you — the only network request the app ever makes is a version check against GitHub Releases, which sends nothing about you or your files.
 - 🆓 **Free forever.** No subscriptions, no fees, no "pro" tier, nothing to pay — ever. No account, no watermark, no page limit. Open source, so it stays that way.
 - 🍎 **A real Mac app.** Native, fast, built for Apple Silicon. Drag files in, press one button.
 - 🛡️ **Your originals are sacred.** Toolbox never touches the source file. Results are saved alongside as new files.
@@ -81,6 +81,7 @@ Requires **macOS 14 or later** on **Apple Silicon**.
 
 ## Good to know
 
+- Toolbox checks GitHub for new versions on launch and shows a banner when one exists — it never updates itself; you always choose. That check is the app's only network request.
 - Compression is tuned per document — born-digital text stays sharp; scans get scan-specific treatment.
 - Colour scans compress well, but the very best technique for them (MRC) isn't implemented yet.
 - OCR recognises non-Latin scripts but doesn't yet embed them.
