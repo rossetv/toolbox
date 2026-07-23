@@ -331,10 +331,12 @@ enum PDFSyntax {
 
     /// A non-negative integer, or nil when the token is not one **or is implausibly large**.
     ///
-    /// The ceiling is deliberate. `Int(digits)` on a 19-digit object number yields `Int.max`, and
-    /// the first `+= 1` the writer performs on it traps and takes the whole process down — a
-    /// crash reachable from 27 bytes of untrusted input. Nothing legitimate in a PDF needs a
-    /// value this large, so refusing it costs nothing.
+    /// The ceiling is deliberate. A PDF may name object `9223372036854775807`, which *is*
+    /// `Int.max`, so `Int(digits)` parses it perfectly happily and the first `+= 1` the writer
+    /// performs on it traps, taking the whole process down — a crash reachable from 27 bytes of
+    /// untrusted input. Note the failure is a *successful* parse: Swift's `Int(String)` returns nil
+    /// above `Int.max` rather than clamping to it, so nil-checking alone would not have caught
+    /// this. Nothing legitimate in a PDF needs a value this large, so refusing it costs nothing.
     static let maxPlausibleInteger = 1 << 40
 
     static func parseInt(_ token: [UInt8]) -> Int? {

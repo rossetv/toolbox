@@ -812,7 +812,8 @@ struct PDFWriter {
 
     // MARK: - Compressed object streams
 
-    /// Most bytes one `/ObjStm` may inflate to. A stream's compressed size says nothing about
+    /// Most bytes a file's `/ObjStm` streams may inflate to **in total** — one budget spent across
+    /// the whole file, not a per-stream allowance. A stream's compressed size says nothing about
     /// its expanded size, and the file is untrusted.
     static let maxObjectStreamBytes = 64 << 20        // 64 MiB
 

@@ -66,8 +66,11 @@ empty queue.
   hold the grant.
 - **`Compress` and `OCR` are independent engines that never call each other** — a
   combined compress+OCR pass is out of scope for v1 (spec §2).
-- **`Models` has no dependencies on any other module** — every other module may import
-  it; it must never import `Compress`, `OCR`, `Services`, or `Shared`.
+- **`Models` references nothing outside itself and Foundation.** These are directories in a
+  single Swift module (`project.yml` declares one `Toolbox` target over `Sources/Toolbox`), so
+  there are no local imports and the compiler enforces none of this — it is a review rule,
+  checked by grepping a directory for the foreign type's name. Types in `Models/` must never
+  name a type from `Compress`, `OCR`, `Services` or `Shared`. See `CODE_GUIDELINES.md` §2.3.
 - **`ToolQueue` is generic over its job body** — it knows nothing about PDFs,
   Ghostscript, or Vision; both view models supply the tool-specific closure. See
   [Shared](modules/shared.md).
