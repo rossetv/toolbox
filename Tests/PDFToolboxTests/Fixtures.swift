@@ -198,6 +198,36 @@ enum Fixtures {
         return url.canonical
     }
 
+    /// `pages` pages each carrying a distinct high-entropy 200 dpi image — tens of megabytes,
+    /// for the memory-bound tests. Distinct per page so nothing is deduplicated away.
+    static func repeatedImagePDF(pages: Int) throws -> URL {
+        let url = try uniqueURL("large-scan.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        var rng = RNG()
+        for _ in 0..<max(1, pages) {
+            let pxW = 1600, pxH = 2100
+            let bytesPerRow = pxW * 4
+            let byteCount = bytesPerRow * pxH
+            let buf = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 64)
+            defer { buf.deallocate() }
+            let bytes = buf.assumingMemoryBound(to: UInt8.self)
+            for i in 0..<byteCount { bytes[i] = UInt8(rng.next() * 255.0) }   // incompressible
+            let cs = CGColorSpaceCreateDeviceRGB()
+            guard let bmp = CGContext(data: buf, width: pxW, height: pxH, bitsPerComponent: 8,
+                                      bytesPerRow: bytesPerRow, space: cs,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
+                  let img = bmp.makeImage() else { throw FixtureError.imageRender }
+            ctx.beginPDFPage(nil)
+            ctx.draw(img, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
+        return url.canonical
+    }
+
     // MARK: - Hand-authored byte-level PDFs
 
     /// Assemble a byte-exact PDF from hand-written object bodies, with a correct classic xref

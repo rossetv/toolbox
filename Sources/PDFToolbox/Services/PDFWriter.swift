@@ -30,6 +30,9 @@ enum PDFWriterError: Error, LocalizedError {
     /// an object stream with a filter it does not implement, or an object that resolves nowhere.
     /// The file fails inline so the batch continues (spec R2-N3).
     case unsupportedStructure
+    /// The input exceeds the per-job bound. Fails that file inline rather than letting one job
+    /// consume the machine.
+    case inputTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -37,6 +40,7 @@ enum PDFWriterError: Error, LocalizedError {
         case .malformedPDF: return "The PDF structure could not be parsed."
         case .unsupportedStructure:
             return "This PDF uses a compressed object layout that OCR cannot amend."
+        case .inputTooLarge: return "The PDF is too large for OCR to process safely."
         }
     }
 }
@@ -70,30 +74,77 @@ struct PDFWriter {
     /// Most page-tree nodes visited before the file is called malformed. Well clear of the
     /// 1000-page scans the tool targets.
     static let maxPageTreeNodes = 500_000
+    /// Most top-level objects indexed. The index is the one structure that grows with the file
+    /// rather than with the page count: two gigabytes of `1 0 obj<<>>endobj` is a hundred
+    /// million entries, so without a ceiling the *index* becomes the memory exhaustion.
+    static let maxObjects = 5_000_000
+    /// Largest input this writer will accept. See `appendTextLayer` for the whole bound.
+    static let maxInputBytes = 2 << 30                 // 2 GiB
 
+    /// Append the text layer, holding **no full copy of the input in memory**.
+    ///
+    /// This is the OCR path's per-job memory bound, and it is a set of four cooperating limits
+    /// rather than one number, because the in-process path has no child to put a cap on:
+    ///
+    /// 1. The input is *memory-mapped*, not read — the kernel pages it in and evicts it under
+    ///    pressure, so parsing a 500 MB scan costs no resident copy.
+    /// 2. The output is *streamed* — the mapped original is copied to the destination in bounded
+    ///    chunks and the appended section written after it, so the writer never materialises the
+    ///    file a second (or third) time to grow it.
+    /// 3. The object index is bounded by `maxObjects`, the page walk by `maxPageTreeDepth` and
+    ///    `maxPageTreeNodes` — the allocations that scale with a *hostile* file rather than an
+    ///    honest one.
+    /// 4. `maxInputBytes` is the backstop for everything not enumerated above.
+    ///
+    /// It previously held about three copies at once: `Data(contentsOf:)`, a separate `[UInt8]`,
+    /// and the grown output buffer. With `OCRViewModel`'s two concurrent jobs that is six times
+    /// the file size resident, which on a large scan is a jetsam kill that takes every other
+    /// queued job with it.
     func appendTextLayer(to input: URL,
                          output: URL,
                          pageText: [Int: [PositionedText]],
                          geometry: [Int: PageGeometry]) throws {
-        guard let data = try? Data(contentsOf: input) else { throw PDFWriterError.cannotRead }
+        guard let data = try? Data(contentsOf: input, options: .mappedIfSafe) else {
+            throw PDFWriterError.cannotRead
+        }
+        guard data.count <= Self.maxInputBytes else { throw PDFWriterError.inputTooLarge }
 
         // Pages that actually carry recognised text.
         let targets = pageText.filter { !$0.value.isEmpty }.keys.sorted()
         guard !targets.isEmpty else {
             // Nothing to add — emit the original bytes verbatim (a valid no-op output).
-            try data.write(to: output)
+            try Self.stream(data, to: output)
             return
         }
 
-        let bytes = [UInt8](data)
-        let appended = try Self.buildIncrementalSection(bytes,
-                                                        baseLength: data.count,
-                                                        targets: targets,
-                                                        pageText: pageText,
-                                                        geometry: geometry)
-        var out = data
-        out.append(appended)
-        try out.write(to: output)
+        // Parse inside the mapping. `UnsafeRawBufferPointer` is always zero-based, which keeps
+        // every offset in the parser unambiguous.
+        let appended = try data.withUnsafeBytes { raw in
+            try Self.buildIncrementalSection(raw.bindMemory(to: UInt8.self),
+                                             baseLength: data.count,
+                                             targets: targets,
+                                             pageText: pageText,
+                                             geometry: geometry)
+        }
+        try Self.stream(data, to: output, appending: appended)
+    }
+
+    /// Write the mapped original to `output` in bounded chunks, then `extra`.
+    private static func stream(_ data: Data, to output: URL, appending extra: Data = Data()) throws {
+        let manager = FileManager.default
+        if manager.fileExists(atPath: output.path) { try manager.removeItem(at: output) }
+        _ = manager.createFile(atPath: output.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: output)
+        defer { try? handle.close() }
+
+        let chunk = 1 << 22                            // 4 MiB
+        var offset = data.startIndex
+        while offset < data.endIndex {
+            let end = min(offset + chunk, data.endIndex)
+            try handle.write(contentsOf: data[offset..<end])
+            offset = end
+        }
+        if !extra.isEmpty { try handle.write(contentsOf: extra) }
     }
 
     /// Everything appended after the original bytes: the new objects, the new xref section and
@@ -436,6 +487,7 @@ struct PDFWriter {
                 if let o = open {
                     result[o.num] = IndexedObject(gen: o.gen, headerStart: o.headerStart,
                                                   bodyStart: o.bodyStart, bodyEnd: i)
+                    guard result.count <= maxObjects else { throw PDFWriterError.malformedPDF }
                     open = nil
                 }
                 i += endobjKW.count

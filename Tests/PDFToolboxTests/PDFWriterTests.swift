@@ -321,6 +321,55 @@ final class PDFWriterTests: XCTestCase {
                        [4, 5, 6])
     }
 
+    // MARK: - Per-job memory bound (M6 / S12)
+
+    /// An input past the ceiling fails that file inline rather than letting one job take the
+    /// machine with it. The fixture is a sparse file, so it costs no disk.
+    func testOversizedInputIsRefusedNotAttempted() throws {
+        let url = try Fixtures.uniqueURL("oversized.pdf")
+        FileManager.default.createFile(atPath: url.path, contents: Data("%PDF-1.5\n".utf8))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(PDFWriter.maxInputBytes) + 1)
+        try handle.close()
+
+        let output = try sibling(of: url, "oversized-ocr.pdf")
+        XCTAssertThrowsError(try write(url, to: output)) {
+            XCTAssertEqual($0 as? PDFWriterError, .inputTooLarge)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
+    }
+
+    /// The writer must not hold the file. Peak footprint growth across the call is compared with
+    /// the input size: the previous implementation held `Data` + `[UInt8]` + the grown output
+    /// buffer, so growth tracked ~3x the file; mapping and streaming keeps it far below 1x.
+    func testWriterDoesNotHoldWholeCopiesOfTheInput() throws {
+        let input = try Fixtures.repeatedImagePDF(pages: 12)          // tens of MB
+        let size = try FileManager.default.attributesOfItem(atPath: input.path)[.size] as! Int
+        try XCTSkipIf(size < 8 << 20, "fixture too small to measure meaningfully")
+
+        let output = try sibling(of: input, "footprint-ocr.pdf")
+        let before = Self.residentFootprint()
+        try write(input, to: output)
+        let growth = Self.residentFootprint() - before
+
+        XCTAssertLessThan(growth, size,
+                          "peak growth \(growth) B against a \(size) B input — the writer is "
+                          + "holding at least one whole copy")
+        XCTAssertEqual(try Data(contentsOf: output).prefix(size), try Data(contentsOf: input),
+                       "streaming the output must still leave the original a verbatim prefix")
+    }
+
+    private static func residentFootprint() -> Int {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+    }
+
     // MARK: - helpers
 
     /// Run the writer over `input`, putting one text run on page 0.
