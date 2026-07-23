@@ -87,6 +87,13 @@ enum CompressPreset: String, CaseIterable, Identifiable {
             "-dDownsampleMonoImages=true",
             "-dMonoImageDownsampleType=/Subsample",
             "-dMonoImageResolution=\(monoDPI)",
+            // Task 0 (Rung-3 spec D9): AutoFilter lets gs re-decide the codec per image and
+            // silently ignore QFactor; explicit DCTEncode + the distiller-params QFactor is the
+            // measured tuned baseline every Rung-3 margin is honest against.
+            "-dAutoFilterColorImages=false",
+            "-dAutoFilterGrayImages=false",
+            "-dColorImageFilter=/DCTEncode",
+            "-dGrayImageFilter=/DCTEncode",
             // Fonts + structure
             "-dSubsetFonts=true",
             "-dCompressFonts=true",
@@ -97,5 +104,25 @@ enum CompressPreset: String, CaseIterable, Identifiable {
             args.append("-dConvertCMYKImagesToRGB=true")
         }
         return args
+    }
+
+    /// JPEG quantisation aggressiveness for re-encoded images (gs distiller QFactor; higher
+    /// is smaller/rougher). Values are Task-0-calibrated on real colour scans (Task 2);
+    /// the literals below are the pre-calibration stand-ins and MUST be replaced by Task 2.
+    var jpegQFactor: Double {
+        switch self {
+        case .maximumQuality: return 0.76
+        case .balanced: return 1.5
+        case .smallestSize: return 2.4
+        }
+    }
+
+    /// PostScript fragment passed to gs via `-c` (a single argv element — no shell quoting),
+    /// followed by `-f <input>`. Sets the JPEG quantisation both image dicts use; must come
+    /// after every `-d`/`-s` switch and before the input file.
+    func gsDistillerParams() -> String {
+        let dict = "<< /QFactor \(jpegQFactor) /Blend 1 "
+            + "/HSamples [2 1 1 2] /VSamples [2 1 1 2] >>"
+        return "<< /ColorImageDict \(dict) /GrayImageDict \(dict) >> setdistillerparams"
     }
 }
