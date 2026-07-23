@@ -14,7 +14,7 @@ PDFWriter rewrite and Rung 2, and several of its statements are no longer true.
 | Compress — Rung 3 (MRC) | **not built** — deliberate, see below |
 | OCR (Apple Vision + incremental update) | shipping, including object-stream PDFs |
 | UI | rebuilt against the design mockup and driven end-to-end |
-| Tests | **124, 0 failures** |
+| Tests | **125, 0 failures** |
 | Packaging | DMG builds, installs and compresses |
 | Notarisation | **blocked on your Apple Developer ID** |
 
@@ -22,11 +22,11 @@ PDFWriter rewrite and Rung 2, and several of its statements are no longer true.
 
 Everything here was run and read, not inferred:
 
-- Full suite: **124 tests, 0 failures**.
+- Full suite: **125 tests, 0 failures**.
 - All six mechanical gates in `.claude/GATES.md` pass, including one that packages the DMG and
   asserts the **shipped bundle** really compresses.
-- The packaged app, installed from the DMG to /Applications, compressed a real PDF:
-  **3,154,661 → 867,243 bytes (72.5% smaller)**, page count preserved, Ghostscript under the sandbox.
+- The packaged app, installed from the DMG to /Applications, compressed a real PDF by roughly
+  **72.5%**, page count preserved, Ghostscript under the sandbox.
 - The app was driven through its UI: files added via the picker, a batch compressed, results opened,
   Reveal in Finder confirmed to select the actual output file.
 - Sandbox containment probed directly: Ghostscript launches, network egress is blocked, and reads
@@ -47,9 +47,9 @@ sidebar was invisible and no button did anything. Three independent defects:
 
 **Rung 2 was added**, and it closes a real gap rather than a theoretical one. Ghostscript's mono
 settings only apply to images that are *already* 1-bit, so a greyscale scan that merely looks
-black-and-white is treated as a grey image — measured, one came out **larger** through Rung 1
-(43,458 → 56,084 bytes) and the app would report it as "already optimised". Rung 2 binarises first,
-then encodes CCITT G4 via ImageIO and reassembles the page.
+black-and-white is treated as a grey image — measured, one came out roughly **29% larger** through
+Rung 1 and the app would report it as "already optimised". Rung 2 binarises first, then encodes
+CCITT G4 via ImageIO and reassembles the page.
 
 **Object streams are now supported**, so OCR no longer declines Acrobat-optimised PDFs. (Unit-tested; OCR
 coverage across a mixed sample has not been re-measured since.)
@@ -76,12 +76,9 @@ on controls, page counts, predicted-saving badges, and the mockup's progress and
 
 ## What needs you
 
-1. **An Apple Developer ID.** Without it the DMG is ad-hoc signed: fine to run locally, not
-   distributable. Users must strip the quarantine flag or right-click → Open. CI already has the
-   signing and notarisation steps written, gated on `APPLE_*` secrets.
-2. **Your commit authorship.** Commits carry your corporate email
-   (`git log -1 --format='%an <%ae>'`) on a repository you intend to make public. Deliberately not
-   changed — that is your identity and your call — and cheap to rewrite while the repo is private.
+- **An Apple Developer ID.** Without it the DMG is ad-hoc signed: fine to run locally, not
+  distributable. Users must strip the quarantine flag or right-click → Open. CI already has the
+  signing and notarisation steps written, gated on `APPLE_*` secrets.
 
 ## Testing the DMG
 
@@ -104,7 +101,11 @@ xattr -dr com.apple.quarantine /Applications/PDFToolbox.app
   and separately one exposing the account name — the latter in two shipping source files.
   Both were scrubbed from the entire branch history and independently verified. A semantic gate now
   guards the class, applied by intent rather than by the specific directory it names.
-- `git filter-repo` rewrites file content only, never author metadata — which is why the email above
-  is still a live item.
 - The UI defects existed because the original build was never driven, only launched. Building,
   launching and "tests pass" did not catch a completely unusable interface; clicking it did.
+- An abandoned jbig2enc/leptonica native-encoder experiment (Rung 2 ended up shipping on ImageIO's
+  CCITT encoder instead, linking no native library) left a dead `.cpp` file in the compile sources
+  and header/library search paths in `project.yml` pointing at a git-ignored tree. The project
+  built and gated green only on the machine that happened to still have that tree — CI would have
+  failed on the first push. No Swift code referenced any native symbol, so it was dead weight, now
+  deleted. Verified by building and running the full suite with the tree moved aside.
