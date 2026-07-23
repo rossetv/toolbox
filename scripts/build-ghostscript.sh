@@ -30,9 +30,28 @@ BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "${BUILD_DIR}"' EXIT
 cd "${BUILD_DIR}"
 
+# Pinned source digest. This is the SHA-256 of the tarball this project actually built and
+# verified (the resulting gs links only system dylibs, runs under a scrubbed environment, and
+# compresses correctly). Pinning it means a later build cannot silently pick up a substituted
+# or corrupted archive: the bundled binary is shipped inside the app, so an unverified download
+# here would be a supply-chain hole straight into the release. If you deliberately move to a new
+# Ghostscript version, update GS_VERSION/GS_TAG and this digest together, ideally cross-checked
+# against Artifex's own published checksum for that release.
+GS_SHA256="1cdb766de8db8f1e589c817f09c5855ea5f65dfc8540e465a69ac14c18416025"
+
 echo "Fetching Ghostscript ${GS_VERSION} source…"
-curl -sSL -o gs.tar.xz \
+curl -fSL --retry 3 --retry-delay 2 -o gs.tar.xz \
   "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/${GS_TAG}/ghostscript-${GS_VERSION}.tar.xz"
+
+echo "Verifying source digest…"
+ACTUAL_SHA256="$(shasum -a 256 gs.tar.xz | awk '{print $1}')"
+if [[ "${ACTUAL_SHA256}" != "${GS_SHA256}" ]]; then
+  echo "ERROR: Ghostscript source digest mismatch — refusing to build." >&2
+  echo "  expected ${GS_SHA256}" >&2
+  echo "  actual   ${ACTUAL_SHA256}" >&2
+  exit 1
+fi
+
 tar xf gs.tar.xz
 cd "ghostscript-${GS_VERSION}"
 

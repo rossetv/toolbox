@@ -72,7 +72,9 @@ final class CompressViewModel: ObservableObject {
     var canCompress: Bool { engine != nil && !isRunning && hasQueuedWork }
 
     func add(_ urls: [URL]) {
-        let pdfs = urls.filter { $0.pathExtension.lowercased() == "pdf" }
+        // `isFileURL` is required, not decorative: a drag can deliver a remote URL (http, ftp),
+        // which would otherwise be handed to the engine as if it were a local path.
+        let pdfs = urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "pdf" }
         guard !pdfs.isEmpty else { return }
         let beforeIDs = Set(queue.jobs.map(\.id))
         queue.add(pdfs)
