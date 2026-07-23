@@ -168,6 +168,31 @@ final class CompressEngineTests: XCTestCase {
                        "a cancelled job must leave no output file")
     }
 
+    // MARK: S16 — attacker-influenced gs stderr never reaches the UI unbounded
+
+    /// A malformed PDF can make gs emit a warning per object. The failure the user sees (and the
+    /// job list retains) must stay short and must still carry gs's actual diagnosis, which is in
+    /// its last lines.
+    func testGhostscriptFailureMessageIsBoundedAndKeepsTheDiagnosis() async throws {
+        let noise = String(repeating: "**** Warning: an unexpected object was encountered.\n", count: 100_000)
+        let runner = StubRunner(exitCode: 1, output: .none,
+                                stderr: noise + "GPL Ghostscript: unrecoverable error, exit code 1\n")
+        let engine = CompressEngine(runner: runner)
+        let input = try Fixtures.blankPDF(pages: 1)
+        let output = input.deletingLastPathComponent().appendingPathComponent("noisy-compressed.pdf")
+
+        do {
+            let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+            XCTFail("expected a failure for a non-zero gs exit, got \(outcome)")
+        } catch let error as CompressError {
+            let message = error.localizedDescription
+            XCTAssertLessThan(message.count, 500,
+                              "a multi-megabyte gs stderr must not be retained and rendered verbatim")
+            XCTAssertTrue(message.contains("unrecoverable error"),
+                          "the message must keep gs's actual diagnosis, got: \(message.debugDescription)")
+        }
+    }
+
     /// A hand-built one-page PDF (~350 bytes) — smaller than anything CoreGraphics or PDFKit
     /// emits, so a stub "compression" of a blank fixture is a genuine size gain. Offsets are
     /// computed, never hand-counted, so the xref is correct by construction.
@@ -238,6 +263,7 @@ private struct StubRunner: GhostscriptRunning {
 
     let exitCode: Int32
     let output: Output
+    var stderr: String = ""
 
     func run(arguments: [String],
              readPaths: [URL],
@@ -246,7 +272,7 @@ private struct StubRunner: GhostscriptRunning {
         if case let .bytes(data) = output, let path = Self.outputPath(from: arguments) {
             try? data.write(to: URL(fileURLWithPath: path))
         }
-        return ProcessResult(exitCode: exitCode, stdout: "", stderr: "")
+        return ProcessResult(exitCode: exitCode, stdout: "", stderr: stderr)
     }
 
     private static func outputPath(from arguments: [String]) -> String? {

@@ -99,7 +99,7 @@ struct CompressEngine {
         // the work dir's `defer` discards the staged output and the job returns to `.queued`.
         try Task.checkCancellation()
         guard result.exitCode == 0 else {
-            throw CompressError.ghostscriptFailed(result.stderr.isEmpty ? "exit \(result.exitCode)" : result.stderr)
+            throw CompressError.ghostscriptFailed(Self.failureMessage(result))
         }
 
         // 4. A gs exit 0 that produced no output is a SILENT FAILURE, never "already optimised".
@@ -137,6 +137,22 @@ struct CompressEngine {
 
         progress(1.0)
         return .compressed(before: inputSize, after: outputSize)
+    }
+
+    /// What the user is shown — and what the job list retains — when gs fails.
+    ///
+    /// gs's stderr is attacker-influenced text (it quotes fragments of the input), and it is the
+    /// only such text that reaches the UI, so the message is the last couple of lines and nothing
+    /// more: the earlier lines of a long gs failure are repetition, the diagnosis is at the end.
+    /// The runner already caps what it captures; this caps what is displayed.
+    private static func failureMessage(_ result: ProcessResult) -> String {
+        let lines = result.stderr
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let tail = lines.suffix(2).joined(separator: " ")
+        guard !tail.isEmpty else { return "exit \(result.exitCode)" }
+        return tail.count > 300 ? String(tail.prefix(300)) + "…" : tail
     }
 
     private static func fileSize(_ url: URL) -> Int {
