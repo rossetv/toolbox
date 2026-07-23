@@ -75,6 +75,11 @@ final class CompressViewModel: ObservableObject {
     var canCompress: Bool { engine != nil && !isRunning && hasQueuedWork }
 
     func add(_ urls: [URL]) {
+        // Gated on `isRunning`: `compress()` snapshots `queue.jobs` and reserves an output name for
+        // each up front, but several MainActor hops separate that snapshot from the queue actually
+        // launching jobs. A file added in that window would be `.queued` and run by the live batch
+        // with no reserved name — the very race `outputs`/`reserved` exist to prevent.
+        guard !isRunning else { return }
         // `isFileURL` is required, not decorative: a drag can deliver a remote URL (http, ftp),
         // which would otherwise be handed to the engine as if it were a local path.
         let pdfs = urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "pdf" }
@@ -127,8 +132,13 @@ final class CompressViewModel: ObservableObject {
         isRunning = true
         Task {
             await queue.run { job, report in
-                let output = outputs[job.id]
-                    ?? FileNaming.output(for: job.url, suffix: "compressed", folder: folder)
+                // A missing reservation means `add` let a file into the batch after the up-front
+                // allocation pass — fail this one job loudly rather than silently allocating a
+                // second, racing name from inside the concurrent run (see
+                // `MissingOutputReservationError`).
+                guard let output = outputs[job.id] else {
+                    throw MissingOutputReservationError()
+                }
                 let outcome = try await engine.compress(job.url, preset: chosen, to: output) { report($0) }
                 // `.noGain` deliberately writes nothing, so there is no output file to point at.
                 if case .noGain = outcome { return JobResult(outcome) }

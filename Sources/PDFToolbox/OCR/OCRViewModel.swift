@@ -38,6 +38,11 @@ final class OCRViewModel: ObservableObject {
     var pageCandidateCount: Int { jobs.count }
 
     func add(_ urls: [URL]) {
+        // Gated on `isRunning`: `run()` snapshots `queue.jobs` and reserves an output name for each
+        // up front, but several MainActor hops separate that snapshot from the queue actually
+        // launching jobs. A file added in that window would be `.queued` and run by the live batch
+        // with no reserved name — the very race `outputs`/`reserved` exist to prevent.
+        guard !isRunning else { return }
         // `isFileURL` is required, not decorative: a drag can deliver a remote URL (http, ftp),
         // which would otherwise be handed to the engine as if it were a local path.
         queue.add(urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "pdf" })
@@ -64,7 +69,13 @@ final class OCRViewModel: ObservableObject {
             // A modest concurrency cap: each in-flight file holds one 300-DPI page raster, so 2
             // bounds memory while still overlapping I/O and recognition.
             await queue.run({ job, report in
-                let output = outputs[job.id] ?? FileNaming.output(for: job.url, suffix: "ocr", folder: nil)
+                // A missing reservation means `add` let a file into the batch after the up-front
+                // allocation pass — fail this one job loudly rather than silently allocating a
+                // second, racing name from inside the concurrent run (see
+                // `MissingOutputReservationError`).
+                guard let output = outputs[job.id] else {
+                    throw MissingOutputReservationError()
+                }
                 let outcome = try await self.engine.ocr(job.url, to: output, options: chosen) { report($0) }
                 // `.alreadySearchable` writes nothing — no new file to reveal.
                 if case .alreadySearchable = outcome { return JobResult(outcome) }

@@ -7,6 +7,17 @@
 
 import Foundation
 
+/// A job reached the concurrent run with no name reserved for it by the batch's up-front
+/// allocation pass (`compress()`/`run()` build `outputs` from `queue.jobs` before the batch
+/// starts). Falling back to a second, on-disk-only `FileNaming.output(for:suffix:folder:)` call
+/// from inside the concurrent job body would re-introduce the very TOCTOU race the up-front
+/// reservation exists to close, so a missing reservation fails that one job loudly instead.
+struct MissingOutputReservationError: LocalizedError {
+    var errorDescription: String? {
+        "No output name was reserved for this file before the batch started."
+    }
+}
+
 /// Names outputs `<name>-<suffix>.pdf` next to the original (or in `folder` if given),
 /// never overwriting: on a collision it appends `-1`, `-2`, … (spec §5.4).
 enum FileNaming {
