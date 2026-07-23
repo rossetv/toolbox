@@ -43,16 +43,27 @@ JB2_STAMP="${DEST}/VERSION"
 LEPT_DIR="${REPO_ROOT}/Resources/native/leptonica"
 LEPT_LIB="${LEPT_DIR}/lib/libleptonica.a"
 
-# The stamp is written only after a successful build, so its presence alongside the
-# archive means that exact version was built and installed — not merely attempted.
-if [[ -f "${JB2_LIB}" ]] && [[ -f "${JB2_STAMP}" ]] && [[ "$(cat "${JB2_STAMP}")" == "${JB2_VERSION}" ]]; then
-  echo "jbig2enc ${JB2_VERSION} already present at ${JB2_LIB} — skipping build."
-  exit 0
-fi
+# Bring Leptonica up to date first — unconditionally, because that script is itself
+# idempotent and returns in milliseconds when the archive already matches its pin.
+"${REPO_ROOT}/scripts/build-leptonica.sh"
 
 if [[ ! -f "${LEPT_LIB}" ]]; then
-  echo "Leptonica archive not found at ${LEPT_LIB} — building it first…"
-  "${REPO_ROOT}/scripts/build-leptonica.sh"
+  echo "ERROR: ${LEPT_LIB} still missing after running build-leptonica.sh." >&2
+  exit 1
+fi
+
+# The stamp records the jbig2enc version AND the digest of the exact Leptonica archive
+# this build was compiled against, and is written only after a successful build. The
+# digest is what makes the skip safe: jbig2enc compiles against Leptonica's internal
+# headers (pix_internal.h), so a Leptonica version bump changes struct layout under it.
+# Keying the skip on the jbig2enc version alone would silently leave an archive built
+# against the old headers linked against the new library.
+LEPT_DIGEST="$(shasum -a 256 "${LEPT_LIB}" | awk '{print $1}')"
+EXPECTED_STAMP="jbig2enc=${JB2_VERSION} leptonica-archive-sha256=${LEPT_DIGEST}"
+
+if [[ -f "${JB2_LIB}" ]] && [[ -f "${JB2_STAMP}" ]] && [[ "$(cat "${JB2_STAMP}")" == "${EXPECTED_STAMP}" ]]; then
+  echo "jbig2enc ${JB2_VERSION} already present at ${JB2_LIB} — skipping build."
+  exit 0
 fi
 
 BUILD_DIR="$(mktemp -d)"
@@ -118,7 +129,7 @@ cp "${SRC}/jbig2enc.h" "${SRC}/jbig2arith.h" "${SRC}/jbig2sym.h" \
 # Apache-2.0 §4 obliges us to ship the licence with any distribution of this code,
 # and it is linked into the app — so stage it here for the packaging step.
 cp "${BUILD_DIR}/jbig2enc-${JB2_VERSION}/COPYING" "${DEST}/LICENSE-jbig2enc.txt"
-echo "${JB2_VERSION}" > "${JB2_STAMP}"
+echo "${EXPECTED_STAMP}" > "${JB2_STAMP}"
 
 echo "Built jbig2enc ${JB2_VERSION} → ${JB2_LIB}"
 echo "Architecture check (expect arm64):"
