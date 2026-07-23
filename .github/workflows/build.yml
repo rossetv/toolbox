@@ -1,0 +1,131 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test, package
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      # Ghostscript is built from source (AGPL, arm64, self-contained — no Homebrew deps).
+      # It is expensive (~5-10 min) and changes only when the build script does, so cache it.
+      - name: Cache bundled Ghostscript
+        id: gs-cache
+        uses: actions/cache@v4
+        with:
+          path: Resources/ghostscript
+          key: ghostscript-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-ghostscript.sh') }}
+
+      - name: Build Ghostscript
+        if: steps.gs-cache.outputs.cache-hit != 'true'
+        run: scripts/build-ghostscript.sh
+
+      - name: Verify bundled Ghostscript runs self-contained
+        run: |
+          env -i Resources/ghostscript/bin/gs --version
+          # Must link only system dylibs — a Homebrew dep here would break on user machines.
+          if otool -L Resources/ghostscript/bin/gs | tail -n +2 | grep -qv -e '/usr/lib/' -e '/System/'; then
+            echo "::error::bundled gs links a non-system dylib"; otool -L Resources/ghostscript/bin/gs; exit 1
+          fi
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Test
+        run: |
+          xcodebuild -project PDFToolbox.xcodeproj -scheme PDFToolbox \
+            -configuration Debug test | tail -40
+
+      - name: Package DMG
+        run: scripts/package-dmg.sh
+
+      - name: Smoke — the packaged app really compresses a PDF
+        run: |
+          hdiutil attach dist/PDFToolbox.dmg -nobrowse -quiet
+          cp -R "/Volumes/PDF Toolbox/PDFToolbox.app" /tmp/
+          hdiutil detach "/Volumes/PDF Toolbox" -quiet
+          PDFTOOLBOX_SMOKE=compress /tmp/PDFToolbox.app/Contents/MacOS/PDFToolbox | tee /tmp/smoke.txt
+          grep -q "SMOKE PASS" /tmp/smoke.txt
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFToolbox-dmg
+          path: dist/PDFToolbox.dmg
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    permissions:
+      contents: write
+    # Mapped to env so the guard below can test them — the `secrets` context is not dependable
+    # inside a step-level `if`.
+    env:
+      APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+      APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PDFToolbox-dmg
+
+      # Distribution signing + notarisation. Skipped until the repo owner adds the secrets;
+      # the unsigned DMG still publishes so a tag always produces a downloadable build.
+      # Requires: APPLE_DEVELOPER_ID (e.g. "Developer ID Application: Name (TEAMID)"),
+      # APPLE_CERT_P12 (base64 .p12), APPLE_CERT_PASSWORD, APPLE_API_KEY_ID,
+      # APPLE_API_ISSUER_ID, APPLE_API_KEY (base64 .p8).
+      - name: Sign and notarise
+        if: env.APPLE_DEVELOPER_ID != '' && env.APPLE_CERT_P12 != ''
+        run: |
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          echo "$APPLE_CERT_P12" | base64 --decode > cert.p12
+          security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+          codesign --force --options runtime --timestamp --sign "$APPLE_DEVELOPER_ID" PDFToolbox.dmg
+          echo "$APPLE_API_KEY" | base64 --decode > key.p8
+          xcrun notarytool submit PDFToolbox.dmg \
+            --key key.p8 --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER_ID" --wait
+          xcrun stapler staple PDFToolbox.dmg
+          rm -f cert.p12 key.p8
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PDFToolbox.dmg
+          generate_release_notes: true
+          body: |
+            **PDF Toolbox** — Compress and OCR PDFs on macOS (Apple Silicon, macOS 14+).
+
+            If macOS reports the app is damaged or from an unidentified developer, this build is
+            not notarised: run `xattr -dr com.apple.quarantine /Applications/PDFToolbox.app`
+            after installing, or right-click the app and choose Open.
