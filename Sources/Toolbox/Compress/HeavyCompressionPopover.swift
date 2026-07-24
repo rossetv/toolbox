@@ -26,12 +26,13 @@ struct HeavyCompressionPopover: View {
             HStack(spacing: 12) {
                 versionCard(title: "Heavy", url: heavyURL, bytes: versions.heavyBytes,
                             current: versions.shippedIsHeavy)
-                versionCard(title: "Normal", url: normalURL, bytes: versions.normalBytes,
+                versionCard(title: normalTitle, url: normalURL, bytes: versions.normalBytes,
                             current: !versions.shippedIsHeavy)
             }
             HStack {
                 Spacer()
-                Button(versions.shippedIsHeavy ? "Switch to normal" : "Switch to heavy",
+                Button(versions.shippedIsHeavy ? "Switch to \(normalTitle.lowercased())"
+                                               : "Switch to heavy",
                        action: onSwitch)
                     .buttonStyle(.plain)
                     .font(Theme.Typography.caption.font).fontWeight(.medium)
@@ -49,6 +50,10 @@ struct HeavyCompressionPopover: View {
     private var heavyURL: URL { versions.shippedIsHeavy ? versions.shippedURL : versions.runnerUpURL }
     private var normalURL: URL { versions.shippedIsHeavy ? versions.runnerUpURL : versions.shippedURL }
 
+    /// "Normal" is the losing gs compression; when gs bloated, the parked alternative is the
+    /// untouched input and calling it "Normal" with a savings pill would be a lie (R6/R7).
+    private var normalTitle: String { versions.runnerUpIsOriginal ? "Original" : "Normal" }
+
     private func versionCard(title: String, url: URL, bytes: Int, current: Bool) -> some View {
         VStack(spacing: 6) {
             Button { onPreview(url) } label: { PDFThumbnail(url: url, width: 72) }
@@ -58,7 +63,10 @@ struct HeavyCompressionPopover: View {
             HStack(spacing: 5) {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))
                     .themeFont(.micro).foregroundStyle(Theme.Colors.textSecondary)
-                StatPill(text: savedText(bytes), tone: .success)
+                // No pill on a non-saving version ("−0%" on the Original card is nonsense).
+                if bytes < originalBytes {
+                    StatPill(text: savedText(bytes), tone: .success)
+                }
             }
             Text(current ? "Current" : " ").themeFont(.micro).foregroundStyle(Theme.Colors.link)
         }

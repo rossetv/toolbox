@@ -150,6 +150,25 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(versions.normalBytes, HeavyEnv.normalBytes)
         XCTAssertTrue(FileManager.default.fileExists(atPath: versions.shippedURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: versions.runnerUpURL.path))
+        XCTAssertFalse(versions.runnerUpIsOriginal,
+                       "a gs runner-up smaller than the input is not the original")
+    }
+
+    /// When the engine parked the ORIGINAL instead of a gs runner-up (gs bloated, so
+    /// `runnerUpBytes == before` — R6/R7 field fix), `heavyVersions(for:)` must mark it so the
+    /// popover labels that card "Original" rather than "Normal".
+    func testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize() async throws {
+        let env = try HeavyEnv(before: HeavyEnv.normalBytes)
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let versions = try XCTUnwrap(model.heavyVersions(for: job))
+        XCTAssertTrue(versions.runnerUpIsOriginal)
     }
 
     /// A report the engine hands back via the `mrcReport` closure is retained on the job result
@@ -157,7 +176,8 @@ final class CompressViewModelTests: XCTestCase {
     func testCompressedHeavyRetainsMRCReportOnJob() async throws {
         let env = try HeavyEnv()
         let expectedReport = MRCDocumentReport(verdicts: [.mrcEncoded(MRCPageFeatures(
-            inkCoverage: 0.4, meanComponentSize: 12, componentCount: 30, colourCoverage: 0.1
+            inkCoverage: 0.4, meanComponentSize: 12, componentCount: 30, colourCoverage: 0.1,
+            moderateChromaCoverage: 0.1
         ))])
         env.stub.reportToDeliver = expectedReport
         let model = env.model
@@ -425,7 +445,7 @@ final class CompressViewModelTests: XCTestCase {
         let input: URL
         let storeRoot: URL
 
-        init() throws {
+        init(before: Int = 9000) throws {
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -434,7 +454,7 @@ final class CompressViewModelTests: XCTestCase {
             try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
 
             input = try Fixtures.imagePDF()
-            stub = StubEngine(outcome: .compressedHeavy(before: 9000,
+            stub = StubEngine(outcome: .compressedHeavy(before: before,
                                                         after: HeavyEnv.heavyBytes,
                                                         runnerUpBytes: HeavyEnv.normalBytes),
                               shippedBytes: HeavyEnv.heavyBytes,

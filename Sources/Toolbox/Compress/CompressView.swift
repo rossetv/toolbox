@@ -18,6 +18,14 @@ struct CompressView: View {
     @State private var isTargeted = false
     @State private var heavyPopoverJobID: ToolJob.ID?
     @State private var quickLookURL: URL?
+    /// The pair Quick Look flips between with the ⇄ arrows (R11), frozen at the moment a preview
+    /// opens. NEVER cleared, only overwritten by the next preview: deriving this from
+    /// `heavyPopoverJobID` collapsed the collection 2→0 whenever the (transient) popover dismissed
+    /// while the panel was alive, and `QLPreviewPanelController` traps on that KVO reload
+    /// (`currentPreviewItemIndex`) — the field crash. Clearing when `quickLookURL` goes nil would
+    /// reopen the same trap in the panel's animated-teardown window, so the stale pair is simply
+    /// kept; it is two URLs.
+    @State private var frozenQuickLookItems: [URL] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -81,16 +89,9 @@ struct CompressView: View {
                                 status: status(for: job),
                                 onRemove: canRemove(job) ? { model.remove(job) } : nil,
                                 onOpen: { open(job) },
-                                onHeavyTap: { heavyPopoverJobID = job.id })
-                            .popover(isPresented: isShowingHeavyPopover(for: job.id), arrowEdge: .bottom) {
-                                if let versions = model.heavyVersions(for: job) {
-                                    HeavyCompressionPopover(
-                                        versions: versions,
-                                        originalBytes: originalBytes(for: job),
-                                        onSwitch: { model.switchVersion(for: job); heavyPopoverJobID = nil },
-                                        onPreview: { quickLookURL = $0 })
-                                }
-                            }
+                                onHeavyTap: { heavyPopoverJobID = job.id },
+                                heavyPopoverPresented: isShowingHeavyPopover(for: job.id),
+                                heavyPopoverContent: { AnyView(heavyPopover(for: job)) })
                     }
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {
@@ -104,16 +105,28 @@ struct CompressView: View {
             .padding(Theme.Spacing.large)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .quickLookPreview($quickLookURL, in: quickLookItems)
+        .quickLookPreview($quickLookURL, in: frozenQuickLookItems)
     }
 
-    /// Whichever job's popover is open supplies the pair Quick Look flips between with the ⇄
-    /// arrows (R11); no open popover means no job to derive the pair from.
-    private var quickLookItems: [URL] {
-        guard let id = heavyPopoverJobID,
-              let job = model.jobs.first(where: { $0.id == id }),
-              let versions = model.heavyVersions(for: job) else { return [] }
-        return [versions.shippedURL, versions.runnerUpURL]
+    @ViewBuilder
+    private func heavyPopover(for job: ToolJob) -> some View {
+        if let versions = model.heavyVersions(for: job) {
+            HeavyCompressionPopover(
+                versions: versions,
+                originalBytes: originalBytes(for: job),
+                // Request panel dismissal before the swap (SwiftUI dismisses asynchronously, so
+                // a closing panel may still render one stale frame — accepted; the frozen items
+                // collection is untouched, so the panel never sees a shrinking collection).
+                onSwitch: {
+                    quickLookURL = nil
+                    model.switchVersion(for: job)
+                    heavyPopoverJobID = nil
+                },
+                onPreview: { url in
+                    frozenQuickLookItems = [versions.shippedURL, versions.runnerUpURL]
+                    quickLookURL = url
+                })
+        }
     }
 
     private func isShowingHeavyPopover(for id: ToolJob.ID) -> Binding<Bool> {

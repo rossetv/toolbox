@@ -392,6 +392,11 @@ struct FileRow: View {
     var onOpen: (() -> Void)?
     /// Opening the heavy-compression options for this file. Nil leaves the capsule inert.
     var onHeavyTap: (() -> Void)?
+    /// Presentation + content for the popover the heavy capsule anchors. It must attach to the
+    /// capsule itself — attached to the row, the arrow points at the row's centre and the popover
+    /// reads as disconnected from the control that opened it.
+    var heavyPopoverPresented: Binding<Bool>?
+    var heavyPopoverContent: (() -> AnyView)?
 
     @State private var isHoveringCapsule = false
 
@@ -468,7 +473,11 @@ struct FileRow: View {
                 Text(byteString(originalBytes)).themeFont(.micro)
                     .foregroundStyle(Theme.Colors.textTertiary).strikethrough()
                 Text(byteString(newBytes)).themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
-                StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
+                // A heavy row can legitimately show no saving (switched to the parked original,
+                // R6/R7) — a "−0%" success pill there is nonsense, so it is dropped.
+                if newBytes < originalBytes {
+                    StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
+                }
                 heavyCapsule
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
             }
@@ -517,6 +526,11 @@ struct FileRow: View {
         .buttonStyle(.plain)
         .pointingHandCursor()
         .onHover { isHoveringCapsule = $0 }
+        .popover(isPresented: heavyPopoverPresented ?? .constant(false), arrowEdge: .bottom) {
+            if let heavyPopoverContent {
+                heavyPopoverContent()
+            }
+        }
     }
 
     private func removeButton(_ action: @escaping () -> Void) -> some View {

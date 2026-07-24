@@ -42,13 +42,36 @@ final class MRCClassifierTests: XCTestCase {
         XCTAssertEqual(MRCClassifier.structure(of: page), .complex)
     }
 
-    /// Text-class page renders → features inside the eligible envelope.
+    /// Text-class page renders → features inside the eligible envelope. The explicit
+    /// moderate-chroma bound guards the fixture-vs-gate margin: the fixture's chromatic ink
+    /// counts toward `moderateChromaCoverage`, so a fixture redraw that pushes it near the 0.115
+    /// gate must fail here deterministically, not flake in whichever test renders it next.
     func testTextScanPageFeaturesPassVerdict() throws {
         let doc = try XCTUnwrap(PDFDocument(url: try Fixtures.colourTextScanPDF()))
         let page = try XCTUnwrap(doc.page(at: 0))
         let image = try PDFService().render(page, maxDimension: MRCClassifier.renderDimension(for: page))
         let features = try XCTUnwrap(MRCClassifier.features(of: image))
         XCTAssertNil(MRCClassifier.verdict(features: features))
+        XCTAssertLessThan(features.moderateChromaCoverage,
+                          MRCClassifier.maxModerateChromaCoverage - 0.01,
+                          "the text fixture must clear the chroma gate with real margin")
+    }
+
+    /// A text page on a pale fine-pattern (guilloche-class) background → declined by the
+    /// moderate-chroma gate with its own reason. This is the field-regression fixture: the
+    /// pattern's channel delta sits below `colourCoverage`'s > 40 test, so without the moderate
+    /// gate the page is eligible and MRC blurs the pattern into the background layer.
+    func testPalePatternPageDeclinedAsChromaPattern() throws {
+        let doc = try XCTUnwrap(PDFDocument(url: try Fixtures.palePatternTextScanPDF()))
+        let page = try XCTUnwrap(doc.page(at: 0))
+        let image = try PDFService().render(page, maxDimension: MRCClassifier.renderDimension(for: page))
+        let features = try XCTUnwrap(MRCClassifier.features(of: image))
+        XCTAssertEqual(MRCClassifier.verdict(features: features), .chromaPattern)
+        XCTAssertGreaterThan(features.moderateChromaCoverage,
+                             MRCClassifier.maxModerateChromaCoverage,
+                             "the pattern must trip the moderate-chroma gate specifically")
+        XCTAssertLessThanOrEqual(features.colourCoverage, MRCClassifier.maxColourCoverage,
+                                 "discriminating: the old strong-colour gate alone would admit it")
     }
 
     /// Photo-class page → declined (.notTextDominant).

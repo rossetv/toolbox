@@ -17,12 +17,18 @@ struct MRCPageFeatures: Equatable {
     let componentCount: Int
     /// Fraction of sampled pixels that are chromatic (max channel delta above threshold), 0…1.
     let colourCoverage: Double
+    /// Fraction of sampled pixels that are even moderately chromatic (max channel delta > 25) —
+    /// the signal that catches pale fine-pattern backgrounds (guilloche and similar) which sit
+    /// below `colourCoverage`'s delta but are destroyed by the fg/bg split. A strict superset of
+    /// `colourCoverage`'s pixels by construction.
+    let moderateChromaCoverage: Double
 }
 
 enum MRCDeclineReason: Equatable {
     case complexPage        // text layer / vector content / not exactly one image (R2)
     case renderFailed
     case notTextDominant    // classifier signals outside the eligible envelope (R3)
+    case chromaPattern      // pale fine-pattern background (e.g. guilloche) — MRC would blur it
     case segmentationFailed
     case encodeFailed
     case verifierRejected(score: Double)

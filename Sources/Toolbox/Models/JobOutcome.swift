@@ -17,8 +17,10 @@ enum JobOutcome: Equatable {
     case ocrAdded(pages: Int, skipped: Int)
     /// Every page already had extractable text — nothing to OCR.
     case alreadySearchable
-    /// Compress finished with at least one MRC-encoded page in the shipped output; the plain
-    /// gs version was retained as the runner-up for the UI's instant switch (spec R7).
+    /// Compress finished with at least one MRC-encoded page in the shipped output; the losing
+    /// version was retained as the runner-up for the UI's instant switch (spec R7). That is the
+    /// plain gs output when it beat the input, otherwise the untouched original —
+    /// `runnerUpBytes == before` marks the latter (R6 forbids offering a larger-than-input file).
     case compressedHeavy(before: Int, after: Int, runnerUpBytes: Int)
 }
 

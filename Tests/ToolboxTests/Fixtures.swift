@@ -284,6 +284,28 @@ enum Fixtures {
         return try applyRotation(rotation, to: url)
     }
 
+    /// The colour text scan on a pale fine-pattern (guilloche-class) background: the same text
+    /// bars over dense pale-blue stripes whose channel delta sits in the moderate band (> 25,
+    /// below `colourCoverage`'s > 40) — the security-pattern profile MRC's fg/bg split blurs.
+    /// Every page must be declined by the classifier's moderate-chroma gate (`.chromaPattern`).
+    static func palePatternTextScanPDF(pages: Int = 1) throws -> URL {
+        let url = try uniqueURL("pale-pattern-text-scan.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        var rng = RNG()
+        for _ in 0..<max(1, pages) {
+            let image = try colourTextScanBitmap(width: 1700, height: 2200, paleStripes: true,
+                                                 rng: &rng)
+            ctx.beginPDFPage(nil)
+            ctx.draw(image, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+            ctx.endPDFPage()
+        }
+        ctx.closePDF()
+        return url.canonical
+    }
+
     /// A continuous-tone full-page colour image (smooth radial + linear gradients with grain —
     /// photo-class, not text). Classifies `.scanColour`; every page should FAIL the MRC
     /// classifier's envelope, and force-MRC'd pages must fail the verifier (the committed
@@ -328,8 +350,10 @@ enum Fixtures {
 
     /// One page's bitmap for `colourTextScanPDF`/`mixedColourScanPDF`: off-white paper, rows of
     /// dark blue-black bars standing in for text (chromatic enough to fail the near-bilevel gate
-    /// — real ink is near-grey, this is deliberately blue-black), 2% grain.
-    private static func colourTextScanBitmap(width: Int, height: Int, rng: inout RNG) throws -> CGImage {
+    /// — real ink is near-grey, this is deliberately blue-black), 2% grain. `paleStripes` adds
+    /// the guilloche stand-in: dense pale-blue vertical stripes in the moderate-chroma band.
+    private static func colourTextScanBitmap(width: Int, height: Int, paleStripes: Bool = false,
+                                             rng: inout RNG) throws -> CGImage {
         let cs = CGColorSpaceCreateDeviceRGB()
         guard let bmp = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                   bytesPerRow: 0, space: cs,
@@ -338,6 +362,17 @@ enum Fixtures {
         }
         bmp.setFillColor(CGColor(red: 0.97, green: 0.96, blue: 0.92, alpha: 1))
         bmp.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        if paleStripes {
+            // Pale enough that luma stays background-class, chromatic enough (delta ≈ 36) to sit
+            // squarely in the moderate band; a third of the page, so the coverage survives the
+            // classifier's 100 DPI downsample with margin over the 0.115 gate.
+            bmp.setFillColor(CGColor(red: 0.85, green: 0.90, blue: 0.99, alpha: 1))
+            var stripeX = 0
+            while stripeX < width {
+                bmp.fill(CGRect(x: stripeX, y: 0, width: 9, height: height))
+                stripeX += 27
+            }
+        }
         bmp.setFillColor(CGColor(red: 0.05, green: 0.08, blue: 0.35, alpha: 1))
         var y = Double(height) - 200
         while y > 100 {

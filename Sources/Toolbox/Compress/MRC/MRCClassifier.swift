@@ -111,7 +111,17 @@ enum MRCClassifier {
 
     // Conservative eligibility envelope; any doubt declines (R3). Values are M2-calibrated
     // starting points — deliberately not tuned to make fixtures pass.
+    //
+    // `maxColourCoverage` is formally subsumed by `maxModerateChromaCoverage` (every delta>40
+    // pixel is also a delta>25 pixel, so moderate coverage ≥ colour coverage always and 0.115 is
+    // hit long before 0.35). Kept as belt-and-braces so a future loosening of the moderate
+    // threshold cannot silently reopen the strong-colour gate (DECISIONS 2026-07-24).
     static let maxColourCoverage = 0.35
+    /// Field-calibrated (2026-07-24): pale fine-pattern security backgrounds (guilloche) measure
+    /// 0.137–0.201 on the damaged document's MRC'd pages; every other corpus page ≤ 0.095. The
+    /// midpoint 0.115 keeps ~0.02 margin on both sides. Calibration basis is a single separating
+    /// document — see DECISIONS.
+    static let maxModerateChromaCoverage = 0.115
     static let maxMeanComponentSize = 220.0       // px² at the classifier's render scale
     static let minInkCoverage = 0.01
     static let maxInkCoverage = 0.35
@@ -135,6 +145,7 @@ enum MRCClassifier {
         // Pass 1 — per-pixel: luminance histogram for an adaptive ink threshold, chroma count.
         var histogram = [Int](repeating: 0, count: 256)
         var chromatic = 0
+        var moderatelyChromatic = 0
         for y in 0..<height {
             let row = base + y * stride
             for x in 0..<width {
@@ -142,7 +153,9 @@ enum MRCClassifier {
                 let r = Int(p[0]), g = Int(p[1]), b = Int(p[2])
                 let luma = (r * 299 + g * 587 + b * 114) / 1000
                 histogram[luma] += 1
-                if max(r, g, b) - min(r, g, b) > 40 { chromatic += 1 }
+                let delta = max(r, g, b) - min(r, g, b)
+                if delta > 40 { chromatic += 1 }
+                if delta > 25 { moderatelyChromatic += 1 }
             }
         }
         let total = width * height
@@ -206,7 +219,8 @@ enum MRCClassifier {
         return MRCPageFeatures(inkCoverage: Double(ink) / Double(total),
                                meanComponentSize: meanArea,
                                componentCount: components.count,
-                               colourCoverage: Double(chromatic) / Double(total))
+                               colourCoverage: Double(chromatic) / Double(total),
+                               moderateChromaCoverage: Double(moderatelyChromatic) / Double(total))
     }
 
     /// Verdict on measured signals: `nil` = eligible, otherwise the decline reason.
@@ -216,6 +230,12 @@ enum MRCClassifier {
               f.meanComponentSize > 0, f.meanComponentSize <= maxMeanComponentSize,
               f.componentCount >= minComponentCount
         else { return .notTextDominant }
+        // Checked AFTER the envelope so a plainly ineligible page (photo-class) keeps its
+        // `.notTextDominant` label: `.chromaPattern` is reserved for the dangerous case — a page
+        // that looks text-eligible on every other signal but sits on a pale patterned background.
+        // The report is the app's only debugging record (spec §6), and that distinction is what a
+        // future field report needs.
+        guard f.moderateChromaCoverage <= maxModerateChromaCoverage else { return .chromaPattern }
         return nil
     }
 }

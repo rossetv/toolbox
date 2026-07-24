@@ -229,21 +229,22 @@ struct CompressEngine {
                 try Task.checkCancellation()
                 try fm.moveItem(at: destTemp, to: output)
                 placed = true
-                // The gs output becomes the runner-up: a plain copy into the caller's cache slot —
-                // but only when it is itself a valid compression of the input (R6). A gs output
-                // that is not smaller than the input is nothing legitimate to switch to, so the
-                // hybrid ships as a plain `.compressed` result with no runner-up capsule (R7).
-                // Best-effort — the user's output has already shipped, so a cache-write failure must
-                // never fail the job; `RunnerUpStore` already tolerates an absent runner-up.
+                // The losing version becomes the runner-up: a plain copy into the caller's cache
+                // slot, so an MRC-shipped document ALWAYS offers the switch (R7). Normally that is
+                // the gs output; when gs itself bloated (≥ input) it is nothing legitimate to
+                // switch to — R6 forbids delivering a file not smaller than the input — so the
+                // untouched original is parked instead (`runnerUpBytes == before` is the marker
+                // the UI reads to label that card "Original"). Best-effort — the user's output has
+                // already shipped, so a cache-write failure must never fail the job;
+                // `RunnerUpStore` already tolerates an absent runner-up.
                 reportProgress(1.0)
                 mrcReport?(report)
-                guard outputSize < inputSize else {
-                    return .compressed(before: inputSize, after: mrcBytes)
-                }
+                let gsIsLegitimate = outputSize < inputSize
                 if let alternateOutput {
-                    try? fm.copyItem(at: workOut, to: alternateOutput)
+                    try? fm.copyItem(at: gsIsLegitimate ? workOut : workIn, to: alternateOutput)
                 }
-                return .compressedHeavy(before: inputSize, after: mrcBytes, runnerUpBytes: outputSize)
+                return .compressedHeavy(before: inputSize, after: mrcBytes,
+                                        runnerUpBytes: gsIsLegitimate ? outputSize : inputSize)
             }
             // The hybrid lost (nil, larger or invalid) — fall through to the gs delivery below,
             // exactly as any non-MRC document; `alternateOutput` is never written (R7). The
@@ -473,7 +474,8 @@ struct CompressEngine {
         // Eligible (or forced). A missing feature record only arises on the forced path, where the
         // classifier render was skipped or failed; the verdict still needs one, so default to zeros.
         let recorded = features ?? MRCPageFeatures(inkCoverage: 0, meanComponentSize: 0,
-                                                   componentCount: 0, colourCoverage: 0)
+                                                   componentCount: 0, colourCoverage: 0,
+                                                   moderateChromaCoverage: 0)
 
         guard let segmented = MRCSegmenter.segment(full) else {
             return (try fallbackJPEG(page, box: box, preset: preset), .fallback(.segmentationFailed))

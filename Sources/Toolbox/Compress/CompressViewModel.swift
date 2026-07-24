@@ -323,6 +323,10 @@ final class CompressViewModel: ObservableObject {
         let shippedIsHeavy: Bool      // false after a switch to normal
         let heavyBytes: Int
         let normalBytes: Int
+        /// True when the parked "normal" version is the untouched original: the gs leg bloated
+        /// (≥ input), so the engine kept the input as the only legitimate alternative (R6/R7).
+        /// The popover labels that card "Original" and drops its savings pill.
+        let runnerUpIsOriginal: Bool
         let shippedURL: URL           // the user-visible output file
         let runnerUpURL: URL          // the cache-held loser
 
@@ -336,12 +340,15 @@ final class CompressViewModel: ObservableObject {
     /// counts are intrinsic to each version (they never move); only `shippedIsHeavy` flips on a
     /// switch, because the switch swaps the files' *content* in place, not their paths.
     func heavyVersions(for job: ToolJob) -> HeavyVersions? {
-        guard case .done(.compressedHeavy(_, let heavyBytes, let normalBytes)) = job.state,
+        guard case .done(.compressedHeavy(let before, let heavyBytes, let normalBytes)) = job.state,
               let shippedURL = job.resultURL,
               let runnerUpURL = job.alternateURL else { return nil }
+        // The engine parks a gs runner-up only when it is strictly smaller than the input, so
+        // equality is the unambiguous "the original was parked instead" marker.
         return HeavyVersions(shippedIsHeavy: !switched.contains(job.id),
                              heavyBytes: heavyBytes,
                              normalBytes: normalBytes,
+                             runnerUpIsOriginal: normalBytes == before,
                              shippedURL: shippedURL,
                              runnerUpURL: runnerUpURL)
     }
