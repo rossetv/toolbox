@@ -176,21 +176,8 @@ final class CompressEngineRoutingTests: XCTestCase {
         var report: MRCDocumentReport?
     }
 
-    /// A stub gs runner that writes a chosen, valid PDF payload to gs's `-sOutputFile=` path — the
-    /// gs candidate whose byte count the D7 gate weighs against the real MRC output. Never launches
-    /// a process. A copy of the input makes a *large* candidate (MRC beats it); a `tinyValidPDF`
-    /// makes a *tiny* one (MRC loses).
-    private struct BytesRunner: GhostscriptRunning {
-        let bytes: Data
-        func run(arguments: [String], readPaths: [URL], writePaths: [URL],
-                 onProgress: ((Int) -> Void)?) async throws -> ProcessResult {
-            if let path = arguments.first(where: { $0.hasPrefix("-sOutputFile=") })
-                .map({ String($0.dropFirst("-sOutputFile=".count)) }) {
-                try bytes.write(to: URL(fileURLWithPath: path))
-            }
-            return ProcessResult(exitCode: 0, stdout: "", stderr: "")
-        }
-    }
+    // The gs stub (`TestSupport.BytesRunner`) and the small-valid-PDF builder
+    // (`TestSupport.tinyValidPDF`) are shared with the Rung-2 size-race tests — see TestSupport.
 
     private func makeOutputURLs() throws -> (output: URL, alternate: URL) {
         let dir = FileManager.default.temporaryDirectory
@@ -198,28 +185,6 @@ final class CompressEngineRoutingTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return (dir.canonical.appendingPathComponent("out.pdf"),
                 dir.canonical.appendingPathComponent("runner-up.pdf"))
-    }
-
-    /// A genuinely small yet valid PDF that mirrors `input`'s pages: each page rendered at low DPI
-    /// and JPEG-encoded, composed through the production `MRCComposer`. Small enough (single-figure
-    /// KB) to lose the D7 size gate against a real MRC output, while preserving each page's ink
-    /// ratio so it passes `OutputValidator` on the gs delivery path. Page count matches the input.
-    private func tinyValidPDF(matching input: URL,
-                              maxDimension: CGFloat = 300, quality: Double = 0.4) throws -> Data {
-        let service = PDFService()
-        let document = try XCTUnwrap(PDFDocument(url: input))
-        var pages: [MRCComposer.Page] = []
-        for index in 0..<document.pageCount {
-            let page = try XCTUnwrap(document.page(at: index))
-            let image = try service.render(page, maxDimension: maxDimension)
-            let jpeg = try XCTUnwrap(MRCPageEncoder.encodeJPEG(image, quality: quality))
-            // Mirror production: the render is upright, so the page uses the displayed size and no `/Rotate`.
-            pages.append(MRCComposer.Page(
-                content: .jpeg(jpeg),
-                size: PDFWriter.displayedSize(mediaBox: page.bounds(for: .mediaBox),
-                                              rotation: page.rotation)))
-        }
-        return try MRCComposer.compose(pages: pages)
     }
 
     /// The hybrid beats a gs candidate that is itself a valid (smaller-than-input) compression:
@@ -231,7 +196,7 @@ final class CompressEngineRoutingTests: XCTestCase {
         let input = try Fixtures.colourTextScanPDF(pages: 1)
         let inputBytes = try Data(contentsOf: input)
         let gsBytes = inputBytes.dropLast(1)
-        let engine = CompressEngine(runner: BytesRunner(bytes: gsBytes))
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: gsBytes))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
@@ -266,8 +231,8 @@ final class CompressEngineRoutingTests: XCTestCase {
     /// regardless of the gate outcome. gs is stubbed below the real MRC output's size.
     func testHybridLargerThanGsShipsGsOutput() async throws {
         let input = try Fixtures.colourTextScanPDF(pages: 1)
-        let tiny = try tinyValidPDF(matching: input)
-        let engine = CompressEngine(runner: BytesRunner(bytes: tiny))
+        let tiny = try TestSupport.tinyValidPDF(matching: input)
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: tiny))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
@@ -295,7 +260,7 @@ final class CompressEngineRoutingTests: XCTestCase {
         let input = try Fixtures.colourTextScanPDF(pages: 1)
         let inputBytes = try Data(contentsOf: input)
         let bloated = inputBytes + Data(repeating: 0, count: 4096)
-        let engine = CompressEngine(runner: BytesRunner(bytes: bloated))
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: bloated))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
@@ -322,7 +287,7 @@ final class CompressEngineRoutingTests: XCTestCase {
     func testScanColourOnMaximumQualityNeverAttemptsMRC() async throws {
         let input = try Fixtures.colourTextScanPDF(pages: 1)
         let inputBytes = try Data(contentsOf: input)
-        let engine = CompressEngine(runner: BytesRunner(bytes: inputBytes))
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: inputBytes))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
@@ -365,8 +330,8 @@ final class CompressEngineRoutingTests: XCTestCase {
     /// byte-identical to the Rung-2 `bilevelCompress` call site; this exercises the decline path.
     func testMRCInternalFailureShipsGsSilently() async throws {
         let input = try Fixtures.colourPhotoScanPDF(pages: 1)
-        let tiny = try tinyValidPDF(matching: input)
-        let engine = CompressEngine(runner: BytesRunner(bytes: tiny))
+        let tiny = try TestSupport.tinyValidPDF(matching: input)
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: tiny))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
@@ -389,7 +354,7 @@ final class CompressEngineRoutingTests: XCTestCase {
     func testNeverLargerThanInputStillHolds() async throws {
         let input = try Fixtures.colourPhotoScanPDF(pages: 1)
         let inputBytes = try Data(contentsOf: input)
-        let engine = CompressEngine(runner: BytesRunner(bytes: inputBytes))
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: inputBytes))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
