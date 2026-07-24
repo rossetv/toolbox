@@ -16,6 +16,22 @@ struct ToolboxApp: App {
         // from the app process and exits, before any window appears.
         CompressSmoke.runIfRequested()
         Self.yieldToExistingInstance()
+        // As an XCTest host (the same detection the instance guard uses) the app is
+        // scaffolding, not a product: drop to accessory activation so no Dock icon appears
+        // and no window steals focus — with parallel testing, every worker clones this
+        // host, so a visible host means N Toolbox copies popping up on the developer's Mac.
+        if Self.isTestHost {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
+    }
+
+    /// True when this process is an XCTest host. Matched on ANY `XCTest*` environment key, not
+    /// `XCTestConfigurationFilePath` alone: parallel-testing worker clones launch without that
+    /// specific key (Xcode passes the configuration out-of-band), and a host mistaken for a user
+    /// copy makes the instance guard `exit(0)` mid-suite — the "runner exited with code 0"
+    /// failure that killed tests under `-parallel-testing-enabled`.
+    private static var isTestHost: Bool {
+        ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("XCTest") }
     }
 
     /// Single-instance guard. LaunchServices already refuses to launch the same bundle
@@ -26,10 +42,14 @@ struct ToolboxApp: App {
     private static func yieldToExistingInstance() {
         // The hosted XCTest runner launches this app as its test host while a user copy
         // may legitimately be open — killing the host would kill the suite.
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+        guard !isTestHost,
               let bundleID = Bundle.main.bundleIdentifier else { return }
+        // Accessory-activation instances are XCTest hosts (see `init`), not user copies —
+        // yielding to one would make a normal launch during a test run silently "open"
+        // an invisible scaffolding process instead of a real window.
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+                      && $0.activationPolicy == .regular }
         // Two copies launched in the same instant can tie (both see each other and both
         // yield, or neither is registered yet and both survive) — unhandled by design:
         // launch-timing-only, no data at risk, a relaunch recovers.
