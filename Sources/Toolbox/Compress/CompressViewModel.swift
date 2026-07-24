@@ -316,6 +316,11 @@ final class CompressViewModel: ObservableObject {
         let normalBytes: Int
         let shippedURL: URL           // the user-visible output file
         let runnerUpURL: URL          // the cache-held loser
+
+        /// The byte count of whichever version is currently shipped — what the row's badge must
+        /// show, since `heavyBytes`/`normalBytes` are fixed per version and only `shippedIsHeavy`
+        /// tracks which one is actually on disk.
+        var displayedBytes: Int { shippedIsHeavy ? heavyBytes : normalBytes }
     }
 
     /// The two versions available for `job`, or nil when the job produced no runner-up. The byte

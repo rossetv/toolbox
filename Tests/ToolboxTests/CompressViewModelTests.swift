@@ -183,6 +183,33 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
     }
 
+    /// `displayedBytes` drives the row's size badge/percent (R10); it must track whichever version
+    /// is actually shipped, not always the heavy one.
+    func testDisplayedBytesTracksShippedVersion() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        var job = try XCTUnwrap(env.doneHeavyJob(model))
+        var versions = try XCTUnwrap(model.heavyVersions(for: job))
+        XCTAssertEqual(versions.displayedBytes, HeavyEnv.heavyBytes)
+
+        model.switchVersion(for: job)
+        job = try XCTUnwrap(env.doneHeavyJob(model))
+        versions = try XCTUnwrap(model.heavyVersions(for: job))
+        XCTAssertEqual(versions.displayedBytes, HeavyEnv.normalBytes,
+                       "after switching to normal, the badge must show the normal version's bytes")
+
+        model.switchVersion(for: job)
+        job = try XCTUnwrap(env.doneHeavyJob(model))
+        versions = try XCTUnwrap(model.heavyVersions(for: job))
+        XCTAssertEqual(versions.displayedBytes, HeavyEnv.heavyBytes,
+                       "switching back must show the heavy version's bytes again")
+    }
+
     /// When the runner-up file has vanished, the switch honestly re-runs the job (the row shows a
     /// running state) and, on completion, lands on the originally requested version (R10 tail).
     func testSwitchWithMissingRunnerUpRerunsJob() async throws {

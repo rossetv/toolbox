@@ -307,10 +307,10 @@ struct CompressView: View {
             case .compressed(let before, let after):
                 return .done(originalBytes: before, newBytes: after)
             case .compressedHeavy(let before, let after, _):
-                guard model.heavyVersions(for: job) != nil else {
+                guard let versions = model.heavyVersions(for: job) else {
                     return .done(originalBytes: before, newBytes: after)
                 }
-                return .doneHeavy(originalBytes: before, newBytes: after)
+                return .doneHeavy(originalBytes: before, newBytes: versions.displayedBytes)
             case .noGain:
                 return .unchanged("Already optimised")
             case .ocrAdded, .alreadySearchable:
