@@ -372,6 +372,8 @@ struct FileRow: View {
         case inProgress(fraction: Double?)
         /// Finished with a real size delta: original → new, plus a saved-percentage pill.
         case done(originalBytes: Int, newBytes: Int)
+        /// Finished with a real size delta, plus a capsule offering heavier re-compression.
+        case doneHeavy(originalBytes: Int, newBytes: Int)
         /// Finished with a message rather than a size delta (OCR's "Searchable — 12 pages").
         case succeeded(String)
         /// Finished with nothing to do — "Already optimised" / "Already searchable".
@@ -388,6 +390,10 @@ struct FileRow: View {
     var onRemove: (() -> Void)?
     /// Opening the file the row represents. Nil leaves the row inert.
     var onOpen: (() -> Void)?
+    /// Opening the heavy-compression options for this file. Nil leaves the capsule inert.
+    var onHeavyTap: (() -> Void)?
+
+    @State private var isHoveringCapsule = false
 
     var body: some View {
         HStack(spacing: 13) {
@@ -457,6 +463,20 @@ struct FileRow: View {
                 StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
             }
+        case .doneHeavy(let originalBytes, let newBytes):
+            HStack(spacing: 11) {
+                Text(byteString(originalBytes)).themeFont(.micro)
+                    .foregroundStyle(Theme.Colors.textTertiary).strikethrough()
+                Text(byteString(newBytes)).themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
+                StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
+                heavyCapsule
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
+            }
+            // The capsule makes this the widest trailing cluster; without fixedSize, width
+            // pressure wraps the pill onto two lines and grows the row (R8's single-line
+            // height). The name column absorbs the squeeze instead (lineLimit + middle
+            // truncation).
+            .fixedSize()
         case .succeeded(let message):
             Label {
                 Text(message).themeFont(.micro).lineLimit(1)
@@ -479,6 +499,24 @@ struct FileRow: View {
             }
             .foregroundStyle(.red)
         }
+    }
+
+    /// "Heavy compression ⌄" — neutral tag + affordance that it opens something (spec R8).
+    private var heavyCapsule: some View {
+        Button { onHeavyTap?() } label: {
+            HStack(spacing: 4) {
+                Text("Heavy compression").themeFont(.microBold)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
+            }
+            .foregroundStyle(isHoveringCapsule ? Theme.Colors.link : Theme.Colors.textSecondary)
+            .fixedSize()
+            .padding(.vertical, 2).padding(.horizontal, 8)
+            .background(Capsule().fill(Theme.Colors.surface))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .pointingHandCursor()
+        .onHover { isHoveringCapsule = $0 }
     }
 
     private func removeButton(_ action: @escaping () -> Void) -> some View {

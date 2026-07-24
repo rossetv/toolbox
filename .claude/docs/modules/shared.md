@@ -19,7 +19,7 @@ avoidance, path canonicalisation, performance-core count, and logging categories
 
 | File | Role |
 |------|------|
-| `Sources/Toolbox/Shared/ToolQueue.swift` | `ToolQueue` — `@MainActor` batch runner: per-job state machine, bounded concurrency, cancellation |
+| `Sources/Toolbox/Shared/ToolQueue.swift` | `ToolQueue` — `@MainActor` batch runner: per-job state machine, bounded concurrency, cancellation; `JobResult` also carries `alternateURL`/`mrcReport` through to the job for Rung 3 |
 | `Sources/Toolbox/Shared/FileNaming.swift` | `FileNaming.output(for:suffix:folder:reserving:)` — collision-free `<name>-<suffix>.pdf` naming |
 | `Sources/Toolbox/Shared/CanonicalPath.swift` | `URL.canonical` / `URL.canonicalPath` — C `realpath`-based canonicalisation |
 | `Sources/Toolbox/Shared/SystemInfo.swift` | `SystemInfo.performanceCoreCount` — `hw.perflevel0.logicalcpu` via `sysctlbyname` |

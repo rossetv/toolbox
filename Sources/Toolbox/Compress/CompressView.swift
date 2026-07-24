@@ -6,6 +6,7 @@
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
 import AppKit
+import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -15,6 +16,8 @@ import UniformTypeIdentifiers
 struct CompressView: View {
     @StateObject private var model = CompressViewModel()
     @State private var isTargeted = false
+    @State private var heavyPopoverJobID: ToolJob.ID?
+    @State private var quickLookURL: URL?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,7 +80,17 @@ struct CompressView: View {
                                 fileURL: job.url,
                                 status: status(for: job),
                                 onRemove: canRemove(job) ? { model.remove(job) } : nil,
-                                onOpen: { open(job) })
+                                onOpen: { open(job) },
+                                onHeavyTap: { heavyPopoverJobID = job.id })
+                            .popover(isPresented: isShowingHeavyPopover(for: job.id), arrowEdge: .bottom) {
+                                if let versions = model.heavyVersions(for: job) {
+                                    HeavyCompressionPopover(
+                                        versions: versions,
+                                        originalBytes: originalBytes(for: job),
+                                        onSwitch: { model.switchVersion(for: job); heavyPopoverJobID = nil },
+                                        onPreview: { quickLookURL = $0 })
+                                }
+                            }
                     }
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {
@@ -91,6 +104,28 @@ struct CompressView: View {
             .padding(Theme.Spacing.large)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .quickLookPreview($quickLookURL, in: quickLookItems)
+    }
+
+    /// Whichever job's popover is open supplies the pair Quick Look flips between with the ⇄
+    /// arrows (R11); no open popover means no job to derive the pair from.
+    private var quickLookItems: [URL] {
+        guard let id = heavyPopoverJobID,
+              let job = model.jobs.first(where: { $0.id == id }),
+              let versions = model.heavyVersions(for: job) else { return [] }
+        return [versions.shippedURL, versions.runnerUpURL]
+    }
+
+    private func isShowingHeavyPopover(for id: ToolJob.ID) -> Binding<Bool> {
+        Binding(
+            get: { heavyPopoverJobID == id },
+            set: { isPresented in if !isPresented { heavyPopoverJobID = nil } }
+        )
+    }
+
+    private func originalBytes(for job: ToolJob) -> Int {
+        if case .done(.compressedHeavy(let before, _, _)) = job.state { return before }
+        return 0
     }
 
     /// Batch progress with a live count, mirroring the mockup's "Compressing 2 of 3…" bar.
@@ -124,10 +159,8 @@ struct CompressView: View {
 
     private var savedBytes: Int {
         model.jobs.reduce(0) { sum, job in
-            if case .done(let outcome) = job.state, case .compressed(let before, let after) = outcome {
-                return sum + max(0, before - after)
-            }
-            return sum
+            guard let (before, after) = model.displayedSizes(for: job) else { return sum }
+            return sum + max(0, before - after)
         }
     }
 
@@ -136,7 +169,7 @@ struct CompressView: View {
     private var savedDetail: String {
         var before = 0, after = 0
         for job in model.jobs {
-            if case .done(let outcome) = job.state, case .compressed(let b, let a) = outcome { before += b; after += a }
+            if let (b, a) = model.displayedSizes(for: job) { before += b; after += a }
         }
         let pct = before > 0 ? Int(((Double(before - after) / Double(before)) * 100).rounded()) : 0
         let n = model.jobs.count
@@ -271,6 +304,11 @@ struct CompressView: View {
             switch outcome {
             case .compressed(let before, let after):
                 return .done(originalBytes: before, newBytes: after)
+            case .compressedHeavy(let before, let after, _):
+                guard let versions = model.heavyVersions(for: job) else {
+                    return .done(originalBytes: before, newBytes: after)
+                }
+                return .doneHeavy(originalBytes: before, newBytes: versions.displayedBytes)
             case .noGain:
                 return .unchanged("Already optimised")
             case .ocrAdded, .alreadySearchable:
@@ -366,7 +404,7 @@ struct CompressView: View {
         var before = 0
         var after = 0
         for job in model.jobs {
-            if case .done(.compressed(let jobBefore, let jobAfter)) = job.state {
+            if let (jobBefore, jobAfter) = model.displayedSizes(for: job) {
                 before += jobBefore
                 after += jobAfter
             }

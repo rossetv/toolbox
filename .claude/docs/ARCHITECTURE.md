@@ -29,9 +29,13 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
    output names (`FileNaming`) → `ToolQueue.run` → `CompressEngine.compress` → `OpenGuard.inspect`
    → stage into temp work dir → if `PDFService.classify` says `.scanBilevel`, try Rung 2 first
    (`BilevelScan.binarise` → `CCITTEncoder.encode` → `BilevelPDFComposer.compose`, per page) →
-   otherwise, or on any Rung-2 failure/no-gain, `GhostscriptRunner.run` (`sandbox-exec` +
-   `SeatbeltProfile`) → size/page-count gain check → `OutputValidator.validate` → atomic rename
-   to destination.
+   otherwise `GhostscriptRunner.run` (`sandbox-exec` + `SeatbeltProfile`) as the Rung-1 baseline
+   → if `.scanColour` on Balanced/Smallest, try Rung 3 (`MRCClassifier` R2/R3 → `MRCSegmenter` →
+   `MRCPageEncoder` → `MRCVerifier` → `MRCComposer.compose`, per page) and weigh it against the gs
+   output via the D7 document gate (smaller than both gs output and input, and validates) — a win
+   ships the hybrid and caches the gs output as a runner-up (`RunnerUpStore`) for the popover's
+   switch, a loss or any MRC failure falls through to gs → size/page-count gain check →
+   `OutputValidator.validate` → atomic rename to destination.
 2. **OCR**: `OCRView` (drop/pick) → `OCRViewModel.add` → user taps run → `OCRViewModel.run`
    pre-allocates output names → `ToolQueue.run` (capped at 2) → `OCREngine.ocr` → `OpenGuard.inspect`
    → per page: `PDFService.pageHasText` (skip) or render-upright + `VisionOCR.recognise` →
@@ -51,7 +55,9 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 | Compressed/OCR'd output | `<name>-compressed.pdf` / `<name>-ocr.pdf`, alongside input or in the chosen output folder | `CompressEngine`/`OCREngine` (atomic rename) | Finder / user |
 
 No persisted app state (no UserDefaults/Core Data in scope) — every run starts from an
-empty queue.
+empty queue. The one documented exception is `RunnerUpStore` (spec R15): Rung 3's losing
+gs versions live in `caches/Toolbox/runner-ups`, swept at launch and emptied at quit
+(`AppDelegate.applicationWillTerminate`) — see [Compress](modules/compress.md).
 
 ## Boundaries & invariants
 
@@ -74,7 +80,8 @@ empty queue.
 - **`ToolQueue` is generic over its job body** — it knows nothing about PDFs,
   Ghostscript, or Vision; both view models supply the tool-specific closure. See
   [Shared](modules/shared.md).
-- **Rung 2 (native bilevel scan pipeline: binarise + CCITT G4) is built and routes on
-  `PDFContentType`** — `.scanBilevel` tries it first, falling back to Rung-1
-  Ghostscript on any failure or no gain; every other classification goes straight to
-  Rung 1. **Rung 3 (MRC, for colour scans) is spec'd but not built.**
+- **Rung 2 (native bilevel scan pipeline: binarise + CCITT G4) and Rung 3 (per-page
+  MRC hybrid) are both built and route on `PDFContentType`** — `.scanBilevel` tries
+  Rung 2 first, falling back to Rung-1 Ghostscript on any failure or no gain;
+  `.scanColour` on Balanced/Smallest tries Rung 3, weighed against the Rung-1 gs
+  output via the D7 gate; every other case (or Rung-3 loss/failure) goes to Rung 1.

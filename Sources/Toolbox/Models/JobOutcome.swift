@@ -17,6 +17,9 @@ enum JobOutcome: Equatable {
     case ocrAdded(pages: Int, skipped: Int)
     /// Every page already had extractable text — nothing to OCR.
     case alreadySearchable
+    /// Compress finished with at least one MRC-encoded page in the shipped output; the plain
+    /// gs version was retained as the runner-up for the UI's instant switch (spec R7).
+    case compressedHeavy(before: Int, after: Int, runnerUpBytes: Int)
 }
 
 /// A job's lifecycle state. `ToolQueue` owns the `.queued`/`.running`/`.done`/`.failed`

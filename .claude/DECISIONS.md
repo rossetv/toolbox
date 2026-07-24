@@ -300,3 +300,23 @@ offline.
 **Affects:** `Sources/Toolbox/App/UpdateChecker.swift`, `Sources/Toolbox/App/RootView.swift`
 (`UpdateBanner`), `README.md` ("Good to know"), `.claude/OVERVIEW.md` (System boundaries,
 no-network invariant).
+
+## 2026-07-24 — Compress Rung 3 (MRC) ships; verifier's image-dominant blindness recorded
+**Spec:** .claude/specs/20260723-mrc-rung3.md
+**Affects:** Sources/Toolbox/Compress/MRC/, CompressEngine, CompressViewModel/View, RunnerUpStore, DesignSystem/Components, Models (JobOutcome/ToolJob), Shared/ToolQueue
+
+Rung 3 (per-page MRC for `.scanColour` on Balanced/Smallest) is built and gated: Task-0 tuned
+gs baseline (AutoFilter off, calibrated per-preset QFactor), classifier envelope + post-encode
+verifier, hybrid composition with the D7 document gate, runner-up retention and the
+heavy-compression capsule/popover/switch UI. The M2 port-fidelity gate PASSED on the private
+corpus: every document ≥43 % smaller than the tuned Rung-1 baseline (ratios min 1.68× / median
+1.92× / max 2.85×), visual quality at parity with the reference tool, rotation and DeviceGray
+soft-mask invariants verified (aggregates only — corpus never identified).
+
+Recorded limitation (measured, deliberate): the ink-weighted relative verifier (R4) cannot
+separate image-dominant harm — that damage lives off the ink mask, and excluded-page scores sat
+inside the good range. The classifier envelope measurably excluded every harmful corpus page
+(including all photo-class pages), which the spec's DoD accepts ("verifier or classifier
+excludes it"); the verifier remains the encode-corruption gate, and the switch UI is the human
+backstop (spec risk 2). Calibrated constants: bgDownsample 3, fgDownsample 6,
+maxNormalisedError 0.33.

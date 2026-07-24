@@ -24,7 +24,7 @@ actually built (`Tool`), not placeholders for ones that aren't.
 |------|---------|
 | Rung 1 | Tuned Ghostscript `pdfwrite` — the fallback path for every document, and the only path for any classification other than `.scanBilevel`. |
 | Rung 2 | Built: binarise a visually two-tone (`.scanBilevel`) scan, then encode CCITT G4 via ImageIO — tried first for that content type, falling back to Rung 1 on any failure or no gain. |
-| Rung 3 | Spec'd but **not built**: an MRC pipeline for `.scanColour` scans. |
+| Rung 3 | Built: per-page MRC (classify + Sauvola-class segment + CCITT mask/JPEG fg-bg layers + verify + compose) for `.scanColour` scans on Balanced/Smallest, weighed against the Rung-1 gs output via the D7 document gate; a losing gs version is retained as a runner-up the user can switch to. |
 | Incremental update | The PDF technique `PDFWriter` uses for OCR: append new objects + a new xref + trailer with `/Prev`; original bytes are an untouched verbatim prefix. |
 | Seatbelt sandbox | The `sandbox-exec` profile every Ghostscript invocation runs inside — no exception. |
 | TCC-protected folder | `~/Documents`, `~/Downloads`, `~/Desktop` — folders macOS gates behind a user consent prompt that a non-interactive sandboxed child process cannot answer. |
@@ -59,7 +59,7 @@ app's only network request), which sends nothing about the user or their files.
 
 ```
 Sources/Toolbox/App/           # shell: entry point, sidebar/detail split, window setup, Tool enum, smoke test
-Sources/Toolbox/Compress/      # Compress tool: Rung-1/2 engine, bilevel scan/CCITT/composer, estimator, view, view model
+Sources/Toolbox/Compress/      # Compress tool: Rung-1/2/3 engine, bilevel scan/CCITT/composer, MRC/ pipeline, runner-up store, estimator, view, view model
 Sources/Toolbox/OCR/           # OCR tool: engine, Vision wrapper, options, view, view model
 Sources/Toolbox/Services/      # gs runner + sandbox profile, PDF inspection, output validation, PDF writer
 Sources/Toolbox/Shared/        # ToolQueue (batch runner), file naming, canonical-path, system info, logging

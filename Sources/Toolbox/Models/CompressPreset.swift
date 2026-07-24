@@ -87,6 +87,13 @@ enum CompressPreset: String, CaseIterable, Identifiable {
             "-dDownsampleMonoImages=true",
             "-dMonoImageDownsampleType=/Subsample",
             "-dMonoImageResolution=\(monoDPI)",
+            // Task 0 (Rung-3 spec D9): AutoFilter lets gs re-decide the codec per image and
+            // silently ignore QFactor; explicit DCTEncode + the distiller-params QFactor is the
+            // measured tuned baseline every Rung-3 margin is honest against.
+            "-dAutoFilterColorImages=false",
+            "-dAutoFilterGrayImages=false",
+            "-dColorImageFilter=/DCTEncode",
+            "-dGrayImageFilter=/DCTEncode",
             // Fonts + structure
             "-dSubsetFonts=true",
             "-dCompressFonts=true",
@@ -97,5 +104,28 @@ enum CompressPreset: String, CaseIterable, Identifiable {
             args.append("-dConvertCMYKImagesToRGB=true")
         }
         return args
+    }
+
+    /// JPEG quantisation aggressiveness for re-encoded images (gs distiller QFactor; higher
+    /// is smaller/rougher). Calibrated 2026-07-23 against real colour scans (anonymised
+    /// aggregates only): balanced 1.5 is visually indistinguishable from the input at 100 %
+    /// (≈30 % smaller); smallest 3.0 keeps text fully legible (≈46 % smaller); maximumQuality
+    /// stays conservative — at 300 DPI targets the downsample threshold rarely triggers a
+    /// re-encode, so the value seldom applies at all.
+    var jpegQFactor: Double {
+        switch self {
+        case .maximumQuality: return 0.76
+        case .balanced: return 1.5
+        case .smallestSize: return 3.0
+        }
+    }
+
+    /// PostScript fragment passed to gs via `-c` (a single argv element — no shell quoting),
+    /// followed by `-f <input>`. Sets the JPEG quantisation both image dicts use; must come
+    /// after every `-d`/`-s` switch and before the input file.
+    func gsDistillerParams() -> String {
+        let dict = "<< /QFactor \(jpegQFactor) /Blend 1 "
+            + "/HSamples [2 1 1 2] /VSamples [2 1 1 2] >>"
+        return "<< /ColorImageDict \(dict) /GrayImageDict \(dict) >> setdistillerparams"
     }
 }

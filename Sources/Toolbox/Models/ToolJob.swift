@@ -14,13 +14,20 @@ struct ToolJob: Identifiable {
     let url: URL
     var state: JobState
     var resultURL: URL?
+    var alternateURL: URL?
     var estimate: SizeEstimate?
+    /// The MRC per-page classifier/verifier verdicts for this job, when the compress body produced
+    /// one (spec §6's debugging record). Absent for OCR jobs and any compress job that never
+    /// reached the MRC leg.
+    var mrcReport: MRCDocumentReport?
 
     init(url: URL) {
         self.id = UUID()
         self.url = url
         self.state = .queued
         self.resultURL = nil
+        self.alternateURL = nil
         self.estimate = nil
+        self.mrcReport = nil
     }
 }

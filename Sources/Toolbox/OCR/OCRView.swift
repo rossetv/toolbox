@@ -175,7 +175,7 @@ struct OCRView: View {
                 return .succeeded("Searchable — \(pages) page\(pages == 1 ? "" : "s")\(suffix)")
             case .alreadySearchable:
                 return .unchanged("Already searchable")
-            case .compressed, .noGain:
+            case .compressed, .compressedHeavy, .noGain:
                 return .succeeded("Done")
             }
         case .failed(let message):

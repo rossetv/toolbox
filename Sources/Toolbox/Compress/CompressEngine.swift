@@ -26,6 +26,11 @@ enum CompressError: Error, LocalizedError {
     }
 }
 
+/// A page attempt that cannot even fall back — the full-page render itself failed, so there is
+/// no JPEG to ship. Thrown by `mrcPage` and caught in `mrcCompress`, where it becomes a
+/// whole-document decline (D10): a hybrid missing one page is never composed.
+private struct MRCDecline: Error {}
+
 /// Rung-1 compression: tuned Ghostscript `pdfwrite`, wholly inside the seatbelt sandbox.
 ///
 /// Safety contract (spec §5.4): inspects the input first (encrypted/corrupt rejected); **stages
@@ -38,8 +43,9 @@ enum CompressError: Error, LocalizedError {
 /// invalid output is a failure, never "already optimised".
 ///
 /// Content routing is live: a document classified `.scanBilevel` is attempted through Rung 2
-/// (binarise + CCITT G4, composed natively) and falls back to Rung 1 on any doubt; every other
-/// classification goes straight to Rung 1. Rung 3 (MRC) is not built.
+/// (binarise + CCITT G4, composed natively) and falls back to Rung 1 on any doubt; a
+/// `.scanColour` document on balanced/smallest runs the gs pass then attempts Rung 3 (per-page
+/// MRC, `mrcCompress`) behind the D7 document gate; everything else goes straight to Rung 1.
 struct CompressEngine {
     /// Longest side, in pixels, any Rung-2 page render may reach — the memory guard against a
     /// hostile `/MediaBox`.
@@ -55,6 +61,11 @@ struct CompressEngine {
     /// count, so a very long scan is the one shape that can still exhaust memory here. Beyond this
     /// the document goes to Rung 1, which has no such ceiling.
     static let maxBilevelPages = 1200
+    /// Most pages Rung 3 will attempt in one document (≈ `maxBilevelPages` / 3, R13). MRC holds
+    /// three encoded layers per page until the whole document composes and recomposes each page to
+    /// verify it, so its per-page peak is several times Rung 2's — hence the tighter ceiling.
+    /// Beyond this the document declines to the gs path, which streams and has no such limit.
+    static let maxMRCPages = 400
 
     let runner: any GhostscriptRunning
     let service: PDFService
@@ -71,6 +82,8 @@ struct CompressEngine {
     func compress(_ input: URL,
                   preset: CompressPreset,
                   to output: URL,
+                  alternateOutput: URL? = nil,
+                  mrcReport: ((MRCDocumentReport) -> Void)? = nil,
                   progress: @escaping (Double) -> Void) async throws -> JobOutcome {
         let fm = FileManager.default
         let input = input.canonical
@@ -87,6 +100,15 @@ struct CompressEngine {
 
         let inputSize = Self.fileSize(input)
         let outputDir = output.deletingLastPathComponent().canonical
+
+        // Content routing decided once, up front, and reused below (never classify twice). A
+        // `.scanColour` document at any preset but maximumQuality (D3) is a Rung-3 (MRC hybrid)
+        // candidate: its gs pass still runs first and unchanged — the baseline the D7 gate weighs
+        // the hybrid against — but its progress is mapped into 0…0.45 to leave 0.45…0.95 for the
+        // MRC leg (delivery finishes at 1.0).
+        let classification = try? service.classify(input)
+        let wantsMRC = classification == .scanColour && preset != .maximumQuality
+        let gsProgressCeiling = wantsMRC ? 0.45 : 1.0
 
         // Rung 2 can process several pages — driving progress up — before declining on a LATER
         // page and falling through to Rung 1, which then starts its own progress back near 0.
@@ -121,7 +143,7 @@ struct CompressEngine {
         //    is where the large saving is. Any failure, or a result that is not smaller and valid,
         //    falls through to Rung 1 — no document is ever left unhandled or worse off (R2-N1).
         var bilevelOutcome: Int?
-        if (try? service.classify(input)) == .scanBilevel {
+        if classification == .scanBilevel {
             do {
                 bilevelOutcome = try await bilevelCompress(input, preset: preset, to: work,
                                                            progress: reportProgress)
@@ -153,13 +175,16 @@ struct CompressEngine {
         }
 
         // 4. Otherwise run gs sandboxed, scoped to the work dir only (Rung 1).
-        let arguments = preset.gsArguments() + ["-sOutputFile=\(workOut.path)", workIn.path]
+        let arguments = preset.gsArguments()
+            + ["-sOutputFile=\(workOut.path)", "-c", preset.gsDistillerParams(), "-f", workIn.path]
         let result = try await runner.run(
             arguments: arguments,
             readPaths: [workIn],
             writePaths: [work],
             onProgress: { page in
-                if pageCount > 0 { reportProgress(min(1.0, Double(page) / Double(pageCount))) }
+                if pageCount > 0 {
+                    reportProgress(min(1.0, Double(page) / Double(pageCount)) * gsProgressCeiling)
+                }
             })
         // A cancel that landed while gs was running (or just as it finished) must produce nothing:
         // the work dir's `defer` discards the staged output and the job returns to `.queued`.
@@ -172,6 +197,61 @@ struct CompressEngine {
         let outputSize = Self.fileSize(workOut)
         guard outputSize > 0 else {
             throw CompressError.ghostscriptFailed("Ghostscript exited successfully but produced no output.")
+        }
+
+        // 4b. Rung 3 (MRC hybrid) for a colour scan. The gs output above is the baseline the D7
+        //     gate weighs the hybrid against; the hybrid ships only if it is smaller than BOTH the
+        //     gs output AND the input, and it validates. This runs BEFORE the never-larger/no-gain
+        //     check on purpose: a document where gs bloats can still be beaten by MRC against the
+        //     input, and pushing this below would silently `.noGain` it. `mrcCompress`'s
+        //     composition/write failures propagate out of it, so this catch has the exact Rung-2
+        //     call-site shape — only a `CancellationError` may escape; every other failure declines
+        //     to the gs output (D10), never a throw, so the document is never worse off than gs.
+        if wantsMRC {
+            var mrcResult: (url: URL, bytes: Int, report: MRCDocumentReport)?
+            do {
+                mrcResult = try await mrcCompress(workIn, preset: preset, to: work,
+                                                  progress: { reportProgress(0.45 + $0 * 0.5) })
+            } catch let cancellation as CancellationError {
+                throw cancellation
+            } catch {
+                mrcResult = nil   // D10: any MRC failure ships the gs output below, never a throw
+            }
+            if let (mrcURL, mrcBytes, report) = mrcResult,
+               mrcBytes < outputSize, mrcBytes < inputSize,
+               (try? validator.validate(input: workIn, output: mrcURL, samplePages: 3)) == true {
+                // The hybrid wins — deliver it via the same atomic idiom as every other winner.
+                try Task.checkCancellation()
+                let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
+                var placed = false
+                defer { if !placed { try? fm.removeItem(at: destTemp) } }
+                try fm.copyItem(at: mrcURL, to: destTemp)
+                try Task.checkCancellation()
+                try fm.moveItem(at: destTemp, to: output)
+                placed = true
+                // The gs output becomes the runner-up: a plain copy into the caller's cache slot —
+                // but only when it is itself a valid compression of the input (R6). A gs output
+                // that is not smaller than the input is nothing legitimate to switch to, so the
+                // hybrid ships as a plain `.compressed` result with no runner-up capsule (R7).
+                // Best-effort — the user's output has already shipped, so a cache-write failure must
+                // never fail the job; `RunnerUpStore` already tolerates an absent runner-up.
+                reportProgress(1.0)
+                mrcReport?(report)
+                guard outputSize < inputSize else {
+                    return .compressed(before: inputSize, after: mrcBytes)
+                }
+                if let alternateOutput {
+                    try? fm.copyItem(at: workOut, to: alternateOutput)
+                }
+                return .compressedHeavy(before: inputSize, after: mrcBytes, runnerUpBytes: outputSize)
+            }
+            // The hybrid lost (nil, larger or invalid) — fall through to the gs delivery below,
+            // exactly as any non-MRC document; `alternateOutput` is never written (R7). The
+            // attempt's report is still the spec §6 debugging record regardless of the gate
+            // outcome, so it ships even though the attempt lost.
+            if let mrcResult {
+                mrcReport?(mrcResult.report)
+            }
         }
 
         // 5. Never emit a larger file — on no gain keep the original and write nothing. The
@@ -287,6 +367,149 @@ struct CompressEngine {
         let staged = work.appendingPathComponent("bilevel.pdf")
         try data.write(to: staged, options: .atomic)
         return data.count
+    }
+
+    /// Rung 3: per-page MRC with own-render JPEG fallback (spec §5). Returns the composed hybrid's
+    /// byte count and per-page report, or nil to decline the whole document. Per-page failures decline
+    /// to fallback content internally; a composition or write failure DOES propagate out of this method —
+    /// the routing gate converts it to a whole-document decline at the call site (same catch shape as
+    /// Rung 2's `bilevelCompress` caller). Only `CancellationError` may pass through that call-site catch.
+    ///
+    /// Reached directly by tests until the routing/D7 gate (Task 15) wires it behind `compress`; it
+    /// is `internal` rather than `private` for exactly that reason. `forceEligible` and
+    /// `verifierOverride` are test-only seams (both default off): the former pushes a page past the
+    /// classifier envelope, the latter rewrites a page's verifier score so the verify→fallback swap
+    /// (spec §9) can be exercised deterministically. Neither has a production caller.
+    func mrcCompress(_ input: URL,
+                     preset: CompressPreset,
+                     to work: URL,
+                     forceEligible: Bool = false,
+                     verifierOverride: ((MRCVerifier.Score) -> MRCVerifier.Score)? = nil,
+                     progress: @escaping (Double) -> Void) async throws
+                     -> (url: URL, bytes: Int, report: MRCDocumentReport)? {
+        guard let document = PDFDocument(url: input), document.pageCount > 0,
+              document.pageCount <= Self.maxMRCPages,
+              // The composed output is a fresh document: bookmarks cannot be carried, so a
+              // bookmarked scan must take the gs path or it silently loses its outline — the same
+              // guard, for the same reason, as `bilevelCompress`.
+              document.outlineRoot == nil else { return nil }
+
+        // R2 structural sweep first — cheap, and one complex page kills the whole attempt before
+        // any rasterising, because the fallback path rasterises and rasterising text is destruction.
+        for index in 0..<document.pageCount {
+            try Task.checkCancellation()
+            guard let page = document.page(at: index),
+                  MRCClassifier.structure(of: page) == .simpleSingleImage else { return nil }
+        }
+
+        var pages: [MRCComposer.Page] = []
+        var verdicts: [MRCPageVerdict] = []
+        var anyMRC = false
+        for index in 0..<document.pageCount {
+            try Task.checkCancellation()
+            guard let page = document.page(at: index) else { return nil }
+            let box = page.bounds(for: .mediaBox)
+            guard box.width > 0, box.height > 0 else { return nil }
+
+            // Render at the preset's bilevel DPI, bounded so a hostile /MediaBox cannot blow memory.
+            let scale = CGFloat(preset.bilevelDPI) / 72.0
+            let longestSide = max(box.width, box.height)
+            let maxDimension = min(longestSide * scale, Self.maxBilevelPixels)
+
+            // That cap is a memory guard and must never double as a silent quality decision. On a
+            // large-format page it becomes one: an A0 sheet at the highest preset clamps to about
+            // 107 dpi, losing hairlines and small print — and the result is still smaller, so it
+            // would ship as a success. Below the floor, decline and let Rung 1 handle it.
+            guard maxDimension / longestSide * 72.0 >= Self.minBilevelDPI else { return nil }
+
+            let content: MRCComposer.PageContent
+            let verdict: MRCPageVerdict
+            do {
+                (content, verdict) = try mrcPage(page, box: box, maxDimension: maxDimension,
+                                                 preset: preset, forceEligible: forceEligible,
+                                                 verifierOverride: verifierOverride)
+            } catch is MRCDecline {
+                return nil                              // a page with no fallback → decline the document
+            }
+            pages.append(MRCComposer.Page(content: content, size: box.size, rotation: page.rotation))
+            verdicts.append(verdict)
+            if case .mrcEncoded = verdict { anyMRC = true }
+            progress(Double(index + 1) / Double(document.pageCount))
+        }   // per-page rasters go out of scope here — only the encoded payloads are retained (R13)
+
+        guard anyMRC else { return nil }                // R7: no MRC page → nothing to gain over gs
+        let data = try MRCComposer.compose(pages: pages)
+        let out = work.appendingPathComponent("mrc.pdf")
+        try data.write(to: out, options: .atomic)
+        return (out, data.count, MRCDocumentReport(verdicts: verdicts))
+    }
+
+    /// One page: classify → segment → encode → verify (D6), else the fallback JPEG (R5). Returns
+    /// the composed content and the verdict recorded for it. Throws only `MRCDecline`, and only when
+    /// even the full-page render fails so no fallback is possible.
+    private func mrcPage(_ page: PDFPage, box: CGRect, maxDimension: CGFloat,
+                         preset: CompressPreset, forceEligible: Bool,
+                         verifierOverride: ((MRCVerifier.Score) -> MRCVerifier.Score)?) throws
+                         -> (MRCComposer.PageContent, MRCPageVerdict) {
+        // The full render feeds both the MRC split and the fallback; if it fails there is nothing
+        // to ship for this page, so the whole document declines.
+        guard let full = try? service.render(page, maxDimension: maxDimension) else { throw MRCDecline() }
+
+        // One tiny classifier render (R14) yields the eligibility signals — also recorded on an
+        // MRC verdict as the debugging trail (spec §6).
+        let classifierDimension = MRCClassifier.renderDimension(for: page)
+        let features = (try? service.render(page, maxDimension: classifierDimension))
+            .flatMap(MRCClassifier.features(of:))
+
+        if !forceEligible {
+            guard let features else {
+                return (try fallbackJPEG(page, box: box, preset: preset), .fallback(.renderFailed))
+            }
+            if let reason = MRCClassifier.verdict(features: features) {
+                return (try fallbackJPEG(page, box: box, preset: preset), .fallback(reason))
+            }
+        }
+
+        // Eligible (or forced). A missing feature record only arises on the forced path, where the
+        // classifier render was skipped or failed; the verdict still needs one, so default to zeros.
+        let recorded = features ?? MRCPageFeatures(inkCoverage: 0, meanComponentSize: 0,
+                                                   componentCount: 0, colourCoverage: 0)
+
+        guard let segmented = MRCSegmenter.segment(full) else {
+            return (try fallbackJPEG(page, box: box, preset: preset), .fallback(.segmentationFailed))
+        }
+        guard let encoded = MRCPageEncoder.encode(segmented, preset: preset),
+              let candidate = MRCPageEncoder.recompose(encoded) else {
+            return (try fallbackJPEG(page, box: box, preset: preset), .fallback(.encodeFailed))
+        }
+
+        // Verify the recomposed hybrid against the original over the ink region (D6) — the smear
+        // gate. A dimension mismatch (never expected: candidate, input and mask share the render
+        // size) has no meaningful score, so it is treated as a rejection, not a silent pass.
+        var score = MRCVerifier.score(candidate: candidate, input: full, mask: segmented.mask)
+            ?? MRCVerifier.Score(normalisedError: .infinity, pass: false)
+        if let verifierOverride { score = verifierOverride(score) }
+        guard score.pass else {
+            return (try fallbackJPEG(page, box: box, preset: preset),
+                    .fallback(.verifierRejected(score: score.normalisedError)))
+        }
+
+        let content = MRCComposer.PageContent.mrc(background: encoded.background,
+                                                  foreground: encoded.foreground, mask: encoded.mask)
+        return (content, .mrcEncoded(recorded))
+    }
+
+    /// The R5 fallback: re-render the page at the preset's contone DPI (below the MRC render's mono
+    /// DPI, so genuinely smaller) and JPEG it at the background layer's quality. A render failure
+    /// here leaves the page with nothing to ship, so it declines the whole document.
+    private func fallbackJPEG(_ page: PDFPage, box: CGRect,
+                              preset: CompressPreset) throws -> MRCComposer.PageContent {
+        let scale = CGFloat(preset.imageDPI) / 72.0
+        let maxDimension = min(max(box.width, box.height) * scale, Self.maxBilevelPixels)
+        guard let image = try? service.render(page, maxDimension: maxDimension),
+              let jpeg = MRCPageEncoder.encodeJPEG(image, quality: MRCPageEncoder.layerQualities(for: preset).bg)
+        else { throw MRCDecline() }
+        return .jpeg(jpeg)
     }
 
     private static func fileSize(_ url: URL) -> Int {

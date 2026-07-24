@@ -20,7 +20,7 @@ window-minimum-size fix-up, and a headless self-test hook.
 
 | File | Role |
 |------|------|
-| `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` then `yieldToExistingInstance()` before any window opens |
+| `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` then `yieldToExistingInstance()` before any window opens; `AppDelegate` (`applicationWillTerminate`) empties the Rung-3 runner-up cache on quit |
 | `Sources/Toolbox/App/UpdateChecker.swift` | Notify-only GitHub Releases version check on launch — the app's only network request; never downloads or self-replaces |
 | `Sources/Toolbox/App/RootView.swift` | An explicit `HStack`/`VStack` split — update banner, sidebar + per-tool detail (`CompressView`/`OCRView`) |
 | `Sources/Toolbox/App/SidebarView.swift` | One collapsible-rail entry per built `Tool`, each a coloured tile (`Tool.tint`) plus its name; header uses `NSApp.applicationIconImage` for the real bundle icon; a bottom info button opens `AboutView` as a sheet |
@@ -63,6 +63,10 @@ window-minimum-size fix-up, and a headless self-test hook.
   (offline, rate-limited, malformed) resolves to "no update", and the banner's button
   only opens the release page in the browser — the app never downloads or replaces its
   own binary.
+- **`AppDelegate.applicationWillTerminate` calls `RunnerUpStore.removeAllOnDisk()`**
+  (nonisolated static, no instance needed) — the quit-time half of Rung 3's runner-up
+  cache lifecycle; `RunnerUpStore.sweepStale()` is the launch-time half. See
+  [Compress](compress.md).
 
 ## Gotchas
 
