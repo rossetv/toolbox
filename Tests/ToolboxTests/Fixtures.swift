@@ -443,8 +443,9 @@ enum Fixtures {
             drawText("Oversized page", in: ctx, at: CGPoint(x: 50, y: 300), font: font)
         }
         let url = try uniqueURL("oversized-page.pdf")
-        // 3000×3000 point MediaBox: with bilevelDPI = 200, clamps to 5000 pixels,
-        // effective DPI = 5000 / 3000 * 72 ≈ 120 dpi < 150 minimum → should decline.
+        // 3000×3000 point MediaBox: balanced's bilevelDPI = 300 renders past the 5000 px
+        // clamp, so the clamp dominates: effective DPI = 5000 / 3000 * 72 ≈ 120 dpi <
+        // 150 minimum (minBilevelDPI) → should decline.
         var media = CGRect(x: 0, y: 0, width: 3000, height: 3000)
         guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
             throw FixtureError.contextCreation

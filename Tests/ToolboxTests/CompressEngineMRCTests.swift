@@ -147,8 +147,9 @@ final class CompressEngineMRCTests: XCTestCase {
     }
 
     /// Regression: an oversized page whose render clamps below 150 dpi must decline the whole
-    /// document (return nil), not ship a degraded rebuild. The effective-DPI floor guard (R13)
-    /// must be present and enforced, mirroring the Rung-2 guard (line 340).
+    /// document (return nil), not ship a degraded rebuild. The effective-DPI floor guard (R13,
+    /// `minBilevelDPI`) must be present and enforced, mirroring the Rung-2 guard in
+    /// `bilevelCompress`.
     func testOversizedPageBelowMinDPIDeclines() async throws {
         let engine = makeEngine()
         let input = try Fixtures.oversizedPageScanPDF()
