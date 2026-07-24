@@ -16,6 +16,10 @@ struct ToolJob: Identifiable {
     var resultURL: URL?
     var alternateURL: URL?
     var estimate: SizeEstimate?
+    /// The MRC per-page classifier/verifier verdicts for this job, when the compress body produced
+    /// one (spec §6's debugging record). Absent for OCR jobs and any compress job that never
+    /// reached the MRC leg.
+    var mrcReport: MRCDocumentReport?
 
     init(url: URL) {
         self.id = UUID()
@@ -24,5 +28,6 @@ struct ToolJob: Identifiable {
         self.resultURL = nil
         self.alternateURL = nil
         self.estimate = nil
+        self.mrcReport = nil
     }
 }

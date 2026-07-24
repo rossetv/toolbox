@@ -152,6 +152,25 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: versions.runnerUpURL.path))
     }
 
+    /// A report the engine hands back via the `mrcReport` closure is retained on the job result
+    /// (spec §5/§6's debugging record), not discarded.
+    func testCompressedHeavyRetainsMRCReportOnJob() async throws {
+        let env = try HeavyEnv()
+        let expectedReport = MRCDocumentReport(verdicts: [.mrcEncoded(MRCPageFeatures(
+            inkCoverage: 0.4, meanComponentSize: 12, componentCount: 30, colourCoverage: 0.1
+        ))])
+        env.stub.reportToDeliver = expectedReport
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        XCTAssertEqual(job.mrcReport, expectedReport)
+    }
+
     /// The switch swaps the files in place and flips `shippedIsHeavy`; a second switch restores the
     /// original state. The byte counts stay intrinsic to each version (R10).
     func testSwitchTogglesInstantlyAndReversibly() async throws {
@@ -412,6 +431,8 @@ final class CompressViewModelTests: XCTestCase {
         let outcome: JobOutcome
         let shippedBytes: Int
         let runnerUpBytes: Int
+        /// When set, handed to the caller's `mrcReport` closure — exercises the retention path.
+        var reportToDeliver: MRCDocumentReport?
         private(set) var callCount = 0
         var gate: Gate?
 
@@ -439,6 +460,7 @@ final class CompressViewModelTests: XCTestCase {
                 }
                 try Data(repeating: 0x4E, count: runnerUpBytes).write(to: alternateOutput)
             }
+            if let reportToDeliver { mrcReport?(reportToDeliver) }
             if let gate { await gate.wait() }
             return outcome
         }

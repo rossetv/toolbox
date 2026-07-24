@@ -14,11 +14,15 @@ struct JobResult {
     let outputURL: URL?
     /// The retained runner-up output (Rung-3's plain-gs alternative), if the body produced one.
     let alternateURL: URL?
+    /// The MRC per-page report (spec §6's debugging record), if the body produced one.
+    let mrcReport: MRCDocumentReport?
 
-    init(_ outcome: JobOutcome, outputURL: URL? = nil, alternateURL: URL? = nil) {
+    init(_ outcome: JobOutcome, outputURL: URL? = nil, alternateURL: URL? = nil,
+         mrcReport: MRCDocumentReport? = nil) {
         self.outcome = outcome
         self.outputURL = outputURL
         self.alternateURL = alternateURL
+        self.mrcReport = mrcReport
     }
 }
 
@@ -126,6 +130,7 @@ final class ToolQueue: ObservableObject {
             if let index = jobs.firstIndex(where: { $0.id == id }) {
                 jobs[index].resultURL = result.outputURL
                 jobs[index].alternateURL = result.alternateURL
+                jobs[index].mrcReport = result.mrcReport
             }
             setState(id, .done(result.outcome))
         } catch is CancellationError {

@@ -46,6 +46,9 @@ final class CompressViewModel: ObservableObject {
     private var switched: Set<ToolJob.ID> = []
     /// Progress fraction for a job in the R10 re-run path, overlaid onto its published state.
     private var rerunProgress: [ToolJob.ID: Double] = [:]
+    /// MRC reports produced by an R10 re-run (spec §6's debugging record), overlaid onto the
+    /// published job since the re-run bypasses `ToolQueue.run` and never touches `queue.jobs`.
+    private var rerunReports: [ToolJob.ID: MRCDocumentReport] = [:]
     /// The preset each job was compressed under, so an R10 re-run reproduces the *same* output
     /// rather than silently rewriting the shipped file under a preset the user changed since.
     private var jobPresets: [ToolJob.ID: CompressPreset] = [:]
@@ -204,18 +207,22 @@ final class CompressViewModel: ObservableObject {
                     throw MissingOutputReservationError()
                 }
                 let alternate = alternates[job.id]
+                // Captured here, per job invocation, so each concurrent job's report lands on
+                // that job's own `JobResult` rather than a shared/racing variable.
+                var capturedReport: MRCDocumentReport?
                 let outcome = try await engine.compress(job.url, preset: chosen, to: output,
                                                         alternateOutput: alternate,
-                                                        mrcReport: nil) { report($0) }
+                                                        mrcReport: { capturedReport = $0 }) { report($0) }
                 switch outcome {
                 // `.noGain` deliberately writes nothing, so there is no output file to point at.
                 case .noGain:
-                    return JobResult(outcome)
+                    return JobResult(outcome, mrcReport: capturedReport)
                 // The heavy result retains the plain-gs version as the runner-up for the switch.
                 case .compressedHeavy:
-                    return JobResult(outcome, outputURL: output, alternateURL: alternate)
+                    return JobResult(outcome, outputURL: output, alternateURL: alternate,
+                                     mrcReport: capturedReport)
                 default:
-                    return JobResult(outcome, outputURL: output)
+                    return JobResult(outcome, outputURL: output, mrcReport: capturedReport)
                 }
             }
             // The batch is over: its in-flight reservations are settled (done-heavy runner-ups now
@@ -283,6 +290,7 @@ final class CompressViewModel: ObservableObject {
         analysingIDs = analysingIDs.filter { liveIDs.contains($0) }
         switched = switched.filter { liveIDs.contains($0) }
         jobPresets = jobPresets.filter { liveIDs.contains($0.key) }
+        rerunReports = rerunReports.filter { liveIDs.contains($0.key) }
         for (id, task) in estimationTasks where !liveIDs.contains(id) {
             task.cancel()
             estimationTasks[id] = nil
@@ -296,6 +304,7 @@ final class CompressViewModel: ObservableObject {
         jobs = rawJobs.map { job in
             var display = job
             display.estimate = estimates[job.id]?[preset]
+            if let rerunReport = rerunReports[job.id] { display.mrcReport = rerunReport }
             if isSwitchRerunning.contains(job.id) {
                 // R10 re-run overlay: the queue still reports the job `.done`, but the switch is
                 // re-computing it, so the row shows progress until the re-run lands.
@@ -388,9 +397,11 @@ final class CompressViewModel: ObservableObject {
             let freshShipped = shipped.deletingLastPathComponent()
                 .appendingPathComponent(".toolbox-rerun-\(UUID().uuidString).pdf")
             defer { try? FileManager.default.removeItem(at: freshShipped) }
+            var capturedReport: MRCDocumentReport?
             do {
                 let outcome = try await engine.compress(job.url, preset: chosen, to: freshShipped,
-                                                         alternateOutput: runnerUp, mrcReport: nil,
+                                                         alternateOutput: runnerUp,
+                                                         mrcReport: { capturedReport = $0 },
                                                          progress: report)
                 // The switch's post-regeneration step assumes the re-run reproduces
                 // `.compressedHeavy` with both the shipped and runner-up files written — that's an
@@ -404,6 +415,7 @@ final class CompressViewModel: ObservableObject {
                         _ = try FileManager.default.replaceItemAt(shipped, withItemAt: freshShipped)
                         // Regenerated canonical state: heavy shipped, runner-up present.
                         switched.remove(id)
+                        rerunReports[id] = capturedReport
                         if !wantHeavy {
                             do {
                                 try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
