@@ -399,9 +399,16 @@ struct CompressEngine {
             let box = page.bounds(for: .mediaBox)
             guard box.width > 0, box.height > 0 else { return nil }
 
-            // Rendered bounded exactly like Rung 2 (R13): preset DPI, clamped to maxBilevelPixels.
+            // Render at the preset's bilevel DPI, bounded so a hostile /MediaBox cannot blow memory.
             let scale = CGFloat(preset.bilevelDPI) / 72.0
-            let maxDimension = min(max(box.width, box.height) * scale, Self.maxBilevelPixels)
+            let longestSide = max(box.width, box.height)
+            let maxDimension = min(longestSide * scale, Self.maxBilevelPixels)
+
+            // That cap is a memory guard and must never double as a silent quality decision. On a
+            // large-format page it becomes one: an A0 sheet at the highest preset clamps to about
+            // 107 dpi, losing hairlines and small print — and the result is still smaller, so it
+            // would ship as a success. Below the floor, decline and let Rung 1 handle it.
+            guard maxDimension / longestSide * 72.0 >= Self.minBilevelDPI else { return nil }
 
             let content: MRCComposer.PageContent
             let verdict: MRCPageVerdict

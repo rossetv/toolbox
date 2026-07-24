@@ -145,6 +145,19 @@ final class CompressEngineMRCTests: XCTestCase {
             // expected
         }
     }
+
+    /// Regression: an oversized page whose render clamps below 150 dpi must decline the whole
+    /// document (return nil), not ship a degraded rebuild. The effective-DPI floor guard (R13)
+    /// must be present and enforced, mirroring the Rung-2 guard (line 340).
+    func testOversizedPageBelowMinDPIDeclines() async throws {
+        let engine = makeEngine()
+        let input = try Fixtures.oversizedPageScanPDF()
+        let work = try makeWorkDir()
+
+        let result = try await engine.mrcCompress(input, preset: .balanced, to: work) { _ in }
+
+        XCTAssertNil(result, "a page clamping below 150 dpi must decline the whole document")
+    }
 }
 
 // MARK: - Routing, the D7 document gate and runner-up delivery (through `compress`)

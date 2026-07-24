@@ -430,6 +430,32 @@ enum Fixtures {
         return url.canonical
     }
 
+    /// One page with an oversized MediaBox (3000×3000 points) carrying a small text image.
+    /// The large format causes the render clamp to land below 150 dpi, triggering the
+    /// minBilevelDPI floor guard in both Rung 2 and Rung 3. Used to verify the decline
+    /// on insufficient effective resolution (regression test for R13).
+    static func oversizedPageScanPDF() throws -> URL {
+        let image = renderBitmap(width: 600, height: 600) { ctx, _ in
+            ctx.setFillColor(CGColor(red: 0.97, green: 0.96, blue: 0.92, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: 600, height: 600))
+            ctx.setFillColor(CGColor(red: 0.05, green: 0.08, blue: 0.35, alpha: 1))
+            let font = CTFontCreateWithName("Helvetica" as CFString, 32, nil)
+            drawText("Oversized page", in: ctx, at: CGPoint(x: 50, y: 300), font: font)
+        }
+        let url = try uniqueURL("oversized-page.pdf")
+        // 3000×3000 point MediaBox: with bilevelDPI = 200, clamps to 5000 pixels,
+        // effective DPI = 5000 / 3000 * 72 ≈ 120 dpi < 150 minimum → should decline.
+        var media = CGRect(x: 0, y: 0, width: 3000, height: 3000)
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        ctx.beginPDFPage(nil)
+        ctx.draw(image, in: CGRect(x: 150, y: 1350, width: 600, height: 600))
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return url.canonical
+    }
+
     /// A truncated/garbage file that is not a readable PDF (`PDFDocument(url:)` returns nil).
     static func corruptPDF() throws -> URL {
         let url = try uniqueURL("corrupt.pdf")
