@@ -228,14 +228,20 @@ struct CompressEngine {
                 try Task.checkCancellation()
                 try fm.moveItem(at: destTemp, to: output)
                 placed = true
-                // The gs output becomes the runner-up: a plain copy into the caller's cache slot.
+                // The gs output becomes the runner-up: a plain copy into the caller's cache slot —
+                // but only when it is itself a valid compression of the input (R6). A gs output
+                // that is not smaller than the input is nothing legitimate to switch to, so the
+                // hybrid ships as a plain `.compressed` result with no runner-up capsule (R7).
                 // Best-effort — the user's output has already shipped, so a cache-write failure must
                 // never fail the job; `RunnerUpStore` already tolerates an absent runner-up.
+                reportProgress(1.0)
+                mrcReport?(report)
+                guard outputSize < inputSize else {
+                    return .compressed(before: inputSize, after: mrcBytes)
+                }
                 if let alternateOutput {
                     try? fm.copyItem(at: workOut, to: alternateOutput)
                 }
-                reportProgress(1.0)
-                mrcReport?(report)
                 return .compressedHeavy(before: inputSize, after: mrcBytes, runnerUpBytes: outputSize)
             }
             // The hybrid lost (nil, larger or invalid) — fall through to the gs delivery below,

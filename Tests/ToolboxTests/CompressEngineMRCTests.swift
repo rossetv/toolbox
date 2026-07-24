@@ -219,14 +219,16 @@ final class CompressEngineRoutingTests: XCTestCase {
         return try MRCComposer.compose(pages: pages)
     }
 
-    /// The hybrid beats a large gs candidate: shipped output is the MRC hybrid, the gs version is
-    /// parked in `alternateOutput`, and the outcome is `.compressedHeavy` carrying the gs bytes as
-    /// the runner-up (spec R7). gs is stubbed to a copy of the input, so its size is the input size
-    /// and the real MRC output — a compressed text scan — comes in below it.
+    /// The hybrid beats a gs candidate that is itself a valid (smaller-than-input) compression:
+    /// shipped output is the MRC hybrid, the gs version is parked in `alternateOutput`, and the
+    /// outcome is `.compressedHeavy` carrying the gs bytes as the runner-up (spec R7). gs is
+    /// stubbed to the input trimmed by one byte — strictly smaller than the input (R6) while still
+    /// larger than the real MRC output — a compressed text scan — which comes in below it.
     func testHybridSmallerThanGsShipsHybridWithRunnerUp() async throws {
         let input = try Fixtures.colourTextScanPDF(pages: 1)
         let inputBytes = try Data(contentsOf: input)
-        let engine = CompressEngine(runner: BytesRunner(bytes: inputBytes))
+        let gsBytes = inputBytes.dropLast(1)
+        let engine = CompressEngine(runner: BytesRunner(bytes: gsBytes))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
@@ -238,7 +240,7 @@ final class CompressEngineRoutingTests: XCTestCase {
             return XCTFail("expected .compressedHeavy when the hybrid wins, got \(outcome)")
         }
         XCTAssertEqual(before, inputBytes.count, "`before` is the input size")
-        XCTAssertEqual(runnerUpBytes, inputBytes.count, "the runner-up is the gs candidate (= input copy)")
+        XCTAssertEqual(runnerUpBytes, gsBytes.count, "the runner-up is the gs candidate")
         XCTAssertLessThan(after, before, "the hybrid must be smaller than the input: \(after) vs \(before)")
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path), "the hybrid must be shipped")
@@ -277,6 +279,34 @@ final class CompressEngineRoutingTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
                        "no runner-up is written when the hybrid loses (R7)")
         XCTAssertFalse(spy.fired, "the report must not fire when gs wins")
+    }
+
+    /// R6/R7: the hybrid beats gs, but gs's own candidate is *not* itself smaller than the input (it
+    /// bloated) — there is nothing legitimate to switch to, so the outcome must degrade to a plain
+    /// `.compressed` result carrying the hybrid's bytes, with no runner-up file ever written, even
+    /// though the hybrid legitimately won the D7 comparison against gs.
+    func testHybridWinsButGsCandidateNotSmallerThanInputShipsPlainCompressed() async throws {
+        let input = try Fixtures.colourTextScanPDF(pages: 1)
+        let inputBytes = try Data(contentsOf: input)
+        let bloated = inputBytes + Data(repeating: 0, count: 4096)
+        let engine = CompressEngine(runner: BytesRunner(bytes: bloated))
+        let (output, alternate) = try makeOutputURLs()
+        let spy = ReportSpy()
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output,
+                                                alternateOutput: alternate,
+                                                mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
+
+        guard case let .compressed(before, after) = outcome else {
+            return XCTFail("expected a plain .compressed when gs's candidate is not smaller than the input, got \(outcome)")
+        }
+        XCTAssertEqual(before, inputBytes.count, "`before` is the input size")
+        XCTAssertLessThan(after, before, "the hybrid must still be smaller than the input: \(after) vs \(before)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path), "the hybrid must still be shipped")
+        XCTAssertEqual(TestSupport.fileSize(output), after, "the shipped file is the hybrid (its bytes)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
+                       "no runner-up is written when gs's own candidate is not a valid compression (R6)")
+        XCTAssertTrue(spy.fired, "the MRC report must still fire — the hybrid did win")
     }
 
     /// D3: at `.maximumQuality` a `.scanColour` document must never attempt the MRC hybrid. gs is a
