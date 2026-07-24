@@ -43,8 +43,9 @@ private struct MRCDecline: Error {}
 /// invalid output is a failure, never "already optimised".
 ///
 /// Content routing is live: a document classified `.scanBilevel` is attempted through Rung 2
-/// (binarise + CCITT G4, composed natively) and falls back to Rung 1 on any doubt; every other
-/// classification goes straight to Rung 1. Rung 3 (MRC) is not built.
+/// (binarise + CCITT G4, composed natively) and falls back to Rung 1 on any doubt; a
+/// `.scanColour` document on balanced/smallest runs the gs pass then attempts Rung 3 (per-page
+/// MRC, `mrcCompress`) behind the D7 document gate; everything else goes straight to Rung 1.
 struct CompressEngine {
     /// Longest side, in pixels, any Rung-2 page render may reach — the memory guard against a
     /// hostile `/MediaBox`.
