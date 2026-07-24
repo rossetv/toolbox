@@ -39,6 +39,12 @@ than styling inline.
 
 ## Gotchas
 
+- **`FileRow.Status.doneHeavy`'s row applies `.fixedSize()`** to its trailing
+  `HStack` (which adds the "Heavy compression" capsule alongside the usual
+  strikethrough/size/pill/checkmark cluster) — without it, width pressure wraps the
+  capsule onto a second line and grows the row past R8's single-line height; the name
+  column absorbs the squeeze instead (lineLimit + middle truncation), not the
+  trailing cluster.
 - **`Tool.tint`** (see [App](app.md)) gives each sidebar tool tile its own colour and is a
   **deliberate, recorded divergence** from `DESIGN.md`'s single-accent rule, not a bug to
   fix back to blue — see `.claude/DECISIONS.md`, 2026-07-23. `Theme.Colors.success` and
