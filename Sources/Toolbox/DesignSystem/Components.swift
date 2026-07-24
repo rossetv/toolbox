@@ -472,6 +472,11 @@ struct FileRow: View {
                 heavyCapsule
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
             }
+            // The capsule makes this the widest trailing cluster; without fixedSize, width
+            // pressure wraps the pill onto two lines and grows the row (R8's single-line
+            // height). The name column absorbs the squeeze instead (lineLimit + middle
+            // truncation).
+            .fixedSize()
         case .succeeded(let message):
             Label {
                 Text(message).themeFont(.micro).lineLimit(1)
