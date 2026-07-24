@@ -24,12 +24,19 @@ struct SidebarView: View {
     // selection. Tab/arrow-key navigation is untouched by that reset — it drives this same state
     // from the other direction and still shows the system focus ring.
     @FocusState private var focusedTool: Tool?
+    // Same pattern, applied to the collapse-toggle header row: on macOS 26 a mouse click leaves
+    // it first responder, which draws a focus ring around the whole "Toolbox" title/logo area.
+    // Clearing it right after the click removes that stray ring while leaving Tab navigation's
+    // ring untouched, per DESIGN.md.
+    @FocusState private var isHeaderFocused: Bool
     @State private var isShowingAbout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { isCollapsed.toggle() }
+                // See isHeaderFocused's declaration: drop the stray post-click focus ring.
+                isHeaderFocused = false
             } label: {
                 HStack(spacing: 9) {
                     if isCollapsed {
@@ -50,6 +57,7 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .focused($isHeaderFocused)
             .pointingHandCursor()
             .help(isCollapsed ? "Show sidebar" : "Hide sidebar")
             .padding(.horizontal, isCollapsed ? 17 : 16)
