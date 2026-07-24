@@ -47,6 +47,20 @@ apply as a checklist during review.
 - **Allocate batch output names up front, serially, before concurrent work starts.** A check-then-use
   against the filesystem races: two inputs sharing a basename both claim the same target.
 
+## Test doubles and displays
+
+- **A stub whose write semantics differ from production greens a dead feature.** A stub that
+  overwrites where the real code refuses to overwrite (atomic move onto an existing path) let a
+  broken re-run path pass its test; make doubles reproduce the production contract that matters
+  (here: never-overwrite delivery), not just the output bytes.
+- **A verifier whose reference renders through the same degraded path cannot see the
+  degradation.** When candidate and reference are both produced at the same clamped resolution,
+  equal-degradation scores as perfect; guard the input (a floor that declines) rather than
+  trusting the comparison.
+- **After fixing a state-display bug, grep every sibling aggregator over the same enum.** The
+  per-row badge fix left the batch banner summing the same outcome as zero; the sibling was one
+  function away and a one-line grep would have caught it in the same commit.
+
 ## Shipping under time pressure
 
 - **When a hand-rolled parser has several corruption paths and time is short, prefer an
