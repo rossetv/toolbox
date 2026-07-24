@@ -57,7 +57,12 @@ final class RunnerUpStore {
     /// the runner-up absent — callers already handle a missing runner-up.
     func switchVersions(shipped: URL, runnerUp: URL) throws {
         let fm = FileManager.default
-        let parked = root.appendingPathComponent(".swap-\(UUID().uuidString).pdf")
+        // Parked alongside the shipped file, not in the sweep-on-launch cache dir: a crash in
+        // this window must not destroy the user's already-shipped output. This mirrors the
+        // engine's `.toolbox-<uuid>` dot-temp idiom, so an orphaned park file left after a crash
+        // matches the accepted residual pattern elsewhere in the app.
+        let parked = shipped.deletingLastPathComponent()
+            .appendingPathComponent(".toolbox-swap-\(UUID().uuidString).pdf")
         try fm.moveItem(at: shipped, to: parked)          // park the shipped version
         do {
             try fm.moveItem(at: runnerUp, to: shipped)    // promote the runner-up

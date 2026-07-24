@@ -108,7 +108,7 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: shipped), Data("runner-up-content".utf8))
 
         let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix(".swap-") }
+            .filter { $0.hasPrefix(".toolbox-swap-") }
         XCTAssertTrue(leftoverSwapFiles.isEmpty, "the parked file must be discarded, not stranded")
     }
 
