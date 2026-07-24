@@ -202,7 +202,7 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
     }
 
-    /// `savedBytes(for:)` feeds the batch success banner's totals; for a `.compressedHeavy` job it
+    /// `displayedSizes(for:)` feeds the batch success banner's totals; for a `.compressedHeavy` job it
     /// must count the SHIPPED version's bytes, not always the heavy outcome's `after`, so a switch
     /// keeps the banner in sync with the row's own badge (sibling of the 730b67b badge fix).
     func testSavedBytesUsesShippedVersionForHeavyJob() async throws {
@@ -214,14 +214,14 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
-        var saved = try XCTUnwrap(model.savedBytes(for: job))
+        var saved = try XCTUnwrap(model.displayedSizes(for: job))
         XCTAssertEqual(saved.before, 9000)
         XCTAssertEqual(saved.after, HeavyEnv.heavyBytes,
                        "the heavy version ships by default, so it must be counted")
 
         model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
-        saved = try XCTUnwrap(model.savedBytes(for: job))
+        saved = try XCTUnwrap(model.displayedSizes(for: job))
         XCTAssertEqual(saved.after, HeavyEnv.normalBytes,
                        "after switching to normal, the banner totals must use the normal bytes")
     }
