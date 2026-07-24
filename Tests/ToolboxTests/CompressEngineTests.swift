@@ -440,47 +440,48 @@ extension CompressEngineTests {
 
     /// Size race, both directions, via a stubbed gs candidate of a chosen size. Rung 2's CCITT
     /// rebuild ships only when it beats the gs output, else gs ships — the guard that makes opening
-    /// Rung 2 to more scans safe. Both directions of the gate, with the gs candidate stubbed to a
-    /// chosen size so the outcome is deterministic:
-    ///   (a) gs LARGE  → Rung 2's CCITT rebuild wins and ships;
-    ///   (b) Rung 2 does not win (here it declines — the same fall-through the gs-is-smaller branch
-    ///       takes) → the gs candidate ships and the CCITT rebuild does not.
-    /// The `bytes < gsOutput` comparison itself is the exact expression the Rung-3 race uses, tested
-    /// numerically both ways in `CompressEngineMRCTests`; this covers the Rung-2 wiring and delivery.
+    /// Rung 2 to more scans safe. Both directions of the *numeric* race, with the gs candidate
+    /// stubbed to a chosen size so the outcome is deterministic. The speckled scan's binarised
+    /// rebuild is a valid, sub-input CCITT (leg a proves it ships and validates); the gate then
+    /// turns purely on `rung2 < gsOutput`:
+    ///   (a) gs stubbed LARGE (a copy of the input) → the CCITT rebuild is smaller → it ships;
+    ///   (b) gs stubbed to a valid, ink-compatible, non-CCITT PDF *smaller* than that same rebuild
+    ///       → the rebuild loses the race → gs ships and the CCITT rebuild does not.
+    /// Leg (b) is what pins the comparison to the gs output rather than the input: reverting the
+    /// gate to `rung2 < inputSize` (the original latent bug) would ship CCITT here and fail it,
+    /// because the CCITT rebuild is smaller than the input yet larger than the gs candidate.
     func testRungTwoSizeRaceShipsTheSmallerCandidate() async throws {
         let ccitt = Data("CCITTFaxDecode".utf8)
-
-        // (a) A speckled scan whose binarised rebuild is a valid, sub-input CCITT. gs stubbed to a
-        //     copy of the input (large), so Rung 2 wins and ships CCITT.
         let scan = try Fixtures.speckledBilevelScanPDF()
         XCTAssertEqual(try PDFService().classify(scan), .scanBilevel, "precondition: routes to Rung 2")
+
+        // (a) gs LARGE → Rung 2 wins and ships CCITT. Capture the rebuild's size for leg (b).
         let winOut = scan.deletingLastPathComponent().appendingPathComponent("race-win.pdf")
         let winEngine = CompressEngine(runner: TestSupport.BytesRunner(bytes: try Data(contentsOf: scan)))
         _ = try await winEngine.compress(scan, preset: .balanced, to: winOut) { _ in }
-        XCTAssertNotNil(try Data(contentsOf: winOut).range(of: ccitt),
+        let rebuild = try Data(contentsOf: winOut)
+        XCTAssertNotNil(rebuild.range(of: ccitt),
                         "Rung 2 must win the race against a large gs candidate and ship CCITT")
 
-        // (b) An ANNOTATED scan: annotations cannot be carried into a rebuild, so Rung 2 declines —
-        //     exactly the fall-through the gs-is-smaller branch takes. The (smaller, valid) gs
-        //     candidate must ship instead, and the CCITT rebuild must not.
-        let base = try Fixtures.greyscaleBilevelScanPDF()
-        let doc = try XCTUnwrap(PDFDocument(url: base))
-        let page = try XCTUnwrap(doc.page(at: 0))
-        page.addAnnotation(PDFAnnotation(bounds: CGRect(x: 20, y: 20, width: 60, height: 24),
-                                         forType: .square, withProperties: nil))
-        let annotated = base.deletingLastPathComponent().appendingPathComponent("annotated-scan.pdf")
-        XCTAssertTrue(doc.write(to: annotated))
-        XCTAssertEqual(try PDFService().classify(annotated), .scanBilevel, "precondition: still a bilevel scan")
-
-        let tiny = try TestSupport.tinyValidPDF(matching: annotated)   // valid, smaller than the input
-        let loseOut = base.deletingLastPathComponent().appendingPathComponent("race-lose.pdf")
-        let loseEngine = CompressEngine(runner: TestSupport.BytesRunner(bytes: tiny))
-        let outcome = try await loseEngine.compress(annotated, preset: .balanced, to: loseOut) { _ in }
+        // (b) gs stubbed to a valid, ink-compatible, non-CCITT PDF SMALLER than that CCITT rebuild
+        //     but still smaller than the input. `OutputValidator` checks page count + per-page ink
+        //     ratio (not visual identity), so a small born-digital page with comparable ink passes
+        //     as the gs delivery. The rebuild (larger) must lose the race; gs must ship.
+        let gsCandidate = try Data(contentsOf: Fixtures.bornDigitalPDF(pages: 1))
+        XCTAssertLessThan(gsCandidate.count, rebuild.count,
+                          "precondition: the gs candidate is smaller than the CCITT rebuild")
+        XCTAssertLessThan(gsCandidate.count, TestSupport.fileSize(scan),
+                          "precondition: the gs candidate is smaller than the input")
+        XCTAssertNil(gsCandidate.range(of: ccitt), "precondition: the gs candidate is not itself CCITT")
+        let loseOut = scan.deletingLastPathComponent().appendingPathComponent("race-lose.pdf")
+        let loseEngine = CompressEngine(runner: TestSupport.BytesRunner(bytes: gsCandidate))
+        let outcome = try await loseEngine.compress(scan, preset: .balanced, to: loseOut) { _ in }
         guard case let .compressed(_, after) = outcome else { return XCTFail("expected .compressed, got \(outcome)") }
         let delivered = try Data(contentsOf: loseOut)
-        XCTAssertNil(delivered.range(of: ccitt), "Rung 2 declined; the CCITT rebuild must not ship")
-        XCTAssertEqual(delivered, tiny, "the delivered file is exactly the gs candidate")
-        XCTAssertEqual(after, tiny.count)
+        XCTAssertNil(delivered.range(of: ccitt),
+                     "the gs candidate is smaller; the CCITT rebuild must lose the race and not ship")
+        XCTAssertEqual(delivered, gsCandidate, "the delivered file is exactly the smaller gs candidate")
+        XCTAssertEqual(after, gsCandidate.count)
     }
 
     /// A page carrying `/Rotate` must not come back sideways or upside-down. Rung 2 renders the
