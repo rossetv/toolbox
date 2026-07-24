@@ -78,8 +78,4 @@ final class RunnerUpStore {
     func discard(_ url: URL) {
         try? FileManager.default.removeItem(at: url)
     }
-
-    func discardAll() {
-        sweepStale()
-    }
 }
