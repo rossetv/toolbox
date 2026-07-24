@@ -346,6 +346,22 @@ final class CompressViewModel: ObservableObject {
                              runnerUpURL: runnerUpURL)
     }
 
+    /// The before/after byte pair `job` contributes to the batch's savings totals, or nil when
+    /// the job produced no savings outcome (queued/running/failed/noGain/OCR). For a heavy job,
+    /// `after` is the SHIPPED version's bytes (`heavyVersions(for:).displayedBytes`), so a switch
+    /// keeps the batch totals in sync with the row's own badge.
+    func savedBytes(for job: ToolJob) -> (before: Int, after: Int)? {
+        guard case .done(let outcome) = job.state else { return nil }
+        switch outcome {
+        case .compressed(let before, let after):
+            return (before, after)
+        case .compressedHeavy(let before, let after, _):
+            return (before, heavyVersions(for: job)?.displayedBytes ?? after)
+        case .noGain, .ocrAdded, .alreadySearchable:
+            return nil
+        }
+    }
+
     /// The popover's switch button. Instant when the runner-up still exists; if it has vanished,
     /// honestly re-runs the job and applies the requested switch on completion (R10).
     func switchVersion(for job: ToolJob) {

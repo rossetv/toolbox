@@ -159,10 +159,8 @@ struct CompressView: View {
 
     private var savedBytes: Int {
         model.jobs.reduce(0) { sum, job in
-            if case .done(let outcome) = job.state, case .compressed(let before, let after) = outcome {
-                return sum + max(0, before - after)
-            }
-            return sum
+            guard let (before, after) = model.savedBytes(for: job) else { return sum }
+            return sum + max(0, before - after)
         }
     }
 
@@ -171,7 +169,7 @@ struct CompressView: View {
     private var savedDetail: String {
         var before = 0, after = 0
         for job in model.jobs {
-            if case .done(let outcome) = job.state, case .compressed(let b, let a) = outcome { before += b; after += a }
+            if let (b, a) = model.savedBytes(for: job) { before += b; after += a }
         }
         let pct = before > 0 ? Int(((Double(before - after) / Double(before)) * 100).rounded()) : 0
         let n = model.jobs.count
@@ -406,7 +404,7 @@ struct CompressView: View {
         var before = 0
         var after = 0
         for job in model.jobs {
-            if case .done(.compressed(let jobBefore, let jobAfter)) = job.state {
+            if let (jobBefore, jobAfter) = model.savedBytes(for: job) {
                 before += jobBefore
                 after += jobAfter
             }
