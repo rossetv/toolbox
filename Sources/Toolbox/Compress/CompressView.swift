@@ -90,6 +90,7 @@ struct CompressView: View {
                                 onRemove: canRemove(job) ? { model.remove(job) } : nil,
                                 onOpen: { open(job) },
                                 onHeavyTap: { heavyPopoverJobID = job.id },
+                                heavyCapsuleTitle: model.heavyVersions(for: job)?.capsuleTitle ?? "Heavy compression",
                                 heavyPopoverPresented: isShowingHeavyPopover(for: job.id),
                                 heavyPopoverContent: { AnyView(heavyPopover(for: job)) })
                     }

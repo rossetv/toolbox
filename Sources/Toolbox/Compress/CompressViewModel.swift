@@ -334,6 +334,15 @@ final class CompressViewModel: ObservableObject {
         /// show, since `heavyBytes`/`normalBytes` are fixed per version and only `shippedIsHeavy`
         /// tracks which one is actually on disk.
         var displayedBytes: Int { shippedIsHeavy ? heavyBytes : normalBytes }
+
+        /// The row's capsule label for whichever version is currently shipped. Vocabulary matches
+        /// the popover's `normalTitle`: the parked version reads "Original" when it's the
+        /// untouched input, otherwise "Normal compression" — so the row and the popover never
+        /// disagree about what's on disk after a switch.
+        var capsuleTitle: String {
+            if shippedIsHeavy { return "Heavy compression" }
+            return runnerUpIsOriginal ? "Original" : "Normal compression"
+        }
     }
 
     /// The two versions available for `job`, or nil when the job produced no runner-up. The byte

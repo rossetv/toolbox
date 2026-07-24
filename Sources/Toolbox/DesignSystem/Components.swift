@@ -392,6 +392,10 @@ struct FileRow: View {
     var onOpen: (() -> Void)?
     /// Opening the heavy-compression options for this file. Nil leaves the capsule inert.
     var onHeavyTap: (() -> Void)?
+    /// The capsule's label. FileRow is tool-agnostic, so callers own the vocabulary (e.g.
+    /// "Heavy compression" vs. "Normal compression" vs. "Original" after a switch) — the design
+    /// system just draws whatever string it's given.
+    var heavyCapsuleTitle: String = "Heavy compression"
     /// Presentation + content for the popover the heavy capsule anchors. It must attach to the
     /// capsule itself — attached to the row, the arrow points at the row's centre and the popover
     /// reads as disconnected from the control that opened it.
@@ -514,7 +518,7 @@ struct FileRow: View {
     private var heavyCapsule: some View {
         Button { onHeavyTap?() } label: {
             HStack(spacing: 4) {
-                Text("Heavy compression").themeFont(.microBold)
+                Text(heavyCapsuleTitle).themeFont(.microBold)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
             }
             .foregroundStyle(isHoveringCapsule ? Theme.Colors.link : Theme.Colors.textSecondary)

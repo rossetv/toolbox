@@ -222,6 +222,52 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
     }
 
+    /// `capsuleTitle` drives the row's capsule label; it must flip with `shippedIsHeavy` and use
+    /// the popover's own vocabulary for the parked version — "Normal compression" when the runner-up
+    /// is a real gs output, matching `HeavyCompressionPopover.normalTitle`'s "Normal".
+    func testCapsuleTitleFlipsOnSwitch() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        var job = try XCTUnwrap(env.doneHeavyJob(model))
+        var versions = try XCTUnwrap(model.heavyVersions(for: job))
+        XCTAssertEqual(versions.capsuleTitle, "Heavy compression")
+
+        model.switchVersion(for: job)
+        job = try XCTUnwrap(env.doneHeavyJob(model))
+        versions = try XCTUnwrap(model.heavyVersions(for: job))
+        XCTAssertEqual(versions.capsuleTitle, "Normal compression",
+                       "the parked version is a real gs output, not the untouched input")
+
+        model.switchVersion(for: job)
+        job = try XCTUnwrap(env.doneHeavyJob(model))
+        versions = try XCTUnwrap(model.heavyVersions(for: job))
+        XCTAssertEqual(versions.capsuleTitle, "Heavy compression",
+                       "switching back restores the heavy label")
+    }
+
+    /// When the runner-up is the untouched original (R6/R7 field fix), switching to it must label
+    /// the capsule "Original" — matching the popover's `normalTitle` — not "Normal compression".
+    func testCapsuleTitleReadsOriginalWhenRunnerUpIsInput() async throws {
+        let env = try HeavyEnv(before: HeavyEnv.normalBytes)
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        model.switchVersion(for: job)
+        let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
+        let versions = try XCTUnwrap(model.heavyVersions(for: switchedJob))
+        XCTAssertFalse(versions.shippedIsHeavy)
+        XCTAssertEqual(versions.capsuleTitle, "Original")
+    }
+
     /// `displayedSizes(for:)` feeds the batch success banner's totals; for a `.compressedHeavy` job it
     /// must count the SHIPPED version's bytes, not always the heavy outcome's `after`, so a switch
     /// keeps the banner in sync with the row's own badge (sibling of the 730b67b badge fix).
