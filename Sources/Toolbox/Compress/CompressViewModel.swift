@@ -378,8 +378,18 @@ final class CompressViewModel: ObservableObject {
                     self.publishJobs()
                 }
             }
+            // The engine's delivery contract never overwrites an existing destination (it
+            // `moveItem`s the winner into place), and `shipped` still holds the pre-rerun file at
+            // this point — targeting it directly throws `NSFileWriteFileExistsError`, which the
+            // outer catch below would silently swallow into a no-op switch. So the primary output
+            // goes to a fresh, guaranteed-absent temp file instead, landed into `shipped`
+            // afterwards. `runnerUp` is safe to pass straight through as `alternateOutput`: this
+            // path only ever runs when it is missing.
+            let freshShipped = shipped.deletingLastPathComponent()
+                .appendingPathComponent(".toolbox-rerun-\(UUID().uuidString).pdf")
+            defer { try? FileManager.default.removeItem(at: freshShipped) }
             do {
-                let outcome = try await engine.compress(job.url, preset: chosen, to: shipped,
+                let outcome = try await engine.compress(job.url, preset: chosen, to: freshShipped,
                                                          alternateOutput: runnerUp, mrcReport: nil,
                                                          progress: report)
                 // The switch's post-regeneration step assumes the re-run reproduces
@@ -388,17 +398,29 @@ final class CompressViewModel: ObservableObject {
                 // the actual outcome: anything else (e.g. `.noGain`) means there is no runner-up to
                 // switch to, so leave the row exactly as the engine left it.
                 if case .compressedHeavy = outcome {
-                    // Regenerated canonical state: heavy shipped, runner-up present.
-                    switched.remove(id)
-                    if !wantHeavy {
-                        do {
-                            try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
-                            switched.insert(id)
-                        } catch {
-                            // The switch did not happen (store contract: a throw leaves `shipped`
-                            // unchanged) — heavy is still shipped, so leave `switched` canonical
-                            // rather than record a switch that never took effect.
+                    do {
+                        // Land the regenerated heavy version atomically into the real shipped slot
+                        // — the winner was never routed through `shipped` directly (see above).
+                        _ = try FileManager.default.replaceItemAt(shipped, withItemAt: freshShipped)
+                        // Regenerated canonical state: heavy shipped, runner-up present.
+                        switched.remove(id)
+                        if !wantHeavy {
+                            do {
+                                try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+                                switched.insert(id)
+                            } catch {
+                                // The switch did not happen (store contract: a throw leaves
+                                // `shipped` unchanged) — heavy is still shipped, so leave
+                                // `switched` canonical rather than record a switch that never took
+                                // effect.
+                            }
                         }
+                    } catch {
+                        // Landing the regenerated heavy version failed; `shipped` is untouched
+                        // (`replaceItemAt`'s atomic guarantee) so `switched` stays exactly as it
+                        // was. The engine already wrote the runner-up straight to its real slot —
+                        // orphaned now that there is nothing to switch to, so discard it.
+                        try? FileManager.default.removeItem(at: runnerUp)
                     }
                 }
             } catch {

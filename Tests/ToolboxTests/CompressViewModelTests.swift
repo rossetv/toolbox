@@ -247,6 +247,16 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertFalse(versions.shippedIsHeavy, "the re-run lands on the requested (normal) version")
         XCTAssertTrue(FileManager.default.fileExists(atPath: runnerUpURL.path),
                       "the re-run regenerated the runner-up")
+        // With the refuse-overwrite stub, a switch that silently no-ops (R10's original bug) would
+        // have thrown into the outer catch and left `shipped` holding its stale pre-rerun bytes —
+        // assert the winning content genuinely landed, not just the bookkeeping flags.
+        let shippedURL = try XCTUnwrap(settled.resultURL)
+        let shippedData = try Data(contentsOf: shippedURL)
+        let runnerUpData = try Data(contentsOf: runnerUpURL)
+        XCTAssertEqual(shippedData, Data(repeating: 0x4E, count: HeavyEnv.normalBytes),
+                       "the shipped file must hold the regenerated normal version's bytes")
+        XCTAssertEqual(runnerUpData, Data(repeating: 0x48, count: HeavyEnv.heavyBytes),
+                       "the runner-up slot must hold the regenerated heavy version's bytes")
     }
 
     /// If the runner-up vanished, the switch re-runs the job, but the *final* swap back into the
@@ -415,8 +425,18 @@ final class CompressViewModelTests: XCTestCase {
                       alternateOutput: URL?, mrcReport: ((MRCDocumentReport) -> Void)?,
                       progress: @escaping (Double) -> Void) async throws -> JobOutcome {
             callCount += 1
+            let fm = FileManager.default
+            // Mirror the production engine's never-overwrite delivery contract (it `moveItem`s the
+            // winner into place, which throws on an existing destination) — a stub that overwrites
+            // via `Data.write` would mask a caller that targets an already-occupied destination.
+            guard !fm.fileExists(atPath: output.path) else {
+                throw CocoaError(.fileWriteFileExists)
+            }
             try Data(repeating: 0x48, count: shippedBytes).write(to: output)
             if let alternateOutput {
+                guard !fm.fileExists(atPath: alternateOutput.path) else {
+                    throw CocoaError(.fileWriteFileExists)
+                }
                 try Data(repeating: 0x4E, count: runnerUpBytes).write(to: alternateOutput)
             }
             if let gate { await gate.wait() }
