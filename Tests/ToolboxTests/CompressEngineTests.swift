@@ -408,6 +408,81 @@ extension CompressEngineTests {
                       + "rebuild drops everything that is not painted pixels")
     }
 
+    /// The searchable-scan case, positively: an OCR'd raster scan must now actually reach Rung 2
+    /// (CCITT rebuild) — not silently ship gs — and keep its text layer verbatim. Uses the real gs
+    /// runner, which bloats the greyscale scan, so Rung 2 wins the race naturally.
+    func testOCRdScanShipsRungTwoKeepingTextVerbatim() async throws {
+        let engine = try makeEngine()
+        let scan = try Fixtures.greyscaleBilevelScanPDF()
+        let ocr = scan.deletingLastPathComponent().appendingPathComponent("ocr-scan.pdf")
+        let page = try XCTUnwrap(PDFDocument(url: scan)?.page(at: 0))
+        let words = "INVOICE 12345 TOTAL DUE 999 POUNDS"
+        try PDFWriter().appendTextLayer(
+            to: scan, output: ocr,
+            pageText: [0: [PositionedText(text: words,
+                                          boundingBox: CGRect(x: 0.1, y: 0.5, width: 0.6, height: 0.04))]],
+            geometry: [0: PageGeometry(mediaBox: page.bounds(for: .mediaBox), rotation: 0)])
+
+        let output = scan.deletingLastPathComponent().appendingPathComponent("ocr-scan-out.pdf")
+        let outcome = try await engine.compress(ocr, preset: .balanced, to: output) { _ in }
+
+        guard case let .compressed(before, after) = outcome else {
+            return XCTFail("expected .compressed, got \(outcome)")
+        }
+        XCTAssertLessThan(after, before, "Rung 2 must shrink the OCR'd scan")
+        let delivered = try Data(contentsOf: output)
+        XCTAssertNotNil(delivered.range(of: Data("CCITTFaxDecode".utf8)),
+                        "the delivered file must be the Rung-2 CCITT rebuild, not a gs fallback")
+        let text = PDFDocument(url: output)?.string ?? ""
+        XCTAssertTrue(text.contains(words),
+                      "the OCR text layer must survive the Rung-2 rebuild verbatim: '\(text)'")
+    }
+
+    /// Size race, both directions, via a stubbed gs candidate of a chosen size. Rung 2's CCITT
+    /// rebuild ships only when it beats the gs output, else gs ships — the guard that makes opening
+    /// Rung 2 to more scans safe. Both directions of the gate, with the gs candidate stubbed to a
+    /// chosen size so the outcome is deterministic:
+    ///   (a) gs LARGE  → Rung 2's CCITT rebuild wins and ships;
+    ///   (b) Rung 2 does not win (here it declines — the same fall-through the gs-is-smaller branch
+    ///       takes) → the gs candidate ships and the CCITT rebuild does not.
+    /// The `bytes < gsOutput` comparison itself is the exact expression the Rung-3 race uses, tested
+    /// numerically both ways in `CompressEngineMRCTests`; this covers the Rung-2 wiring and delivery.
+    func testRungTwoSizeRaceShipsTheSmallerCandidate() async throws {
+        let ccitt = Data("CCITTFaxDecode".utf8)
+
+        // (a) A speckled scan whose binarised rebuild is a valid, sub-input CCITT. gs stubbed to a
+        //     copy of the input (large), so Rung 2 wins and ships CCITT.
+        let scan = try Fixtures.speckledBilevelScanPDF()
+        XCTAssertEqual(try PDFService().classify(scan), .scanBilevel, "precondition: routes to Rung 2")
+        let winOut = scan.deletingLastPathComponent().appendingPathComponent("race-win.pdf")
+        let winEngine = CompressEngine(runner: TestSupport.BytesRunner(bytes: try Data(contentsOf: scan)))
+        _ = try await winEngine.compress(scan, preset: .balanced, to: winOut) { _ in }
+        XCTAssertNotNil(try Data(contentsOf: winOut).range(of: ccitt),
+                        "Rung 2 must win the race against a large gs candidate and ship CCITT")
+
+        // (b) An ANNOTATED scan: annotations cannot be carried into a rebuild, so Rung 2 declines —
+        //     exactly the fall-through the gs-is-smaller branch takes. The (smaller, valid) gs
+        //     candidate must ship instead, and the CCITT rebuild must not.
+        let base = try Fixtures.greyscaleBilevelScanPDF()
+        let doc = try XCTUnwrap(PDFDocument(url: base))
+        let page = try XCTUnwrap(doc.page(at: 0))
+        page.addAnnotation(PDFAnnotation(bounds: CGRect(x: 20, y: 20, width: 60, height: 24),
+                                         forType: .square, withProperties: nil))
+        let annotated = base.deletingLastPathComponent().appendingPathComponent("annotated-scan.pdf")
+        XCTAssertTrue(doc.write(to: annotated))
+        XCTAssertEqual(try PDFService().classify(annotated), .scanBilevel, "precondition: still a bilevel scan")
+
+        let tiny = try TestSupport.tinyValidPDF(matching: annotated)   // valid, smaller than the input
+        let loseOut = base.deletingLastPathComponent().appendingPathComponent("race-lose.pdf")
+        let loseEngine = CompressEngine(runner: TestSupport.BytesRunner(bytes: tiny))
+        let outcome = try await loseEngine.compress(annotated, preset: .balanced, to: loseOut) { _ in }
+        guard case let .compressed(_, after) = outcome else { return XCTFail("expected .compressed, got \(outcome)") }
+        let delivered = try Data(contentsOf: loseOut)
+        XCTAssertNil(delivered.range(of: ccitt), "Rung 2 declined; the CCITT rebuild must not ship")
+        XCTAssertEqual(delivered, tiny, "the delivered file is exactly the gs candidate")
+        XCTAssertEqual(after, tiny.count)
+    }
+
     /// A page carrying `/Rotate` must not come back sideways or upside-down. Rung 2 renders the
     /// page **upright** (rotation baked into the pixels) and composes with `/Rotate 0`, so the old
     /// assertion (shipped `/Rotate` == input `/Rotate`) encoded the double-rotation bug. This

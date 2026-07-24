@@ -52,6 +52,32 @@ final class BilevelPDFComposerTests: XCTestCase {
         return total > 0 ? Double(dark) / Double(total) : 0
     }
 
+    /// A page given an OCR text layer must emit it as recoverable invisible text on the rebuilt
+    /// page — this is what lets a Rung-2 rebuild keep a scan searchable. Mixed with a text-free
+    /// page to prove the shared font object and per-page `/Font` wiring stay consistent.
+    func testComposedPageCarriesRecoverableInvisibleText() throws {
+        let encoded = try XCTUnwrap(CCITTEncoder.encode(barsImage()))
+        let runs = [
+            PositionedText(text: "HELLO INVOICE 42",
+                           boundingBox: CGRect(x: 0.1, y: 0.6, width: 0.5, height: 0.03)),
+            PositionedText(text: "TOTAL DUE 999",
+                           boundingBox: CGRect(x: 0.1, y: 0.4, width: 0.4, height: 0.03)),
+        ]
+        let data = try BilevelPDFComposer.compose(pages: [
+            .init(image: encoded, size: CGSize(width: 612, height: 792), text: runs),
+            .init(image: encoded, size: CGSize(width: 612, height: 792)),   // text-free page
+        ])
+        let doc = try XCTUnwrap(PDFDocument(data: data))
+        XCTAssertEqual(doc.pageCount, 2)
+        let text = doc.page(at: 0)?.string ?? ""
+        XCTAssertTrue(text.contains("HELLO INVOICE 42") && text.contains("TOTAL DUE 999"),
+                      "the composed page must carry its invisible text layer verbatim: '\(text)'")
+        XCTAssertTrue((doc.page(at: 1)?.string ?? "").isEmpty, "the text-free page carries no text")
+        // The image still paints on the text page (the layer is invisible, not a replacement).
+        let render = try PDFService().render(try XCTUnwrap(doc.page(at: 0)), maxDimension: 400)
+        XCTAssertGreaterThan(inkRatio(render), 0.01, "the page image must still render")
+    }
+
     func testComposesAValidPDFWithTheExpectedGeometry() throws {
         let encoded = try XCTUnwrap(CCITTEncoder.encode(barsImage()))
         let data = try BilevelPDFComposer.compose(pages: [

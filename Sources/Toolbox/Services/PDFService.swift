@@ -33,8 +33,22 @@ struct PDFService {
         return doc.pageCount
     }
 
+    /// Reference resolution and coverage threshold for the raster-page test (see `classify`). A
+    /// page whose image XObjects cover ≥ `minScanCoverage` of it at `scanReferenceDPI` is a scan,
+    /// even if it also carries a text layer. Corpus separation is wide: true image scans read
+    /// ≥ 4.0 (200-DPI single-image pages), born-digital pages that embed a logo/QR/figure read
+    /// ≤ 0.14 — so 0.5 sits ~3.5× clear of both, and still admits a scan down to ~70 DPI.
+    static let scanReferenceDPI: CGFloat = 100
+    static let minScanCoverage = 0.5
+
     /// Classify by extractable-text coverage over a page sample; image-dominated docs are
     /// scans, split colour vs bilevel by rendering a sample page and testing near-two-tone.
+    ///
+    /// A page that is a full-page raster is a scan **regardless of any text layer** — an image
+    /// scan this app (or another tool) has OCR'd carries text on every page, and counting it as
+    /// born-digital on text length alone would route it away from Rung 2 (CCITT) and ship the far
+    /// weaker gs result. The image-XObject coverage test separates that raster-behind-text from a
+    /// genuine born-digital document, which text length alone cannot.
     func classify(_ url: URL) throws -> PDFContentType {
         guard let doc = PDFDocument(url: url) else { throw PDFServiceError.cannotOpen }
         let count = doc.pageCount
@@ -46,7 +60,9 @@ struct PDFService {
         for i in indices {
             guard let page = doc.page(at: i) else { continue }
             let text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if text.count >= 40 { textPages += 1 } else { imagePages += 1 }
+            let isRaster = MRCClassifier.imageXObjectCoverage(of: page, referenceDPI: Self.scanReferenceDPI)
+                >= Self.minScanCoverage
+            if !isRaster && text.count >= 40 { textPages += 1 } else { imagePages += 1 }
         }
         if textPages > 0 && textPages >= imagePages { return .bornDigital }
 

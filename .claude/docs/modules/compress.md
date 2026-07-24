@@ -12,18 +12,18 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 
 ## Purpose
 
-The Compress tool: Rung 1 (tuned Ghostscript `pdfwrite`) for every document, with Rung 2
-(binarise + CCITT G4 via ImageIO) tried first for scans that classify as visually
-two-tone, falling back to Rung 1 on any failure or no gain; and Rung 3 (per-page MRC
-hybrid) tried for `.scanColour` documents on Balanced/Smallest, weighed against the
-Rung-1 gs output via the D7 document gate. Also estimates the output size before
-running and drives the batch UI.
+The Compress tool: Rung 1 (tuned Ghostscript `pdfwrite`) for every document; Rung 2
+(binarise + CCITT G4 via ImageIO) for scans that classify as visually two-tone, **raced
+against the gs output** (D7, like Rung 3) and shipped only when smaller; and Rung 3
+(per-page MRC hybrid) for `.scanColour` documents on Balanced/Smallest, weighed against
+the Rung-1 gs output via the same gate. Also estimates the output size before running
+and drives the batch UI.
 
 ## Key files
 
 | File | Role |
 |------|------|
-| `Sources/Toolbox/Compress/CompressEngine.swift` | `CompressEngine.compress(_:preset:to:progress:)` — stage/run/validate/atomically-place one file; routes `.scanBilevel` documents through Rung 2 first (`bilevelCompress`) |
+| `Sources/Toolbox/Compress/CompressEngine.swift` | `CompressEngine.compress(_:preset:to:progress:)` — stage/run/validate/atomically-place one file; runs gs then **races** Rung 2 (`bilevelCompress`) against it for `.scanBilevel` documents |
 | `Sources/Toolbox/Compress/BilevelScan.swift` | `BilevelScan.binarise(_:)` — near-bilevel gate (`isNearBilevel`) + Otsu-threshold reduction to 1-bit `/DeviceGray` |
 | `Sources/Toolbox/Compress/CCITTEncoder.swift` | `CCITTEncoder.encode(_:)` — CCITT Group 4 via an in-memory TIFF (ImageIO), strip lifted back out for `/CCITTFaxDecode` |
 | `Sources/Toolbox/Compress/BilevelPDFComposer.swift` | `BilevelPDFComposer.compose(pages:)` — builds a fresh classic-xref PDF whose pages are CCITT image XObjects |
@@ -44,10 +44,25 @@ running and drives the batch UI.
 - **Routing is content-based, whole-document, and fails safe to Rung 1**
   (`CompressEngine.compress`): only when `PDFService.classify` returns `.scanBilevel`
   is Rung 2 attempted at all; any page failing the bilevel gate aborts the *whole*
-  attempt (`bilevelCompress` returns nil) and gs runs instead — a single wrongly
-  binarised page is a worse outcome than a missed saving. A Rung-2 result must also be
-  smaller than the input and pass `OutputValidator` before it is used; otherwise Rung 1
-  runs. Per-page (rather than whole-document) routing is not built (spec §5.1, v1.1).
+  attempt (`bilevelCompress` returns nil) and gs ships instead — a single wrongly
+  binarised page is a worse outcome than a missed saving. Per-page (rather than
+  whole-document) routing is not built (spec §5.1, v1.1).
+- **`classify` distinguishes a scan from a born-digital document by image-XObject
+  coverage, not text length alone** (`PDFService.classify` +
+  `MRCClassifier.imageXObjectCoverage`): a page whose images cover ≥ `minScanCoverage`
+  of it at `scanReferenceDPI` is a scan **even when it carries a text layer**. Without
+  this, an image scan that had been OCR'd (this app's own OCR adds text on every page)
+  was miscounted as born-digital and routed away from Rung 2 to the far weaker gs
+  result. A genuine born-digital page that merely embeds a logo/QR reads a small
+  fraction and stays `.bornDigital` (measured corpus separation: true scans ≥ 4.0,
+  born-digital ≤ 0.14; the 0.5 threshold clears both by ~3.5×).
+- **The Rung-2 rebuild is raced against the gs candidate, not merely the input**
+  (`CompressEngine.compress`, step 4b): gs always runs for a `.scanBilevel` document and
+  the CCITT rebuild ships only when it is smaller than **both** the gs output and the
+  input and passes `OutputValidator` — mirroring the Rung-3 D7 gate. This is what makes
+  opening Rung 2 to noisy or OCR'd scans safe: on a document where gs's mono downsampling
+  wins (binarising scanner speckle can *inflate* CCITT), Rung 2 simply loses the race and
+  gs ships, so a routing change can never regress a document.
 - **Rung 2's near-bilevel gate is deliberately strict** (`BilevelScan`): almost every
   sampled pixel must be near-black or near-white (`extremeFraction`) *and* almost none
   may carry real chroma (`chromaFraction`) — luminance alone would let a saturated
@@ -62,6 +77,21 @@ running and drives the batch UI.
   preserve incrementally (unlike OCR's `PDFWriter`, see [Services](services.md)). Page
   geometry is emitted as PDF reals (not rounded) so the image is never stretched to a
   rounded box.
+- **A scan's OCR text layer survives the Rung-2 rebuild** (`BilevelPDFComposer.Page.text`
+  + `CompressEngine.extractTextLayer`): before binarising, `bilevelCompress` extracts each
+  page's line runs (`PDFSelection.selectionsByLine`), normalises them to the composed
+  page's displayed space, and the composer re-emits them as an invisible layer through the
+  **same** `PDFWriter.contentStream` the OCR tool uses (shared Helvetica font). A text page
+  declines the whole document to gs — which preserves the layer natively — whenever it
+  cannot be re-embedded faithfully: a rotation (text placement on the baked-in-rotation
+  raster is deferred), a run outside WinAnsi (`PDFWriter.winAnsiWouldLose` — the same
+  Latin-1 limit `escapePDFString` carries, so Cyrillic/CJK layers keep their crisp gs
+  output rather than degrading to `?`), or a page that yields no runs. A post-compose
+  re-extraction check (mirroring `OCREngine.validateOCROutput`) declines rather than ship a
+  file that silently lost its text. The **residual**: a born-digital page that is
+  raster-dominated (coverage ≥ threshold), near-bilevel, and carries WinAnsi-representable
+  *visible* vector text would be rasterised by Rung 2 — accepted as narrow and gated by the
+  gs race; no corpus document hits it.
 - **Bilevel rendering is DPI- and dimension-bounded** (`CompressEngine.bilevelCompress`
   scales by `CompressPreset.bilevelDPI` but caps the longest side at 5000px) so a
   hostile `/MediaBox` cannot blow memory.

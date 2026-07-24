@@ -32,6 +32,30 @@ final class PDFServiceTests: XCTestCase {
         XCTAssertEqual(try service.classify(url), .scanBilevel)
     }
 
+    /// A full-page raster that has been OCR'd carries a text layer on every page, but it is still a
+    /// scan: the image-coverage test must route it to `.scanBilevel` (Rung 2), not `.bornDigital`.
+    func testClassifyOCRdScanIsBilevelNotBornDigital() throws {
+        let scan = try Fixtures.greyscaleBilevelScanPDF()
+        let ocr = scan.deletingLastPathComponent().appendingPathComponent("scan-ocr.pdf")
+        let page = try XCTUnwrap(PDFDocument(url: scan)?.page(at: 0))
+        try PDFWriter().appendTextLayer(
+            to: scan, output: ocr,
+            pageText: [0: [PositionedText(text: "INVOICE 12345 TOTAL DUE 999",
+                                          boundingBox: CGRect(x: 0.1, y: 0.5, width: 0.5, height: 0.04))]],
+            geometry: [0: PageGeometry(mediaBox: page.bounds(for: .mediaBox), rotation: 0)])
+        XCTAssertFalse((PDFDocument(url: ocr)?.page(at: 0)?.string ?? "").isEmpty,
+                       "precondition: the OCR layer is present")
+        XCTAssertEqual(try service.classify(ocr), .scanBilevel,
+                       "an OCR'd raster scan is a scan, not born-digital")
+    }
+
+    /// The inverse guard: a genuine born-digital page that merely embeds a small logo/QR image
+    /// must stay `.bornDigital` — the presence of an image is not coverage.
+    func testClassifyBornDigitalWithSmallImageStaysBornDigital() throws {
+        let url = try Fixtures.bornDigitalWithLogoPDF()
+        XCTAssertEqual(try service.classify(url), .bornDigital)
+    }
+
     func testPageHasTextTrueForBornDigital() throws {
         let url = try Fixtures.bornDigitalPDF(pages: 1)
         XCTAssertTrue(try service.pageHasText(url, index: 0))

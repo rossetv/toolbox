@@ -14,6 +14,22 @@ final class PDFWriterTests: XCTestCase {
 
     private let letter = CGRect(x: 0, y: 0, width: 612, height: 792)
 
+    // MARK: - WinAnsi lossiness (the Rung-2 recompose decline guard)
+
+    /// The recompose path declines a text layer this WinAnsi/Helvetica emitter cannot represent,
+    /// rather than silently mangling it — so the predicate must flag exactly the scalars
+    /// `escapePDFString` would map to `?` (anything past Latin-1) or drop (control bytes), and
+    /// clear everything Latin-1 keeps, including the escaped `\ ( )`.
+    func testWinAnsiWouldLose() {
+        XCTAssertFalse(PDFWriter.winAnsiWouldLose("INVOICE 12345 total due 999"))
+        XCTAssertFalse(PDFWriter.winAnsiWouldLose("café - ½ £5 (résumé)"),  // all ≤ 0xFF
+                       "Latin-1 accents, punctuation and escaped brackets are representable")
+        XCTAssertFalse(PDFWriter.winAnsiWouldLose("tab\tseparated"), "tab folds to a space")
+        XCTAssertTrue(PDFWriter.winAnsiWouldLose("СПРАВКА ЗАЦЕПИНА"), "Cyrillic is beyond Latin-1")
+        XCTAssertTrue(PDFWriter.winAnsiWouldLose("中文文档"), "CJK is beyond Latin-1")
+        XCTAssertTrue(PDFWriter.winAnsiWouldLose("smart \u{201C}quotes\u{201D}"), "U+201C is beyond Latin-1")
+    }
+
     // MARK: - Coordinate transform (pure functions PDFWriter owns)
 
     func testDisplayedSizeSwapsAt90And270() {

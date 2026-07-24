@@ -127,6 +127,35 @@ enum Fixtures {
         return url.canonical
     }
 
+    /// Born-digital vector text plus a small embedded raster (a logo/QR-sized image, ~1.5% of the
+    /// page). Must still classify `.bornDigital`: the presence of *an* image XObject is not a scan
+    /// — only a page whose images *cover* it is. Guards the image-coverage threshold against a
+    /// false positive that would binarise a genuine document's crisp vector text.
+    static func bornDigitalWithLogoPDF() throws -> URL {
+        let url = try uniqueURL("born-digital-logo.pdf")
+        var media = letter
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        // A small 120×120 px image — nowhere near full-page coverage.
+        let logo = renderBitmap(width: 120, height: 120) { c, _ in
+            c.setFillColor(CGColor(red: 0.1, green: 0.2, blue: 0.6, alpha: 1))
+            c.fill(CGRect(x: 0, y: 0, width: 120, height: 120))
+        }
+        let font = CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+        ctx.beginPDFPage(nil)
+        ctx.draw(logo, in: CGRect(x: 40, y: 700, width: 60, height: 60))
+        var y: CGFloat = 660
+        for line in 0..<30 {
+            drawText("Line \(line): born-digital vector text with a small embedded logo. 0123456789.",
+                     in: ctx, at: CGPoint(x: 40, y: y), font: font)
+            y -= 18
+        }
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return url.canonical
+    }
+
     /// One page whose only content is a rasterised near-two-tone image (black shapes/text on
     /// white) — no text layer, classifies `.scanBilevel`.
     static func bilevelPDF() throws -> URL {
@@ -208,6 +237,24 @@ enum Fixtures {
         }
         ctx.closePDF()
         return url.canonical
+    }
+
+    /// A speckled near-two-tone scan: thousands of small black specks on white. Binarising the
+    /// specks gives a transition-heavy, CCITT-hostile rebuild in the tens of KB — large enough that
+    /// a low-DPI JPEG can genuinely be the *smaller* candidate, which the clean sparse fixtures
+    /// never are. Still overwhelmingly white, so it classifies `.scanBilevel` and its CCITT stays
+    /// below the input. Used to exercise the Rung-2/gs size race in the direction where gs wins.
+    static func speckledBilevelScanPDF() throws -> URL {
+        let image = renderBitmap(width: 2550, height: 3300) { ctx, _ in
+            var rng = RNG()
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fill(CGRect(x: 0, y: 0, width: 2550, height: 3300))
+            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+            for _ in 0..<12000 {
+                ctx.fill(CGRect(x: rng.next() * 2550, y: rng.next() * 3300, width: 7, height: 7))
+            }
+        }
+        return try embedImagePDF(image, name: "speckled-bilevel.pdf")
     }
 
     /// One page whose only content is a rasterised image containing the rendered words

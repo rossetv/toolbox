@@ -197,8 +197,7 @@ struct PDFWriter {
         }
 
         // Font object.
-        emit(objNum: fontObj, gen: 0,
-             body: latin1("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"))
+        emit(objNum: fontObj, gen: 0, body: latin1(Self.helveticaFontDictBody))
 
         for pageIndex in targets {
             // The byte-level page walk must agree with the indices recognition produced. Skipping
@@ -363,9 +362,34 @@ struct PDFWriter {
 
     // MARK: - Content stream
 
-    private static func contentStream(for boxes: [PositionedText],
-                                      geometry: PageGeometry,
-                                      fontResource: String) -> String {
+    /// The base-14 Helvetica/WinAnsi font dictionary the invisible text layer is drawn with. A
+    /// literal shared by the incremental-update path (OCR) and the fresh-document path (Rung 2's
+    /// `BilevelPDFComposer`), so both emit the identical `/Encoding` — the encoding
+    /// `escapePDFString`/`winAnsiWouldLose` are defined against.
+    static let helveticaFontDictBody =
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+
+    /// True when `escapePDFString` would render `text` lossily — any scalar outside the WinAnsi
+    /// Latin-1 range (mapped to `?`) or a dropped control byte. The recompose path (Rung 2)
+    /// consults this to **decline** rather than silently degrade a non-Latin OCR layer it cannot
+    /// re-embed faithfully (the same CJK/Arabic/Cyrillic v1 limitation this font carries).
+    static func winAnsiWouldLose(_ text: String) -> Bool {
+        for scalar in text.unicodeScalars {
+            let v = scalar.value
+            switch scalar {
+            case "\\", "(", ")": continue
+            default:
+                if v >= 0x20 && v <= 0xFF { continue }
+                if v == 0x09 { continue }             // tab → space: whitespace, not content loss
+                return true
+            }
+        }
+        return false
+    }
+
+    static func contentStream(for boxes: [PositionedText],
+                              geometry: PageGeometry,
+                              fontResource: String) -> String {
         var s = "q\n"
         for box in boxes where !box.text.isEmpty {
             let p = placement(for: box, geometry: geometry)

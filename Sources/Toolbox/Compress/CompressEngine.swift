@@ -108,7 +108,10 @@ struct CompressEngine {
         // MRC leg (delivery finishes at 1.0).
         let classification = try? service.classify(input)
         let wantsMRC = classification == .scanColour && preset != .maximumQuality
-        let gsProgressCeiling = wantsMRC ? 0.45 : 1.0
+        // A `.scanBilevel` document now runs the gs pass too, so Rung 2's CCITT rebuild can be
+        // *raced* against it (D7) rather than shipped merely for beating the input — see step 4b.
+        let wantsBilevel = classification == .scanBilevel
+        let gsProgressCeiling = (wantsMRC || wantsBilevel) ? 0.45 : 1.0
 
         // Rung 2 can process several pages — driving progress up — before declining on a LATER
         // page and falling through to Rung 1, which then starts its own progress back near 0.
@@ -136,45 +139,12 @@ struct CompressEngine {
         let workOut = work.appendingPathComponent("out.pdf")
         try fm.copyItem(at: input, to: workIn)
 
-        // 3. Rung 2 first for scans that are visually two-tone. Ghostscript's mono settings only
-        //    apply to images that are ALREADY 1-bit, so a greyscale scan that merely looks
-        //    black-and-white is treated as a grey image and can come out LARGER — measured on a
-        //    representative sample at roughly 29% growth. Binarising first and encoding CCITT G4
-        //    is where the large saving is. Any failure, or a result that is not smaller and valid,
-        //    falls through to Rung 1 — no document is ever left unhandled or worse off (R2-N1).
-        var bilevelOutcome: Int?
-        if classification == .scanBilevel {
-            do {
-                bilevelOutcome = try await bilevelCompress(input, preset: preset, to: work,
-                                                           progress: reportProgress)
-            } catch let cancellation as CancellationError {
-                // A cancelled Rung-2 attempt must not be swallowed into "decline, try Rung 1" —
-                // that would burn a whole Ghostscript pass after the caller has already given up.
-                throw cancellation
-            } catch {
-                bilevelOutcome = nil   // any other failure declines Rung 2; falls through to Rung 1
-            }
-        }
-        if let bilevel = bilevelOutcome, bilevel < inputSize {
-            let staged = work.appendingPathComponent("bilevel.pdf")
-            if (try? validator.validate(input: input, output: staged, samplePages: 3)) == true {
-                try Task.checkCancellation()
-                let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
-                var placed = false
-                defer { if !placed { try? fm.removeItem(at: destTemp) } }
-                try fm.copyItem(at: staged, to: destTemp)
-                // Immediately before the rename, matching the Rung-1 path below. Checking only
-                // before the copy leaves the copy itself — which for a large scan is the slow
-                // part — as a window where a cancel is never observed and the file still ships.
-                try Task.checkCancellation()
-                try fm.moveItem(at: destTemp, to: output)
-                placed = true
-                reportProgress(1.0)
-                return .compressed(before: inputSize, after: bilevel)
-            }
-        }
-
-        // 4. Otherwise run gs sandboxed, scoped to the work dir only (Rung 1).
+        // 4. Run gs sandboxed, scoped to the work dir only (Rung 1). For a `.scanBilevel`
+        //    document this is the baseline Rung 2 is raced against (step 4b) rather than the sole
+        //    result — Ghostscript's mono settings only apply to images that are ALREADY 1-bit, so
+        //    a greyscale scan that merely looks black-and-white can come out LARGER here, and
+        //    binarising + CCITT G4 usually wins; but on a noisy or already-OCR'd scan gs's mono
+        //    downsampling can beat CCITT, and racing the two is what keeps the smaller of them.
         let arguments = preset.gsArguments()
             + ["-sOutputFile=\(workOut.path)", "-c", preset.gsDistillerParams(), "-f", workIn.path]
         let result = try await runner.run(
@@ -199,7 +169,44 @@ struct CompressEngine {
             throw CompressError.ghostscriptFailed("Ghostscript exited successfully but produced no output.")
         }
 
-        // 4b. Rung 3 (MRC hybrid) for a colour scan. The gs output above is the baseline the D7
+        // 4b. Rung 2 (CCITT G4) for a bilevel scan, raced against the gs output above exactly as
+        //     Rung 3 is (D7): the rebuild ships only if it beats BOTH the gs output AND the input
+        //     and validates, else gs ships. Racing gs (not just the input) is the load-bearing
+        //     guard: an OCR'd or noisy scan on which gs's mono downsampling wins simply loses the
+        //     race, so opening Rung 2 to more scans can never regress a document. Same catch shape
+        //     as Rung 3 — only a cancellation escapes; every other failure declines to gs. Mutually
+        //     exclusive with `wantsMRC` (`.scanBilevel` vs `.scanColour`).
+        if wantsBilevel {
+            var bilevelBytes: Int?
+            do {
+                bilevelBytes = try await bilevelCompress(workIn, preset: preset, to: work,
+                                                         progress: { reportProgress(0.45 + $0 * 0.5) })
+            } catch let cancellation as CancellationError {
+                throw cancellation
+            } catch {
+                bilevelBytes = nil   // D10-style: any Rung-2 failure ships the gs output below
+            }
+            let staged = work.appendingPathComponent("bilevel.pdf")
+            if let bytes = bilevelBytes, bytes < outputSize, bytes < inputSize,
+               (try? validator.validate(input: workIn, output: staged, samplePages: 3)) == true {
+                try Task.checkCancellation()
+                let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
+                var placed = false
+                defer { if !placed { try? fm.removeItem(at: destTemp) } }
+                try fm.copyItem(at: staged, to: destTemp)
+                // Immediately before the rename, matching the Rung-1 path below: the copy of a large
+                // scan is the slow part, so checking only before it leaves a window where a cancel is
+                // never observed and the file still ships.
+                try Task.checkCancellation()
+                try fm.moveItem(at: destTemp, to: output)
+                placed = true
+                reportProgress(1.0)
+                return .compressed(before: inputSize, after: bytes)
+            }
+            // Rung 2 lost the race or declined — fall through to the gs delivery below.
+        }
+
+        // 4c. Rung 3 (MRC hybrid) for a colour scan. The gs output above is the baseline the D7
         //     gate weighs the hybrid against; the hybrid ships only if it is smaller than BOTH the
         //     gs output AND the input, and it validates. This runs BEFORE the never-larger/no-gain
         //     check on purpose: a document where gs bloats can still be beaten by MRC against the
@@ -321,25 +328,39 @@ struct CompressEngine {
         guard let document = PDFDocument(url: input), document.pageCount > 0,
               document.pageCount <= Self.maxBilevelPages else { return nil }
 
-        // Rung 2 repaints each page as a bitmap, so everything that is not painted pixels is gone:
-        // a searchable text layer — including one this app's own OCR added — annotations, form
-        // fields, bookmarks. `classify` samples only five pages and calls a page "text" only above
-        // 40 characters, so a document with a sparse cover page or short pages can be routed here
-        // while still carrying content worth keeping. The check therefore has to be per page and
-        // over EVERY page, not a sample, and it must be here rather than in the classifier.
+        // Rung 2 repaints each page as a bitmap, so everything that is not painted pixels is gone
+        // unless deliberately carried over: annotations, form fields and bookmarks cannot be, so a
+        // document holding any of them declines to gs. A searchable OCR text layer, by contrast, IS
+        // carried — extracted per page and re-embedded on the rebuilt page (below) — because the
+        // common way a scan reaches Rung 2 with text is this app's own OCR having added it, and
+        // silently stripping that would be a regression. Bookmarks: a fresh document cannot hold an
+        // outline, so a bookmarked scan takes gs.
         guard document.outlineRoot == nil else { return nil }
 
         var pages: [BilevelPDFComposer.Page] = []
         pages.reserveCapacity(document.pageCount)
+        var textPageIndices: [Int] = []
 
         for index in 0..<document.pageCount {
             try Task.checkCancellation()
             guard let page = document.page(at: index) else { return nil }
             guard page.annotations.isEmpty else { return nil }
-            let text = (page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard text.isEmpty else { return nil }
             let box = page.bounds(for: .mediaBox)
             guard box.width > 0, box.height > 0 else { return nil }
+
+            // Preserve an OCR text layer if the page carries one. A page with extractable text that
+            // cannot be faithfully re-embedded declines the whole document to gs (which keeps it):
+            // a rotated page (text placement on the baked-in-rotation raster is deferred), a layer
+            // outside WinAnsi (`extractTextLayer` returns nil), or one that yields no runs at all.
+            let ocrText: [PositionedText]
+            if page.string?.isEmpty == false {
+                guard ((page.rotation % 360) + 360) % 360 == 0,
+                      let runs = Self.extractTextLayer(from: page, mediaBox: box) else { return nil }
+                ocrText = runs
+                textPageIndices.append(index)
+            } else {
+                ocrText = []
+            }
 
             // Render at the preset's bilevel DPI, bounded so a hostile /MediaBox cannot blow memory.
             let scale = CGFloat(preset.bilevelDPI) / 72.0
@@ -363,14 +384,52 @@ struct CompressEngine {
             // The render is upright (rotation baked into the pixels), so the composed page uses the
             // displayed size (swapped at 90°/270°) and carries no `/Rotate` — see `BilevelPDFComposer.Page`.
             pages.append(.init(image: encoded,
-                               size: PDFWriter.displayedSize(mediaBox: box, rotation: page.rotation)))
+                               size: PDFWriter.displayedSize(mediaBox: box, rotation: page.rotation),
+                               text: ocrText))
             progress(Double(index + 1) / Double(document.pageCount))
         }
 
         let data = try BilevelPDFComposer.compose(pages: pages)
         let staged = work.appendingPathComponent("bilevel.pdf")
         try data.write(to: staged, options: .atomic)
+
+        // Fail-safe: an OCR layer that did not survive the rebuild would ship a smaller file that
+        // silently lost the user's searchable text — the size race cannot catch that, so verify it
+        // here and decline to gs if it did not. Mirrors `OCREngine.validateOCROutput`'s text check
+        // (a fresh document, so its verbatim-prefix invariant does not apply). Skipped entirely for
+        // the text-free scans that are Rung 2's common case.
+        if !textPageIndices.isEmpty {
+            guard let rebuilt = PDFDocument(url: staged) else { return nil }
+            for index in textPageIndices {
+                guard let page = rebuilt.page(at: index),
+                      !(page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return nil }
+            }
+        }
         return data.count
+    }
+
+    /// Extract a page's text as normalised per-line runs for re-embedding on the Rung-2 rebuild, or
+    /// `nil` to decline the whole document. Returns `nil` when a run cannot be faithfully re-emitted
+    /// through the WinAnsi text layer (`PDFWriter.winAnsiWouldLose`) or when the page yields no runs
+    /// despite carrying text — both preserve the user's content by falling back to gs. Boxes are
+    /// normalised to the page's **displayed** space; the caller guarantees rotation 0, so displayed
+    /// space is the media box and this simple origin/size normalisation is exact.
+    private static func extractTextLayer(from page: PDFPage, mediaBox: CGRect) -> [PositionedText]? {
+        guard mediaBox.width > 0, mediaBox.height > 0,
+              let selection = page.selection(for: mediaBox) else { return nil }
+        var runs: [PositionedText] = []
+        for line in selection.selectionsByLine() {
+            guard let text = line.string, !text.isEmpty else { continue }
+            if PDFWriter.winAnsiWouldLose(text) { return nil }
+            let b = line.bounds(for: page)
+            let norm = CGRect(x: (b.minX - mediaBox.minX) / mediaBox.width,
+                              y: (b.minY - mediaBox.minY) / mediaBox.height,
+                              width: b.width / mediaBox.width,
+                              height: b.height / mediaBox.height)
+            runs.append(PositionedText(text: text, boundingBox: norm))
+        }
+        return runs.isEmpty ? nil : runs
     }
 
     /// Rung 3: per-page MRC with own-render JPEG fallback (spec §5). Returns the composed hybrid's

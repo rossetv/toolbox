@@ -24,6 +24,19 @@ enum BilevelPDFComposer {
         /// these displayed dimensions and a viewer shows it the right way up. Re-stamping the
         /// source `/Rotate` here would turn the already-upright scan a second time.
         let size: CGSize
+        /// An invisible OCR text layer to re-embed on this page, its boxes **normalised to the
+        /// composed page's own displayed space** (bottom-left origin, 0…1). Empty for a scan with
+        /// no text. Because the composed page has origin (0,0), no `/Rotate`, and MediaBox equal to
+        /// `size`, the identity geometry `PageGeometry(mediaBox: [0 0 size], rotation: 0)` maps
+        /// these straight through `PDFWriter.contentStream` — the same emitter the OCR tool uses,
+        /// so a scan that was OCR'd keeps its searchable layer through a Rung-2 rebuild.
+        let text: [PositionedText]
+
+        init(image: CCITTEncoder.Encoded, size: CGSize, text: [PositionedText] = []) {
+            self.image = image
+            self.size = size
+            self.text = text
+        }
     }
 
     enum Failure: Error {
@@ -31,6 +44,9 @@ enum BilevelPDFComposer {
         /// A page whose size is non-finite or not strictly positive — clamping it (the old
         /// behaviour) silently changed the geometry instead of catching the degenerate input.
         case invalidPageSize(CGSize)
+        /// A page's content stream held a scalar outside ISO Latin-1 — unreachable, since the
+        /// recompose path declines a non-WinAnsi OCR layer before it reaches the composer.
+        case textNotLatin1
     }
 
     static func compose(pages: [Page]) throws -> Data {
@@ -48,8 +64,13 @@ enum BilevelPDFComposer {
         // A binary comment marks the file as containing binary data, per the PDF convention.
         out.append(Data([0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A]))
 
-        // 1 = catalog, 2 = page tree, then three objects per page.
+        // 1 = catalog, 2 = page tree, then three objects per page, then — only when some page
+        // carries an OCR layer to re-embed — one shared Helvetica font object appended last (so no
+        // page-object number shifts). `/F0` is that font's resource name on every text page.
         let firstPageObject = 3
+        let hasText = pages.contains { !$0.text.isEmpty }
+        let fontObject = hasText ? firstPageObject + pages.count * 3 : 0
+        let fontResource = "F0"
         let kids = (0..<pages.count).map { "\(firstPageObject + $0 * 3) 0 R" }.joined(separator: " ")
 
         beginObject(1)
@@ -77,19 +98,37 @@ enum BilevelPDFComposer {
             let width = Self.number(page.size.width)
             let height = Self.number(page.size.height)
 
+            let fontEntry = page.text.isEmpty ? "" : " /Font << /\(fontResource) \(fontObject) 0 R >>"
             beginObject(pageObject)
             append("""
             << /Type /Page /Parent 2 0 R /MediaBox [0 0 \(width) \(height)] \
-            /Resources << /XObject << /Im0 \(imageObject) 0 R >> >> \
+            /Resources << /XObject << /Im0 \(imageObject) 0 R >>\(fontEntry) >> \
             /Contents \(contentObject) 0 R >>
             endobj
 
             """)
 
-            // Paint the image across the whole page.
-            let content = "q\n\(width) 0 0 \(height) 0 0 cm\n/Im0 Do\nQ\n"
+            // Paint the image across the whole page, then the invisible OCR layer (render mode 3)
+            // on top via the shared emitter. The page has origin (0,0), no `/Rotate` and MediaBox
+            // = displayed size, so an identity geometry maps the normalised boxes straight through.
+            var content = "q\n\(width) 0 0 \(height) 0 0 cm\n/Im0 Do\nQ\n"
+            if !page.text.isEmpty {
+                content += "\n" + PDFWriter.contentStream(
+                    for: page.text,
+                    geometry: PageGeometry(mediaBox: CGRect(origin: .zero, size: page.size), rotation: 0),
+                    fontResource: fontResource)
+            }
+            // WinAnsi text carries bytes 0x80…0xFF that must be emitted **one byte each**, not
+            // UTF-8-encoded — the font's `/Encoding` is WinAnsi and `/Length` counts stream bytes.
+            // Every scalar is ≤ 0xFF here (`escapePDFString` drops the rest; the recompose path
+            // declines a lossy layer upstream), so ISO Latin-1 is an exact, total mapping.
+            guard let contentBytes = content.data(using: .isoLatin1) else {
+                throw Failure.textNotLatin1                 // unreachable: all scalars ≤ 0xFF
+            }
             beginObject(contentObject)
-            append("<< /Length \(content.utf8.count) >>\nstream\n\(content)endstream\nendobj\n")
+            append("<< /Length \(contentBytes.count) >>\nstream\n")
+            out.append(contentBytes)
+            append("endstream\nendobj\n")
 
             beginObject(imageObject)
             append("""
@@ -102,6 +141,12 @@ enum BilevelPDFComposer {
             """)
             out.append(page.image.data)
             append("\nendstream\nendobj\n")
+        }
+
+        // The shared font object last, so its number is the highest and no page ref shifts.
+        if hasText {
+            beginObject(fontObject)
+            append("\(PDFWriter.helveticaFontDictBody)\nendobj\n")
         }
 
         let objectCount = offsets.count            // includes the free object 0

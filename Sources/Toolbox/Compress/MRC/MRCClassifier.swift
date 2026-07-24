@@ -134,6 +134,48 @@ enum MRCClassifier {
         return box.longEdge
     }
 
+    /// Fraction of the page covered by its image XObjects, measured as the summed image pixel
+    /// area over the page area at `referenceDPI` — i.e. how close the page is to being one (or
+    /// several) full-resolution rasters. A genuine scanned page is a single image sized to the
+    /// page, so at 100 DPI it reads ≥ ~1.0 (≥ ~4.0 for a 200-DPI scan); a born-digital page that
+    /// merely embeds a logo, a QR code or a small figure reads a small fraction (measured on the
+    /// corpus: ≤ 0.14). `classify` uses this to tell an OCR'd scan (a raster behind a text layer)
+    /// apart from a true born-digital document, which text length alone cannot.
+    ///
+    /// Reads only the page's own (non-inherited) /Resources /XObject — the same deliberate
+    /// fail-closed choice as `singleImageXObject`/`sourceImageLongEdge`; a page whose image lives
+    /// in an inherited resource dict reads 0 here and is treated as non-raster, which is the safe
+    /// direction (it declines Rung 2 rather than binarising something unexpected).
+    static func imageXObjectCoverage(of page: PDFPage, referenceDPI: CGFloat) -> Double {
+        guard let cgPage = page.pageRef, let dict = cgPage.dictionary else { return 0 }
+        let box = page.bounds(for: .mediaBox)
+        let pageArea = Double(box.width / 72.0 * referenceDPI) * Double(box.height / 72.0 * referenceDPI)
+        guard pageArea > 0 else { return 0 }
+        var resources: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(dict, "Resources", &resources), let resources else { return 0 }
+        var xobjects: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(resources, "XObject", &xobjects), let xobjects else { return 0 }
+
+        final class Box { var area = 0.0 }
+        let acc = Box()
+        CGPDFDictionaryApplyBlock(xobjects, { _, value, info in
+            let acc = Unmanaged<Box>.fromOpaque(info!).takeUnretainedValue()
+            var stream: CGPDFStreamRef?
+            guard CGPDFObjectGetValue(value, .stream, &stream), let stream,
+                  let sdict = CGPDFStreamGetDictionary(stream) else { return true }
+            var subtype: UnsafePointer<Int8>?
+            guard CGPDFDictionaryGetName(sdict, "Subtype", &subtype), let subtype,
+                  String(cString: subtype) == "Image" else { return true }
+            var w = 0, h = 0
+            if CGPDFDictionaryGetInteger(sdict, "Width", &w), CGPDFDictionaryGetInteger(sdict, "Height", &h),
+               w > 0, h > 0 {
+                acc.area += Double(w) * Double(h)
+            }
+            return true
+        }, Unmanaged.passUnretained(acc).toOpaque())
+        return acc.area / pageArea
+    }
+
     // MARK: - Signals & verdict (Task 6)
 
     /// One ≈100 DPI render feeds both signals (spec R14: tens of ms per page).
