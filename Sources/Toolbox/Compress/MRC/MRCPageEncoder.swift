@@ -34,6 +34,18 @@ enum MRCPageEncoder {
         }
     }
 
+    /// JPEG quality for the R5 whole-page fallback (spec R5) — a page MRC declined, shipped as one
+    /// flat JPEG at the preset's contone DPI. Kept SEPARATE from `layerQualities.bg` (which it once
+    /// borrowed): the two are unrelated knobs — the background is a smooth, coarse *layer* under a
+    /// text mask, the fallback is a whole rasterised page — and retuning one must never silently move
+    /// the other. The values match the previous coupled behaviour; they move independently now.
+    static func fallbackQuality(for preset: CompressPreset) -> Double {
+        switch preset {
+        case .smallestSize: return 0.30
+        case .balanced, .maximumQuality: return 0.40
+        }
+    }
+
     /// CCITT mask + two JPEG layers. Fails closed (nil) the moment any of the three sub-encodes
     /// does — a partial `EncodedPage` has no meaningful use (D10: decline the whole page).
     static func encode(_ segmented: MRCSegmented, preset: CompressPreset) -> EncodedPage? {
@@ -41,10 +53,33 @@ enum MRCPageEncoder {
               let mask = CCITTEncoder.encode(maskImage)
         else { return nil }
         let qualities = layerQualities(for: preset)
-        guard let background = encodeJPEG(segmented.background, quality: qualities.bg),
-              let foreground = encodeJPEG(segmented.foreground, quality: qualities.fg)
+        // The foreground carries only ink COLOUR (glyph shape is the mask), so its content is built
+        // coarse (`fgDownsample`) and cheap. But its PDF soft-mask (the CCITT text mask) is resampled
+        // by the viewer to the foreground image's pixel grid, so the foreground must be *emitted* near
+        // the mask resolution or the sharp mask is dragged down to the coarse grid and the text smears
+        // (the field-blur defect). Re-emit the coarse-but-smooth foreground at `foregroundLayerScale`
+        // of the mask resolution: sharp text, still-small JPEG. See `MRCSegmenter.foregroundLayerScale`.
+        let scale = MRCSegmenter.foregroundLayerScale
+        let fgWidth = max(1, Int((Double(segmented.mask.width) * scale).rounded()))
+        let fgHeight = max(1, Int((Double(segmented.mask.height) * scale).rounded()))
+        guard let fgImage = resample(segmented.foreground, toWidth: fgWidth, height: fgHeight),
+              let background = encodeJPEG(segmented.background, quality: qualities.bg),
+              let foreground = encodeJPEG(fgImage, quality: qualities.fg)
         else { return nil }
         return EncodedPage(background: background, foreground: foreground, mask: mask)
+    }
+
+    /// Smoothly resample `image` to an exact pixel size — the foreground's coarse colour content is
+    /// re-emitted near the mask resolution (see `encode`). High interpolation keeps the ink-colour
+    /// field smooth (cheap JPEG); the glyph edges are the mask's job, not this image's.
+    private static func resample(_ image: CGImage, toWidth width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0,
+              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()
     }
 
     /// Shared JPEG encode — also the R5 fallback-page encoder (same machinery, spec R5), so kept

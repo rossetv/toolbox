@@ -98,6 +98,42 @@ enum MRCClassifier {
         return box.isImage
     }
 
+    /// The longest pixel edge of the page's single image XObject — the scan's native resolution.
+    /// MRC rendering caps its DPI at this (`CompressEngine`): rendering a 200-dpi scan at 300 dpi
+    /// only upsamples, inflating every layer (the mask most of all, ~2.25× at 300 vs 200) for no
+    /// real detail — and the enlarged, JPEG-costly foreground was what pushed native-resolution text
+    /// past the size budget. `nil` when the page is not a single-image page (never expected on the
+    /// MRC path, which runs only after `structure(of:) == .simpleSingleImage`) — the caller then
+    /// falls back to the preset DPI. Reads the same non-inherited /Resources /XObject as
+    /// `singleImageXObject`, failing closed to `nil` on anything unexpected.
+    static func sourceImageLongEdge(of page: PDFPage) -> Int? {
+        guard let cgPage = page.pageRef, let dict = cgPage.dictionary else { return nil }
+        var resources: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(dict, "Resources", &resources), let resources else { return nil }
+        var xobjects: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(resources, "XObject", &xobjects), let xobjects,
+              CGPDFDictionaryGetCount(xobjects) == 1 else { return nil }
+
+        final class Box { var longEdge: Int? }
+        let box = Box()
+        CGPDFDictionaryApplyBlock(xobjects, { _, value, info in
+            let box = Unmanaged<Box>.fromOpaque(info!).takeUnretainedValue()
+            var stream: CGPDFStreamRef?
+            guard CGPDFObjectGetValue(value, .stream, &stream), let stream,
+                  let sdict = CGPDFStreamGetDictionary(stream) else { return true }
+            var subtype: UnsafePointer<Int8>?
+            guard CGPDFDictionaryGetName(sdict, "Subtype", &subtype), let subtype,
+                  String(cString: subtype) == "Image" else { return true }
+            var w = 0, h = 0
+            if CGPDFDictionaryGetInteger(sdict, "Width", &w), CGPDFDictionaryGetInteger(sdict, "Height", &h),
+               w > 0, h > 0 {
+                box.longEdge = max(w, h)
+            }
+            return true
+        }, Unmanaged.passUnretained(box).toOpaque())
+        return box.longEdge
+    }
+
     // MARK: - Signals & verdict (Task 6)
 
     /// One ≈100 DPI render feeds both signals (spec R14: tens of ms per page).

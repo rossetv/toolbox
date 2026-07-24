@@ -23,13 +23,24 @@ struct MRCSegmented {
 /// reference tool's outputs at the M2 gate — the spike proved the approach, not this port.
 enum MRCSegmenter {
 
-    /// The background layer is downsampled 3× and the foreground 6×: paper detail matters more
-    /// than ink detail (ink is carried sharply by the 1-bit mask), so the fg can be coarser.
-    // M2-calibrated 2026-07-24 against the reference tool's outputs on the private corpus
-    // (aggregates only): 2/3 produced hybrids ~2x the reference; 3/6 reproduces the
-    // reference's layer economics at equal visual quality.
+    /// Colour-*content* coarseness for the two layers (block-average footprint). Ink colour is flat
+    /// over a glyph, so the foreground content can be coarse (÷6); paper carries seals/stamps/photos,
+    /// so the background stays finer (÷3). These set only how coarse the *colour* is — glyph SHAPE
+    /// comes from the full-resolution mask, and the foreground is re-emitted at `foregroundLayerScale`
+    /// of the mask resolution (below) so that shape survives the composite.
     static let bgDownsample = 3
     static let fgDownsample = 6
+
+    /// The foreground layer is emitted (`MRCPageEncoder`) at this fraction of the mask's resolution,
+    /// NOT at its `fgDownsample` content resolution. This is the fix for the field blur (2026-07-24):
+    /// the CCITT text mask is the foreground image's PDF soft-mask, and a viewer resamples that mask
+    /// down to the foreground image's pixel grid — so a foreground emitted at ÷6 (≈50 dpi) dragged the
+    /// razor-sharp mask down to 50 dpi and smeared every glyph. Emitting the foreground near the mask
+    /// resolution keeps the composite text sharp; ⅔ is the measured knee where text stays crisp on the
+    /// corpus while the (flat-filled, smooth) foreground JPEG still fits the size budget. Full mask
+    /// resolution is sharper still but exceeds the reference tool's output size. See
+    /// `.claude/docs/modules/compress.md` and DECISIONS 2026-07-24.
+    static let foregroundLayerScale = 2.0 / 3.0
 
     static let sauvolaWindow = 31
     static let sauvolaK = 0.3
@@ -80,7 +91,7 @@ enum MRCSegmenter {
     /// never sees a partial segmentation.
     static func segment(_ image: CGImage) -> MRCSegmented? {
         guard let mask = binarise(image),
-              let fg = colourLayer(of: image, mask: mask, factor: fgDownsample, wantInk: true),
+              let fg = colourLayer(of: image, mask: mask, factor: fgDownsample, wantInk: true, flatFill: true),
               let bg = colourLayer(of: image, mask: mask, factor: bgDownsample, wantInk: false)
         else { return nil }
         return MRCSegmented(mask: mask, foreground: fg, background: bg)
@@ -88,10 +99,14 @@ enum MRCSegmenter {
 
     /// Build one colour layer at 1/factor scale. Each output block averages the input pixels of the
     /// wanted class (ink for fg, paper for bg) inside its factor×factor footprint; blocks containing
-    /// none are filled by iterative neighbour spreading, so JPEG never encodes a hard edge where the
-    /// other class was cut out (the reference pipeline's fg/bg-spreading idea, block-granular).
+    /// none are filled — either by iterative neighbour spreading (`flatFill: false`, the paper
+    /// background: JPEG never encodes a hard edge where a glyph was cut out, and the fill carries the
+    /// *local* paper colour) or by a single global-mean flat fill (`flatFill: true`, the ink
+    /// foreground). The foreground only shows through the mask's ink pixels, so its filled regions
+    /// are painted over anyway — spreading them into gradient "rays" costs JPEG bytes for detail the
+    /// viewer never sees, whereas a flat fill stays smooth and compresses ~2× smaller.
     static func colourLayer(of image: CGImage, mask: BilevelBitmap,
-                            factor: Int, wantInk: Bool) -> CGImage? {
+                            factor: Int, wantInk: Bool, flatFill: Bool = false) -> CGImage? {
         // 1. Compact RGB buffer of `image`, row-addressed like greyBuffer (real width only, C1).
         guard let rgb = rgbBuffer(of: image) else { return nil }
         let w = rgb.width, h = rgb.height
@@ -121,36 +136,46 @@ enum MRCSegmenter {
             }
         }
 
-        // 3. Spreading: each pass reads only the previous pass's knowledge (double-buffered), so an
-        //    unknown block takes the mean of its known 8-neighbours and turns known. Bounded by
-        //    (blocksWide + blocksHigh) passes — the longest a fill can have to travel.
-        for _ in 0..<(blocksWide + blocksHigh) where !known.allSatisfy({ $0 }) {
-            var nextColour = colour, nextKnown = known, changed = false
-            for by in 0..<blocksHigh {
-                for bx in 0..<blocksWide where !known[by * blocksWide + bx] {
+        // 3. Spreading fill (in-place worklist). Each unknown block takes the mean of its
+        //    currently-known 8-neighbours and becomes a source for later blocks; the frontier only
+        //    revisits still-unknown blocks, so the work is O(count) amortised (each block finalises
+        //    once) rather than the previous (blocksWide + blocksHigh) full-array-copy passes. That
+        //    quadratic-ish cost was minutes per page once the layer approached native resolution
+        //    (factor 1); this fill stays linear, which is what lets the background keep near-native
+        //    resolution for non-ink content (seals, stamps, signatures) without the cost.
+        if !flatFill {
+            var unknown = [Int]()
+            for i in 0..<count where !known[i] { unknown.append(i) }
+            while !unknown.isEmpty {
+                var next = [Int]()
+                var progressed = false
+                for i in unknown {
+                    let bx = i % blocksWide, by = i / blocksWide
                     var sr = 0.0, sg = 0.0, sb = 0.0, n = 0
                     for dy in -1...1 {
                         for dx in -1...1 where !(dx == 0 && dy == 0) {
                             let nx = bx + dx, ny = by + dy
                             guard nx >= 0, nx < blocksWide, ny >= 0, ny < blocksHigh else { continue }
                             let ni = ny * blocksWide + nx
-                            if known[ni] {
-                                sr += colour[ni].r; sg += colour[ni].g; sb += colour[ni].b; n += 1
-                            }
+                            if known[ni] { sr += colour[ni].r; sg += colour[ni].g; sb += colour[ni].b; n += 1 }
                         }
                     }
                     if n > 0 {
-                        nextColour[by * blocksWide + bx] = (sr / Double(n), sg / Double(n), sb / Double(n))
-                        nextKnown[by * blocksWide + bx] = true
-                        changed = true
+                        colour[i] = (sr / Double(n), sg / Double(n), sb / Double(n))
+                        known[i] = true
+                        progressed = true
+                    } else {
+                        next.append(i)                  // no known neighbour yet — revisit next round
                     }
                 }
+                if !progressed { break }                 // an isolated island: nothing left to reach it
+                unknown = next
             }
-            colour = nextColour; known = nextKnown
-            if !changed { break }                       // an isolated island: nothing left to reach it
         }
 
-        // Any block still unknown after the cap → global mean of the known blocks, else mid-grey.
+        // Any block still unknown → global mean of the known blocks, else mid-grey. This is the
+        // whole fill when `flatFill` is set (spreading skipped above), and the isolated-island
+        // backstop otherwise.
         if !known.allSatisfy({ $0 }) {
             var sr = 0.0, sg = 0.0, sb = 0.0, n = 0
             for i in 0..<count where known[i] { sr += colour[i].r; sg += colour[i].g; sb += colour[i].b; n += 1 }

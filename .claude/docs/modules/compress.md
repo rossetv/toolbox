@@ -32,9 +32,9 @@ running and drives the batch UI.
 | `Sources/Toolbox/Compress/CompressView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel |
 | `Sources/Toolbox/Compress/HeavyCompressionPopover.swift` | The heavy-capsule popover: shows both versions, drives `switchVersion(for:)` |
 | `Sources/Toolbox/Compress/RunnerUpStore.swift` | `RunnerUpStore` — `@MainActor` cache of losing (gs) versions for `.compressedHeavy` jobs (spec R15, documented exception to "no persisted app state"); `sweepStale()` on launch, `removeAllOnDisk()` on quit (`AppDelegate.applicationWillTerminate`, see [App](app.md)) |
-| `Sources/Toolbox/Compress/MRC/MRCClassifier.swift` | `MRCClassifier.structure(of:)` (R2 structural sweep), `.features(of:)` + `.verdict(features:)` (R3 eligibility envelope) |
-| `Sources/Toolbox/Compress/MRC/MRCSegmenter.swift` | `MRCSegmenter.binarise(_:)` (Sauvola-class local-threshold text mask) + `.segment(_:)` (fg/bg colour-layer split, block-granular fill of the other class) |
-| `Sources/Toolbox/Compress/MRC/MRCPageEncoder.swift` | `MRCPageEncoder.encode(_:preset:)` — CCITT mask + JPEG fg/bg layers; `.recompose(_:)` rebuilds a page for the verifier |
+| `Sources/Toolbox/Compress/MRC/MRCClassifier.swift` | `MRCClassifier.structure(of:)` (R2 structural sweep), `.features(of:)` + `.verdict(features:)` (R3 eligibility envelope), `.sourceImageLongEdge(of:)` (the scan's native pixel resolution — caps the MRC render DPI) |
+| `Sources/Toolbox/Compress/MRC/MRCSegmenter.swift` | `MRCSegmenter.binarise(_:)` (Sauvola-class local-threshold text mask) + `.segment(_:)` (fg/bg colour-layer split; `colourLayer(…flatFill:)` fills the other class — spread-fill for the paper background, flat global-mean fill for the ink foreground) |
+| `Sources/Toolbox/Compress/MRC/MRCPageEncoder.swift` | `MRCPageEncoder.encode(_:preset:)` — CCITT mask + JPEG fg/bg layers; **re-emits the foreground at `MRCSegmenter.foregroundLayerScale` of the mask resolution** (`resample`) so the mask soft-mask stays sharp; `.recompose(_:)` rebuilds a page for the verifier |
 | `Sources/Toolbox/Compress/MRC/MRCVerifier.swift` | `MRCVerifier.score(candidate:input:mask:)` — ink-weighted relative-error post-encode gate |
 | `Sources/Toolbox/Compress/MRC/MRCComposer.swift` | `MRCComposer.compose(pages:)` — classic-xref PDF, mask + fg/bg JPEG XObjects per page |
 | `Sources/Toolbox/Compress/MRC/MRCTypes.swift` | `MRCPageFeatures`, `MRCDeclineReason`, `MRCPageVerdict`, `MRCDocumentReport` — spec §6's per-page debugging record |
@@ -91,6 +91,13 @@ running and drives the batch UI.
   runs over every page before any rendering: one non-`.simpleSingleImage` page kills
   the whole attempt, because the fallback path rasterises and rasterising real text is
   destructive.
+- **MRC renders at the scan's native resolution, never above** (`CompressEngine.mrcCompress`
+  and `fallbackJPEG` cap `maxDimension` at `MRCClassifier.sourceImageLongEdge`): the presets'
+  `bilevelDPI` (300 balanced) over-renders a typical ~200-dpi scan, upsampling for no real
+  detail while inflating every layer — the CCITT mask most of all (~2.25× at 300 vs 200 dpi).
+  Capping at the source keeps text as crisp as the scan and is what lets the sharp
+  (native-emitted) foreground fit the size budget. A sub-`minBilevelDPI` scan (its source
+  below the floor) declines to gs rather than shipping a blocky rebuild.
 - **D7 document gate**: the hybrid ships only when it is smaller than *both* the gs
   output and the input, and passes `OutputValidator`. A winning hybrid always ships
   `.compressedHeavy(before:after:runnerUpBytes:)` with a runner-up parked in
@@ -108,11 +115,19 @@ running and drives the batch UI.
   shipped file rather than losing it. If the cached runner-up has vanished by the time
   the user switches, `CompressViewModel.rerunForSwitch` honestly re-runs the job (R10)
   rather than failing silently.
-- **Calibrated MRC constants** (M2 corpus-tuned, 2026-07-24): `MRCSegmenter.bgDownsample`
-  = 3, `.fgDownsample` = 6 (foreground ink colour is downsampled coarser than the
-  paper/illustration background — the 1-bit mask already carries ink's sharp edges, so
-  the fg colour layer can afford to be blockier; both then compress cheaply as JPEG
-  because each has had the other class's hard edges smoothed away); `MRCVerifier.maxNormalisedError`
+- **MRC text sharpness is set by the foreground's *emitted* resolution, not the mask**
+  (field-blur fix, 2026-07-24): the CCITT text mask is the foreground JPEG's PDF
+  soft-mask, and a viewer resamples that mask to the foreground *image's* pixel grid.
+  So a foreground emitted at its content resolution (`MRCSegmenter.fgDownsample` = 6,
+  ≈50 dpi) dragged the razor-sharp mask down to 50 dpi and smeared every glyph — the
+  shipped-but-blurry defect three attempts missed. `MRCPageEncoder.encode` now re-emits
+  the (coarse, flat-filled, cheap) foreground at `MRCSegmenter.foregroundLayerScale` =
+  ⅔ of the mask resolution (`resample`), which keeps composited text crisp while the
+  smooth foreground JPEG still fits budget. `.bgDownsample` = 3 / `.fgDownsample` = 6 are
+  now only *content* coarseness (block-average footprint); glyph shape is the mask's job.
+  The foreground uses `colourLayer(…flatFill: true)` (masked-out regions get one global
+  mean, not spread gradients — ~2× smaller JPEG); the background keeps spread-fill so it
+  carries the *local* paper through glyph holes. `MRCVerifier.maxNormalisedError`
   = 0.33 (ink-weighted relative-error pass/fail threshold); `CompressEngine.maxMRCPages`
   = 400 (≈ `maxBilevelPages` / 3 — MRC holds three encoded layers per page and
   recomposes each to verify it, so its per-page peak is several times Rung 2's);

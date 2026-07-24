@@ -415,15 +415,25 @@ struct CompressEngine {
             let box = page.bounds(for: .mediaBox)
             guard box.width > 0, box.height > 0 else { return nil }
 
-            // Render at the preset's bilevel DPI, bounded so a hostile /MediaBox cannot blow memory.
+            // Render at the preset's bilevel DPI, bounded so a hostile /MediaBox cannot blow memory,
+            // and — for MRC — never ABOVE the scan's own resolution: rendering a 200-dpi scan at 300
+            // only upsamples, inflating every layer (mask most of all) for no real detail, which is
+            // exactly what pushed sharp-text MRC past the size budget. `sourceImageLongEdge` is the
+            // scan's native long edge; capping the render there keeps text as crisp as the source
+            // while paying only the honest byte count. Absent (non-single-image page — never on this
+            // path) it does not constrain.
             let scale = CGFloat(preset.bilevelDPI) / 72.0
             let longestSide = max(box.width, box.height)
-            let maxDimension = min(longestSide * scale, Self.maxBilevelPixels)
+            let sourceCap = MRCClassifier.sourceImageLongEdge(of: page).map(CGFloat.init)
+                ?? .greatestFiniteMagnitude
+            let maxDimension = min(longestSide * scale, Self.maxBilevelPixels, sourceCap)
 
             // That cap is a memory guard and must never double as a silent quality decision. On a
             // large-format page it becomes one: an A0 sheet at the highest preset clamps to about
             // 107 dpi, losing hairlines and small print — and the result is still smaller, so it
-            // would ship as a success. Below the floor, decline and let Rung 1 handle it.
+            // would ship as a success. Below the floor, decline and let Rung 1 handle it. (The
+            // source-resolution cap can also trip this floor — a sub-150-dpi colour scan declines to
+            // gs rather than shipping a blocky rebuild, which is the right call.)
             guard maxDimension / longestSide * 72.0 >= Self.minBilevelDPI else { return nil }
 
             let content: MRCComposer.PageContent
@@ -513,9 +523,11 @@ struct CompressEngine {
     private func fallbackJPEG(_ page: PDFPage, box: CGRect,
                               preset: CompressPreset) throws -> MRCComposer.PageContent {
         let scale = CGFloat(preset.imageDPI) / 72.0
-        let maxDimension = min(max(box.width, box.height) * scale, Self.maxBilevelPixels)
+        let sourceCap = MRCClassifier.sourceImageLongEdge(of: page).map(CGFloat.init)
+            ?? .greatestFiniteMagnitude
+        let maxDimension = min(max(box.width, box.height) * scale, Self.maxBilevelPixels, sourceCap)
         guard let image = try? service.render(page, maxDimension: maxDimension),
-              let jpeg = MRCPageEncoder.encodeJPEG(image, quality: MRCPageEncoder.layerQualities(for: preset).bg)
+              let jpeg = MRCPageEncoder.encodeJPEG(image, quality: MRCPageEncoder.fallbackQuality(for: preset))
         else { throw MRCDecline() }
         return .jpeg(jpeg)
     }

@@ -382,3 +382,38 @@ explanation for an earlier one-off "runner exited with code 0" failure), fixed b
 `XCTest*` environment key (`ToolboxApp.isTestHost`); the confirming run was 243/243 green at
 23 min vs 43 serial. Test hosts also drop to accessory activation (no Dock icons during runs),
 and the instance guard yields only to regular-activation copies.
+
+## 2026-07-24 — MRC field-blur root cause: foreground layer resolution, not layer decimation
+
+**Affects:** docs/modules/compress.md (MRC constants/render invariants), Sources/Toolbox/Compress/MRC/{MRCSegmenter,MRCPageEncoder,MRCClassifier}.swift, Sources/Toolbox/Compress/CompressEngine.swift
+
+Three prior attempts shipped "visually acceptable" MRC that was blurry in the field. The real
+cause, found by extracting the shipped layers and comparing composite crops at native resolution
+against the original scan (never app-vs-reference at a normalised DPI — that hid it three times):
+the CCITT text mask is the foreground JPEG's PDF **soft-mask**, and a PDF viewer resamples that
+mask down to the foreground *image's* pixel grid. The foreground was emitted at its content
+resolution (`fgDownsample` = 6 ≈ 50 dpi), so the razor-sharp mask was dragged to 50 dpi and every
+glyph smeared. The earlier diagnosis (background/foreground decimation ÷3/÷6) was a *symptom
+description*; the background resolution only affects non-masked content (seals, stamps) — body text
+blur is entirely the foreground image resolution.
+
+**Fix (kept the 3-layer composite — an imagemask stencil was rejected because a single flat ink
+colour tints black body text with the page's blue-notary-polluted mean):**
+- `MRCPageEncoder.encode` re-emits the coarse, smooth foreground at `MRCSegmenter.foregroundLayerScale`
+  = ⅔ of the mask resolution (measured knee: crisp text, JPEG still in budget; native is sharper
+  but exceeds the reference tool's output size).
+- The foreground fill is now flat (`colourLayer(…flatFill:true)`): its masked-out regions are painted
+  over, so a single global mean compresses ~2× smaller than the spread-fill "rays"; the background
+  keeps spread-fill to carry local paper through glyph holes.
+- MRC renders at the scan's native resolution (`MRCClassifier.sourceImageLongEdge` caps
+  `CompressEngine.mrcCompress`/`fallbackJPEG`), never the preset's `bilevelDPI`: over-rendering a
+  ~200-dpi scan at 300 inflates the mask ~2.25× for no detail and is what made a sharp foreground
+  unaffordable. This is what lets the fix fit budget, and it also roughly halved per-page wall time.
+- `MRCPageEncoder.fallbackQuality` decoupled from `layerQualities.bg` (unrelated knobs).
+- `MRCSegmenter.colourLayer`'s spreading fill rewritten in-place/worklist, O(n) amortised (was
+  O((w+h)×full-array-copy) — minutes/page near native resolution).
+
+**Measured (engine, private corpus, anonymised):** the field document 882,515 → 744,287 B (≈ the
+733,595 B reference), text now crisp against the original; every MRC-eligible corpus document ≤ its
+current shipped size with visibly sharp text; the whole MRC unit + engine + invariant test suite
+green with no assertion changes (the fix lives in emission, not the segmenter output the tests pin).
