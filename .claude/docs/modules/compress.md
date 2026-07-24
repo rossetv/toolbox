@@ -92,11 +92,12 @@ running and drives the batch UI.
   the whole attempt, because the fallback path rasterises and rasterising real text is
   destructive.
 - **D7 document gate**: the hybrid ships only when it is smaller than *both* the gs
-  output and the input, and passes `OutputValidator`. If it wins but the gs output
-  itself was not smaller than the input, the hybrid ships as a plain `.compressed`
-  result with no runner-up (R7 — nothing legitimate to switch to). Otherwise it ships
-  `.compressedHeavy(before:after:runnerUpBytes:)` and the gs output is copied to
-  `alternateOutput`, becoming the runner-up.
+  output and the input, and passes `OutputValidator`. A winning hybrid always ships
+  `.compressedHeavy(before:after:runnerUpBytes:)` with a runner-up parked in
+  `alternateOutput` (R7): normally the gs output; when gs itself was not smaller than
+  the input, a copy of the untouched original instead (`runnerUpBytes == before` is
+  the marker — R6 forbids offering a larger-than-input file, and the UI labels that
+  card "Original"; `CompressViewModel.HeavyVersions.runnerUpIsOriginal`).
 - **`RunnerUpStore` is the one documented exception to "no persisted app state"**
   (spec R15): it caches the losing gs version on disk (`caches/Toolbox/runner-ups`) so
   the heavy-capsule popover's switch is instant. `sweepStale()` runs at launch,
@@ -114,7 +115,11 @@ running and drives the batch UI.
   because each has had the other class's hard edges smoothed away); `MRCVerifier.maxNormalisedError`
   = 0.33 (ink-weighted relative-error pass/fail threshold); `CompressEngine.maxMRCPages`
   = 400 (≈ `maxBilevelPages` / 3 — MRC holds three encoded layers per page and
-  recomposes each to verify it, so its per-page peak is several times Rung 2's).
+  recomposes each to verify it, so its per-page peak is several times Rung 2's);
+  `MRCClassifier.maxModerateChromaCoverage` = 0.115 (field-calibrated 2026-07-24:
+  declines pale fine-pattern security backgrounds — guilloche — as `.chromaPattern`;
+  it formally subsumes `maxColourCoverage`, kept as belt-and-braces; see
+  `.claude/DECISIONS.md`, 2026-07-24 chroma-gate entry, for the measured basis).
 - **Recorded verifier limitation**: the ink-weighted relative verifier (R4) cannot
   separate image-dominant harm from a good page — that damage lives off the ink mask.
   The classifier envelope (R3) measurably excludes every harmful corpus page instead

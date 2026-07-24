@@ -61,6 +61,19 @@ apply as a checklist during review.
   per-row badge fix left the batch banner summing the same outcome as zero; the sibling was one
   function away and a one-line grep would have caught it in the same commit.
 
+## Field-defect fix rounds
+
+- **A guard that protects one spec rule by silently violating another is a finding, not a fix.**
+  Resolve the conflict explicitly (here R6 vs R7: park the *original* as the runner-up) and record
+  the interpretation in DECISIONS — never let a review-round patch quietly narrow the spec.
+- **Measure a proposed signal before building it, in its final definition.** Two of three
+  audit-proposed fixes here were reversed by measurement: an off-ink luminance signal separated in
+  the wrong direction, and a "background-only" refinement *worsened* the separation it was meant to
+  improve. Pin thresholds only from numbers produced under the exact definition that ships.
+- **A SwiftUI collection feeding `.quickLookPreview` must never shrink while the panel is alive**
+  (KVO trap in `QLPreviewPanelController`). Freeze the items into `@State` at preview-open,
+  overwrite-only — clearing on dismiss re-enters the same trap inside the teardown window.
+
 ## Shipping under time pressure
 
 - **When a hand-rolled parser has several corruption paths and time is short, prefer an

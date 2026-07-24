@@ -320,3 +320,51 @@ inside the good range. The classifier envelope measurably excluded every harmful
 excludes it"); the verifier remains the encode-corruption gate, and the switch UI is the human
 backstop (spec risk 2). Calibrated constants: bgDownsample 3, fgDownsample 6,
 maxNormalisedError 0.33.
+
+## 2026-07-24 — Field fixes: original-as-runner-up (R6/R7), moderate-chroma classifier gate, frozen Quick Look items
+**Spec:** .claude/specs/20260723-mrc-rung3.md (interpretation clarified, not amended)
+**Affects:** CompressEngine, MRCClassifier/MRCTypes, CompressView/ViewModel, HeavyCompressionPopover, DesignSystem/Components (FileRow), Tests (CompressEngineMRCTests, MRCClassifierTests, CompressViewModelTests, Fixtures)
+
+First field batch (a set of colour scans) surfaced four defects; a Fable-audited fix round
+resolved them.
+
+**R6/R7 interpretation.** The review-round guard that shipped a winning hybrid as plain
+`.compressed` whenever the gs leg bloated (≥ input) protected R6's never-larger rule by violating
+R7's letter ("retain the losing version and offer the switch"). Resolution: both hold — the
+runner-up parked in that case is a copy of the UNTOUCHED ORIGINAL (`runnerUpBytes == before` is
+the marker; the popover labels the card "Original", no savings pill). Switching to the original
+delivers a file *equal* to the input by the user's explicit choice, which violates neither R6
+(engine never ships larger) nor `.noGain` semantics (that outcome means the engine wrote nothing).
+
+**Moderate-chroma classifier gate.** The one damaged document's pages carry a pale guilloche
+security pattern whose channel delta (~25–40) sits below the strong-colour test (> 40); the
+classifier admitted them, the Sauvola mask thinned strokes 10–26 %, and the ink-weighted verifier
+is structurally blind to the off-mask blur (recorded limitation above). New envelope feature:
+`moderateChromaCoverage` (fraction of pixels with delta > 25), gate at 0.115, distinct decline
+reason `.chromaPattern`. Measured basis (2026-07-24, 100 DPI, whole-page): damaged document's
+MRC'd pages 0.137–0.201; every other corpus page ≤ 0.095 — 0.115 keeps ~0.02 margin both sides.
+Alternatives measured and rejected: off-ink luminance stddev (wrong direction — the pattern
+scores BELOW approved pages' stamps/borders), background-only chroma (worsens separation:
+0.094 vs 0.103), pale-band-only 25–40 (inverts it: 0.095 vs 0.086). Calibration basis is ONE
+separating document (n=1) plus a synthetic regression fixture; the nearest legitimate page
+(0.095) belongs to another corpus document — if a future false exclusion appears, the cost is
+size (gs fallback), never quality. Known accepted trade: the damaged document now ships the gs result
+(−84 %) instead of the blurry hybrid (−93 %) — correctness over size. Residual risk: grey
+(achromatic) fine patterns remain invisible to every chroma signal; the switch UI stays the
+backstop. `maxColourCoverage` (0.35) is formally subsumed (delta > 40 ⊂ delta > 25, and 0.115
+trips first); kept as belt-and-braces against a future loosening of the moderate threshold.
+
+Recorded rebuttal (review minor): `runnerUpIsOriginal` is derived from the job's frozen outcome,
+and an R10 re-run never refreshes that outcome — a pre-existing property of the re-run design,
+not of this marker. A wrong "Original" label needs the runner-up to have vanished AND the gs
+output's run-to-run size jitter to cross the exact input-size boundary; the consequence is a
+mislabelled card, never a wrong file. Accepted as cosmetic; a display-outcome overlay for re-runs
+is its own change if it ever matters.
+
+**Frozen Quick Look items.** `QLPreviewPanelController` traps (KVO `currentPreviewItemIndex`
+reload) when the SwiftUI items collection shrinks while the panel is alive; deriving the pair
+from the transient popover's state collapsed it 2→0 on ANY dismissal. The pair is now frozen
+into view `@State` at preview-open and only ever overwritten by the next preview — never
+cleared, including on panel close (clearing in `.onChange` lands one body evaluation later,
+inside the animated-teardown window: the same trap, narrower). The popover now also anchors to
+the heavy capsule itself (`FileRow.heavyPopoverPresented`/`heavyPopoverContent`), not the row.
