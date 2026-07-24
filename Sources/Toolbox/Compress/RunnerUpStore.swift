@@ -14,19 +14,22 @@ import Foundation
 final class RunnerUpStore {
     private let root: URL
 
+    /// The production cache directory (caches/Toolbox/runner-ups), shared by the instance's
+    /// default root and the static quit-time cleanup below.
+    nonisolated static var productionRoot: URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        return caches.appendingPathComponent("Toolbox/runner-ups", isDirectory: true)
+    }
+
     /// rootOverride is for tests; production uses caches/Toolbox/runner-ups.
     init(rootOverride: URL? = nil) {
-        if let rootOverride {
-            root = rootOverride
-        } else {
-            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            root = caches.appendingPathComponent("Toolbox/runner-ups", isDirectory: true)
-        }
+        root = rootOverride ?? Self.productionRoot
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
 
-    /// Sweep everything left by a previous run (crash leftovers). Call once at start-up.
-    func sweepStale() {
+    /// Empty the cache directory without needing an instance — quit must not depend on which
+    /// view-models exist. `root` defaults to the production directory; tests pass a temp root.
+    nonisolated static func removeAllOnDisk(root: URL = RunnerUpStore.productionRoot) {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else {
             return
@@ -34,6 +37,11 @@ final class RunnerUpStore {
         for url in contents {
             try? fm.removeItem(at: url)
         }
+    }
+
+    /// Sweep everything left by a previous run (crash leftovers). Call once at start-up.
+    func sweepStale() {
+        Self.removeAllOnDisk(root: root)
     }
 
     /// Reserve a cache URL for a job's runner-up, via the same serial allocator as every

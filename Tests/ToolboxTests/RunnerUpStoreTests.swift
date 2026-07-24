@@ -125,6 +125,20 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertTrue(contents.isEmpty)
     }
 
+    /// The quit-time hook (Task 19): a static that empties the cache directory without needing
+    /// an instance, exercised here against a temp root override.
+    func testRemoveAllOnDiskEmptiesCacheDirectory() throws {
+        let root = try tempRoot()
+
+        try Data("a".utf8).write(to: root.appendingPathComponent("one.pdf"))
+        try Data("b".utf8).write(to: root.appendingPathComponent(".swap-leftover.pdf"))
+
+        RunnerUpStore.removeAllOnDisk(root: root)
+
+        let contents = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        XCTAssertTrue(contents.isEmpty)
+    }
+
     func testDiscardRemovesFile() throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)

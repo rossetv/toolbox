@@ -9,6 +9,8 @@ import SwiftUI
 
 @main
 struct ToolboxApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     init() {
         // Headless self-test hook (TOOLBOX_SMOKE=compress) — runs the real compress path
         // from the app process and exits, before any window appears.
@@ -43,5 +45,13 @@ struct ToolboxApp: App {
         }
         .defaultSize(width: 900, height: 600)
         .windowResizability(.contentMinSize)
+    }
+}
+
+/// Closes R15's lifecycle at the other end from `RunnerUpStore.sweepStale()` (launch): empties
+/// the runner-up cache on quit, without depending on which view-models are still alive.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        RunnerUpStore.removeAllOnDisk()
     }
 }
