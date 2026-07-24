@@ -1,0 +1,3 @@
+# Pre-public security audit: accepted disclosures
+
+2026-07-24 full audit (gitleaks over all history + semantic sweeps of tree, history, CI/scripts/KB, and GitHub-side PRs/releases) found no secrets, no PII, no personal paths; the 2026-07-23 scrubs were verified as genuine history rewrites. The maintainer explicitly accepted every remaining identity disclosure: the copyright attribution (name + project contact address), the `rossetv` GitHub handle in URLs, the personal-domain commit-author address on all commits, and one corporate-email mention in a historical `BUILD-REPORT.md` blob (commit `9fc5caeb`, tree-scrubbed, history-only). Do not re-flag these in future audits; anything *new* matching these classes is still a finding.
