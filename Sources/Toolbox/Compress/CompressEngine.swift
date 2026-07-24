@@ -84,10 +84,6 @@ struct CompressEngine {
                   alternateOutput: URL? = nil,
                   mrcReport: ((MRCDocumentReport) -> Void)? = nil,
                   progress: @escaping (Double) -> Void) async throws -> JobOutcome {
-        // Task 4: both parameters are pass-through only — Rung 3 (Task 15) fills in the MRC
-        // attempt behind this already-present signature. Existing behaviour is byte-identical.
-        _ = alternateOutput
-        _ = mrcReport
         let fm = FileManager.default
         let input = input.canonical
         let output = output.canonical
@@ -103,6 +99,15 @@ struct CompressEngine {
 
         let inputSize = Self.fileSize(input)
         let outputDir = output.deletingLastPathComponent().canonical
+
+        // Content routing decided once, up front, and reused below (never classify twice). A
+        // `.scanColour` document at any preset but maximumQuality (D3) is a Rung-3 (MRC hybrid)
+        // candidate: its gs pass still runs first and unchanged — the baseline the D7 gate weighs
+        // the hybrid against — but its progress is mapped into 0…0.45 to leave 0.45…0.95 for the
+        // MRC leg (delivery finishes at 1.0).
+        let classification = try? service.classify(input)
+        let wantsMRC = classification == .scanColour && preset != .maximumQuality
+        let gsProgressCeiling = wantsMRC ? 0.45 : 1.0
 
         // Rung 2 can process several pages — driving progress up — before declining on a LATER
         // page and falling through to Rung 1, which then starts its own progress back near 0.
@@ -137,7 +142,7 @@ struct CompressEngine {
         //    is where the large saving is. Any failure, or a result that is not smaller and valid,
         //    falls through to Rung 1 — no document is ever left unhandled or worse off (R2-N1).
         var bilevelOutcome: Int?
-        if (try? service.classify(input)) == .scanBilevel {
+        if classification == .scanBilevel {
             do {
                 bilevelOutcome = try await bilevelCompress(input, preset: preset, to: work,
                                                            progress: reportProgress)
@@ -176,7 +181,9 @@ struct CompressEngine {
             readPaths: [workIn],
             writePaths: [work],
             onProgress: { page in
-                if pageCount > 0 { reportProgress(min(1.0, Double(page) / Double(pageCount))) }
+                if pageCount > 0 {
+                    reportProgress(min(1.0, Double(page) / Double(pageCount)) * gsProgressCeiling)
+                }
             })
         // A cancel that landed while gs was running (or just as it finished) must produce nothing:
         // the work dir's `defer` discards the staged output and the job returns to `.queued`.
@@ -189,6 +196,50 @@ struct CompressEngine {
         let outputSize = Self.fileSize(workOut)
         guard outputSize > 0 else {
             throw CompressError.ghostscriptFailed("Ghostscript exited successfully but produced no output.")
+        }
+
+        // 4b. Rung 3 (MRC hybrid) for a colour scan. The gs output above is the baseline the D7
+        //     gate weighs the hybrid against; the hybrid ships only if it is smaller than BOTH the
+        //     gs output AND the input, and it validates. This runs BEFORE the never-larger/no-gain
+        //     check on purpose: a document where gs bloats can still be beaten by MRC against the
+        //     input, and pushing this below would silently `.noGain` it. `mrcCompress`'s
+        //     composition/write failures propagate out of it, so this catch has the exact Rung-2
+        //     call-site shape — only a `CancellationError` may escape; every other failure declines
+        //     to the gs output (D10), never a throw, so the document is never worse off than gs.
+        if wantsMRC {
+            var mrcResult: (url: URL, bytes: Int, report: MRCDocumentReport)?
+            do {
+                mrcResult = try await mrcCompress(workIn, preset: preset, to: work,
+                                                  progress: { reportProgress(0.45 + $0 * 0.5) })
+            } catch let cancellation as CancellationError {
+                throw cancellation
+            } catch {
+                mrcResult = nil   // D10: any MRC failure ships the gs output below, never a throw
+            }
+            if let (mrcURL, mrcBytes, report) = mrcResult,
+               mrcBytes < outputSize, mrcBytes < inputSize,
+               (try? validator.validate(input: workIn, output: mrcURL, samplePages: 3)) == true {
+                // The hybrid wins — deliver it via the same atomic idiom as every other winner.
+                try Task.checkCancellation()
+                let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
+                var placed = false
+                defer { if !placed { try? fm.removeItem(at: destTemp) } }
+                try fm.copyItem(at: mrcURL, to: destTemp)
+                try Task.checkCancellation()
+                try fm.moveItem(at: destTemp, to: output)
+                placed = true
+                // The gs output becomes the runner-up: a plain copy into the caller's cache slot.
+                // Best-effort — the user's output has already shipped, so a cache-write failure must
+                // never fail the job; `RunnerUpStore` already tolerates an absent runner-up.
+                if let alternateOutput {
+                    try? fm.copyItem(at: workOut, to: alternateOutput)
+                }
+                reportProgress(1.0)
+                mrcReport?(report)
+                return .compressedHeavy(before: inputSize, after: mrcBytes, runnerUpBytes: outputSize)
+            }
+            // The hybrid lost (nil, larger or invalid) — fall through to the gs delivery below,
+            // exactly as any non-MRC document; `alternateOutput` is never written (R7).
         }
 
         // 5. Never emit a larger file — on no gain keep the original and write nothing. The
