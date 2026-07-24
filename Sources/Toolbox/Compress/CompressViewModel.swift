@@ -383,8 +383,10 @@ final class CompressViewModel: ObservableObject {
         rerunForSwitch(job, wantHeavy: wantHeavy)
     }
 
-    /// R10 tail: the runner-up is gone, so re-run this one job directly through the engine (not the
-    /// batch queue) to regenerate both versions, then apply the switch the user asked for.
+    /// R10 tail: reached either because the runner-up is gone, or because it still exists but
+    /// `switchVersions` raced and threw. Either way, re-run this one job directly through the
+    /// engine (not the batch queue) to regenerate both versions, then apply the switch the user
+    /// asked for.
     private func rerunForSwitch(_ job: ToolJob, wantHeavy: Bool) {
         guard let engine,
               let shipped = job.resultURL,

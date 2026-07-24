@@ -23,7 +23,7 @@ struct MRCSegmented {
 /// reference tool's outputs at the M2 gate — the spike proved the approach, not this port.
 enum MRCSegmenter {
 
-    /// The background layer is downsampled 2× and the foreground 3×: paper detail matters more
+    /// The background layer is downsampled 3× and the foreground 6×: paper detail matters more
     /// than ink detail (ink is carried sharply by the 1-bit mask), so the fg can be coarser.
     // M2-calibrated 2026-07-24 against the reference tool's outputs on the private corpus
     // (aggregates only): 2/3 produced hybrids ~2x the reference; 3/6 reproduces the
