@@ -368,3 +368,17 @@ into view `@State` at preview-open and only ever overwritten by the next preview
 cleared, including on panel close (clearing in `.onChange` lands one body evaluation later,
 inside the animated-teardown window: the same trap, narrower). The popover now also anchors to
 the heavy capsule itself (`FileRow.heavyPopoverPresented`/`heavyPopoverContent`), not the row.
+
+## 2026-07-24 — Tests gate parallelised (human-mandated gate edit)
+**Affects:** .claude/GATES.md (`gate: tests`), Sources/Toolbox/App/ToolboxApp.swift (`isTestHost`)
+
+The `tests` gate command gains `-parallel-testing-enabled YES -parallel-testing-worker-count 8`.
+Gate edits normally require a /panel; the human explicitly overrode and mandated this one in
+conversation ("you have my authorisation as human override. Next time parallelise") after the
+serial suite's ~43-minute wall-clock blocked a field-fix push for over an hour. Verified before
+pinning, per the gates preamble: one parallel run failed first (worker host clones launch without
+`XCTestConfigurationFilePath`, so the single-instance guard `exit(0)`'d mid-suite — also the
+explanation for an earlier one-off "runner exited with code 0" failure), fixed by matching any
+`XCTest*` environment key (`ToolboxApp.isTestHost`); the confirming run was 243/243 green at
+23 min vs 43 serial. Test hosts also drop to accessory activation (no Dock icons during runs),
+and the instance guard yields only to regular-activation copies.

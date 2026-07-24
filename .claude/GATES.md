@@ -71,12 +71,13 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug build
 
 ### gate: tests
 kind: mechanical
-why: The suite covers the engine safety rules that protect user files — never overwrite the input, never emit a larger file, reject corrupt or content-losing output, cancel leaves nothing behind, and the OCR verbatim-prefix invariant.
+why: The suite covers the engine safety rules that protect user files — never overwrite the input, never emit a larger file, reject corrupt or content-losing output, cancel leaves nothing behind, and the OCR verbatim-prefix invariant. Parallelised across 8 workers (verified 2026-07-24: 23 min vs 43 serial, 243/243 green; requires the robust XCTest-host detection in `ToolboxApp.isTestHost` — worker clones launch without `XCTestConfigurationFilePath`).
 added: 2026-07-23 — monocratic (opus)
-mandated-by-human: no
+edited: 2026-07-24 — mandated-by-human (parallelise; human override in lieu of panel — see DECISIONS.md 2026-07-24 gate-edit entry)
+mandated-by-human: yes
 
 ```sh
-xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test
+xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test -parallel-testing-enabled YES -parallel-testing-worker-count 8
 ```
 
 ### gate: packaged-app-compresses
