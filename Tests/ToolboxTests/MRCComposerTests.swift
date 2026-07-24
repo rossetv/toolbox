@@ -51,20 +51,18 @@ final class MRCComposerTests: XCTestCase {
         return CCITTEncoder.encode(context.makeImage()!)!
     }
 
-    private func mrcPage(rotation: Int) -> MRCComposer.Page {
+    private func mrcPage() -> MRCComposer.Page {
         MRCComposer.Page(
             content: .mrc(background: solidJPEG(red: 1, green: 1, blue: 1),
                           foreground: solidJPEG(red: 1, green: 0, blue: 0),
                           mask: halfInkMask()),
-            size: CGSize(width: 612, height: 792),
-            rotation: rotation)
+            size: CGSize(width: 612, height: 792))
     }
 
-    private func jpegPage(rotation: Int = 0) -> MRCComposer.Page {
+    private func jpegPage() -> MRCComposer.Page {
         MRCComposer.Page(
             content: .jpeg(solidJPEG(red: 0.2, green: 0.4, blue: 0.8)),
-            size: CGSize(width: 612, height: 792),
-            rotation: rotation)
+            size: CGSize(width: 612, height: 792))
     }
 
     /// Mean R/G/B over a rectangular region of a rendered RGBA page, each 0…1.
@@ -93,20 +91,23 @@ final class MRCComposerTests: XCTestCase {
     /// I1: every /SMask stream's ColorSpace is the literal /DeviceGray. CoreGraphics silently
     /// renders ghost text on any other space (measured in the spike) — THE invariant.
     func testSoftMaskColorSpaceIsDeviceGray() throws {
-        let data = try MRCComposer.compose(pages: [mrcPage(rotation: 0)])
+        let data = try MRCComposer.compose(pages: [mrcPage()])
         let text = String(decoding: data, as: UTF8.self)
         XCTAssertTrue(text.contains("/ColorSpace /DeviceGray"))
         XCTAssertFalse(text.contains("ICCBased"))
         XCTAssertNotNil(PDFDocument(data: data))
     }
 
-    /// I2: /Rotate carried verbatim across 90/180/270.
-    func testRotationCarriedVerbatim() throws {
-        for rotation in [90, 180, 270] {
-            let data = try MRCComposer.compose(pages: [mrcPage(rotation: rotation)])
-            let doc = try XCTUnwrap(PDFDocument(data: data))
-            XCTAssertEqual(doc.page(at: 0)?.rotation, rotation)
-        }
+    /// I2: the composer never emits `/Rotate`. Layers arrive upright (`PDFService.render` bakes the
+    /// source `/Rotate` into the pixels), so the composed page must carry no `/Rotate` at all —
+    /// re-stamping it would turn an already-upright page a second time (the double-rotation bug).
+    func testComposerNeverEmitsRotate() throws {
+        let data = try MRCComposer.compose(pages: [mrcPage(), jpegPage()])
+        let doc = try XCTUnwrap(PDFDocument(data: data))
+        XCTAssertEqual(doc.page(at: 0)?.rotation, 0)
+        XCTAssertEqual(doc.page(at: 1)?.rotation, 0)
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(text.contains("/Rotate"), "the composer must never write a /Rotate entry")
     }
 
     /// I3: MediaBox preserved; mask/layer pixel dimensions match what was passed in.
@@ -131,7 +132,7 @@ final class MRCComposerTests: XCTestCase {
 
     /// Mixed documents interleave both page kinds in order, each rendering non-blank.
     func testMixedPageKindsCompose() throws {
-        let data = try MRCComposer.compose(pages: [jpegPage(), mrcPage(rotation: 0), jpegPage()])
+        let data = try MRCComposer.compose(pages: [jpegPage(), mrcPage(), jpegPage()])
         let doc = try XCTUnwrap(PDFDocument(data: data))
         XCTAssertEqual(doc.pageCount, 3)
         for index in 0..<3 {
@@ -169,7 +170,7 @@ final class MRCComposerTests: XCTestCase {
     /// mask; after rendering, red must appear ONLY in the masked (ink) half. Passes with
     /// `/Decode [1 0]`; would fail (red on the wrong half) with `[0 1]`.
     func testMaskPolarity() throws {
-        let data = try MRCComposer.compose(pages: [mrcPage(rotation: 0)])
+        let data = try MRCComposer.compose(pages: [mrcPage()])
         let doc = try XCTUnwrap(PDFDocument(data: data))
         let page = try XCTUnwrap(doc.page(at: 0))
         let rendered = try PDFService().render(page, maxDimension: 400)

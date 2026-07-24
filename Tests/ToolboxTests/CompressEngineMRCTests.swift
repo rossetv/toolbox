@@ -213,9 +213,11 @@ final class CompressEngineRoutingTests: XCTestCase {
             let page = try XCTUnwrap(document.page(at: index))
             let image = try service.render(page, maxDimension: maxDimension)
             let jpeg = try XCTUnwrap(MRCPageEncoder.encodeJPEG(image, quality: quality))
-            pages.append(MRCComposer.Page(content: .jpeg(jpeg),
-                                          size: page.bounds(for: .mediaBox).size,
-                                          rotation: page.rotation))
+            // Mirror production: the render is upright, so the page uses the displayed size and no `/Rotate`.
+            pages.append(MRCComposer.Page(
+                content: .jpeg(jpeg),
+                size: PDFWriter.displayedSize(mediaBox: page.bounds(for: .mediaBox),
+                                              rotation: page.rotation)))
         }
         return try MRCComposer.compose(pages: pages)
     }

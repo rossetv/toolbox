@@ -96,12 +96,27 @@ struct PDFService {
         return images
     }
 
-    /// Rasterise one page onto a white background, bounded by `maxDimension` on its long edge.
+    /// Rasterise one page **upright** (the page's `/Rotate` baked into the pixels) onto a white
+    /// background, bounded by `maxDimension` on its long edge.
+    ///
+    /// `page.draw(with: .mediaBox)` already applies `/Rotate`, so the raster is oriented exactly as
+    /// a viewer shows the page. The one thing that has to follow from that is the canvas aspect: at
+    /// 90°/270° the visible page is the media box with width and height swapped, and
+    /// `bounds(for: .mediaBox)` does **not** swap them — sizing the canvas from the raw media box
+    /// there draws the rotated content into a wrong-aspect bitmap and it clips (empirically, to
+    /// fully blank). So the canvas is sized from the *displayed* dimensions. Because the raster is
+    /// already upright, every consumer that embeds it (the MRC/bilevel composers) must emit
+    /// `/Rotate 0` and a MediaBox at these displayed dimensions — re-stamping the source `/Rotate`
+    /// would turn the page a second time.
     func render(_ page: PDFPage, maxDimension: CGFloat) throws -> CGImage {
         let bounds = page.bounds(for: .mediaBox)
-        let scale = maxDimension / max(bounds.width, bounds.height, 1)
-        let width = max(1, Int((bounds.width * scale).rounded()))
-        let height = max(1, Int((bounds.height * scale).rounded()))
+        let rotation = ((page.rotation % 360) + 360) % 360
+        let swap = rotation == 90 || rotation == 270
+        let displayedWidth = swap ? bounds.height : bounds.width
+        let displayedHeight = swap ? bounds.width : bounds.height
+        let scale = maxDimension / max(displayedWidth, displayedHeight, 1)
+        let width = max(1, Int((displayedWidth * scale).rounded()))
+        let height = max(1, Int((displayedHeight * scale).rounded()))
         let colourSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil, width: width, height: height,
                                   bitsPerComponent: 8, bytesPerRow: 0, space: colourSpace,

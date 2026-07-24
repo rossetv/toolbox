@@ -360,7 +360,10 @@ struct CompressEngine {
                   let binarised = bitmap.cgImage,
                   let encoded = CCITTEncoder.encode(binarised) else { return nil }
 
-            pages.append(.init(image: encoded, size: box.size, rotation: page.rotation))
+            // The render is upright (rotation baked into the pixels), so the composed page uses the
+            // displayed size (swapped at 90°/270°) and carries no `/Rotate` — see `BilevelPDFComposer.Page`.
+            pages.append(.init(image: encoded,
+                               size: PDFWriter.displayedSize(mediaBox: box, rotation: page.rotation)))
             progress(Double(index + 1) / Double(document.pageCount))
         }
 
@@ -432,7 +435,10 @@ struct CompressEngine {
             } catch is MRCDecline {
                 return nil                              // a page with no fallback → decline the document
             }
-            pages.append(MRCComposer.Page(content: content, size: box.size, rotation: page.rotation))
+            // The layers are rendered upright (rotation baked into the pixels), so the composed page
+            // uses the displayed size (swapped at 90°/270°) and carries no `/Rotate` — see `MRCComposer.Page`.
+            pages.append(MRCComposer.Page(content: content,
+                                          size: PDFWriter.displayedSize(mediaBox: box, rotation: page.rotation)))
             verdicts.append(verdict)
             if case .mrcEncoded = verdict { anyMRC = true }
             progress(Double(index + 1) / Double(document.pageCount))

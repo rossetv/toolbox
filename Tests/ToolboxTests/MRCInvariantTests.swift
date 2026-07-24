@@ -5,6 +5,7 @@
 // This file is part of Toolbox, released under the GNU Affero General
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
+import AppKit
 import PDFKit
 import XCTest
 @testable import Toolbox
@@ -36,12 +37,19 @@ final class MRCInvariantTests: XCTestCase {
         return dir.canonical
     }
 
-    /// I2 end-to-end: the shipped hybrid's `/Rotate` equals the input page's, for every rotation
-    /// the fixture writer supports. One page per rotation keeps the real-MRC render cost down.
+    /// I2 end-to-end: a rotated page comes back the SAME WAY UP a viewer sees it — not turned twice.
+    ///
+    /// The fix bakes `/Rotate` into the shipped pixels and drops the `/Rotate` stamp, so the old
+    /// assertion (shipped `/Rotate` == input `/Rotate`) *encoded the bug*: it green-lit a page that
+    /// was rotated once in the pixels and again by the stamp. This compares what a **viewer** shows
+    /// (`PDFPage.thumbnail`, which applies `/Rotate`) for the input vs the shipped page — never the
+    /// `render()` under test — over an asymmetric fixture, and asserts (a) the shipped page carries
+    /// `/Rotate 0`, (b) it is not blank (the 90/270 clip regression), (c) its displayed aspect
+    /// matches the input's, and (d) its orientation matches the input's, not the 180° flip.
     func testRotatedInputShipsSameRotation() async throws {
         for rotation in [90, 180, 270] {
             let engine = makeEngine()
-            let input = try Fixtures.colourTextScanPDF(pages: 1, rotation: rotation)
+            let input = try Self.asymmetricColourScanPDF(rotation: rotation)
             let work = try makeWorkDir()
 
             let result = try await engine.mrcCompress(input, preset: .balanced, to: work) { _ in }
@@ -49,9 +57,24 @@ final class MRCInvariantTests: XCTestCase {
             let unwrapped = try XCTUnwrap(result, "rotation \(rotation): the eligible page must compose")
             let inputPage = try XCTUnwrap(PDFDocument(url: input)?.page(at: 0))
             let outputPage = try XCTUnwrap(PDFDocument(url: unwrapped.url)?.page(at: 0))
-            XCTAssertEqual(outputPage.rotation, inputPage.rotation,
-                           "rotation \(rotation): shipped page rotation must equal the input's")
-            XCTAssertEqual(outputPage.rotation, rotation)
+
+            XCTAssertEqual(outputPage.rotation, 0,
+                           "rotation \(rotation): the shipped page must carry /Rotate 0 (rotation baked in)")
+
+            let before = Self.viewerInkGrid(inputPage)
+            let after = Self.viewerInkGrid(outputPage)
+
+            XCTAssertGreaterThan(after.ink, 0.001,
+                                 "rotation \(rotation): the shipped page must not render blank")
+            XCTAssertEqual(Double(after.w) / Double(after.h),
+                           Double(before.w) / Double(before.h), accuracy: 0.05,
+                           "rotation \(rotation): the shipped displayed aspect must match the input's")
+
+            let toInput = Self.gridDistance(after.grid, before.grid)
+            let toFlipped = Self.gridDistance(after.grid, Array(before.grid.reversed()))
+            XCTAssertLessThan(toInput, toFlipped,
+                              "rotation \(rotation): the shipped page must match the input's "
+                              + "orientation, not its 180° flip (the double-rotation regression)")
         }
     }
 
@@ -149,5 +172,90 @@ final class MRCInvariantTests: XCTestCase {
 
         XCTAssertTrue(spy.fired, "the MRC report must fire when the hybrid ships")
         XCTAssertEqual(spy.report?.verdicts.count, 2, "both pages of the mixed fixture must be recorded")
+    }
+
+    // MARK: rotation helpers
+
+    /// A synthetic colour text-scan (sparse dark-blue text-like bars on cream) that stays inside
+    /// the MRC classifier's eligibility envelope — low moderate-chroma coverage, small components —
+    /// while concentrating all its ink in the **top half** of the page. That spatial asymmetry is
+    /// what makes a 180° flip unambiguous (a solid block would fail the mean-component-size gate and
+    /// dense bars the chroma gate, so neither is used). `rotation` writes `/Rotate` on the page.
+    /// Wholly synthetic — no reference to any real document.
+    private static func asymmetricColourScanPDF(rotation: Int) throws -> URL {
+        let w = 1700, h = 2200
+        let bmp = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        bmp.setFillColor(CGColor(red: 0.97, green: 0.96, blue: 0.92, alpha: 1))
+        bmp.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        bmp.setFillColor(CGColor(red: 0.05, green: 0.08, blue: 0.35, alpha: 1))
+        // Bitmap origin is bottom-left, so high y is the top of the page: rows live in the top half
+        // only, leaving the bottom half blank — the decisive up/down asymmetry for the flip check.
+        var y = Double(h) - 200
+        while y > Double(h) * 0.5 {
+            var x = 120.0
+            while x < Double(w) - 80 {
+                let barWidth = Double.random(in: 18...44)
+                bmp.fill(CGRect(x: x, y: y, width: barWidth, height: 12))
+                x += barWidth + 8 + Double.random(in: 0...6)
+            }
+            y -= 84
+        }
+        let image = bmp.makeImage()!
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("asym-colour-\(UUID().uuidString).pdf")
+        var media = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let pdf = CGContext(url as CFURL, mediaBox: &media, nil)!
+        pdf.beginPDFPage(nil)
+        pdf.draw(image, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+        pdf.endPDFPage()
+        pdf.closePDF()
+
+        guard rotation != 0 else { return url.canonical }
+        let doc = try XCTUnwrap(PDFDocument(url: url))
+        doc.page(at: 0)?.rotation = rotation
+        XCTAssertTrue(doc.write(to: url))
+        return url.canonical
+    }
+
+    /// A coarse `cells×cells` map of a page's ink **as a viewer sees it** — `PDFPage.thumbnail`
+    /// applies `/Rotate`, so this is the viewer-true orientation, deliberately NOT the `render()`
+    /// under test. Returns the grid (mean darkness per cell, 0…1), the whole-page ink mean, and the
+    /// thumbnail's pixel dimensions (aspect).
+    static func viewerInkGrid(_ page: PDFPage, cells: Int = 8)
+        -> (grid: [Double], ink: Double, w: Int, h: Int) {
+        let thumb = page.thumbnail(of: NSSize(width: 400, height: 400), for: .mediaBox)
+        guard let cg = thumb.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return ([], 0, 0, 0)
+        }
+        let w = cg.width, h = cg.height
+        let gray = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                             space: CGColorSpaceCreateDeviceGray(), bitmapInfo: 0)!
+        gray.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let buf = gray.data!.assumingMemoryBound(to: UInt8.self)
+        var sum = [Double](repeating: 0, count: cells * cells)
+        var cnt = [Double](repeating: 0, count: cells * cells)
+        for py in 0..<h {
+            let cy = min(cells - 1, py * cells / h)
+            for px in 0..<w {
+                let cx = min(cells - 1, px * cells / w)
+                sum[cy * cells + cx] += buf[py * w + px] < 128 ? 1 : 0
+                cnt[cy * cells + cx] += 1
+            }
+        }
+        var grid = [Double](repeating: 0, count: cells * cells)
+        for i in 0..<grid.count where cnt[i] > 0 { grid[i] = sum[i] / cnt[i] }
+        let ink = grid.reduce(0, +) / Double(grid.count)
+        return (grid, ink, w, h)
+    }
+
+    /// Mean absolute difference between two equal-length ink grids.
+    static func gridDistance(_ a: [Double], _ b: [Double]) -> Double {
+        guard a.count == b.count, !a.isEmpty else { return .infinity }
+        var s = 0.0
+        for i in 0..<a.count { s += abs(a[i] - b[i]) }
+        return s / Double(a.count)
     }
 }

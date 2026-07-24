@@ -18,12 +18,12 @@ enum BilevelPDFComposer {
 
     struct Page {
         let image: CCITTEncoder.Encoded
-        /// Page size in PDF points (1/72"), taken from the source page so geometry is preserved.
+        /// Page size in PDF points (1/72"), the source page's **displayed** size — width/height
+        /// already swapped at 90°/270°. The bitmap is rendered upright (`PDFService.render` bakes
+        /// `/Rotate` into the pixels), so the composed page carries no `/Rotate`: its MediaBox is
+        /// these displayed dimensions and a viewer shows it the right way up. Re-stamping the
+        /// source `/Rotate` here would turn the already-upright scan a second time.
         let size: CGSize
-        /// The source page's `/Rotate`, in degrees clockwise. The rendered bitmap comes from the
-        /// *unrotated* media box, so carrying the same `/Rotate` through makes a viewer turn our
-        /// image exactly as it turned the original. Dropping it lands a rotated scan sideways.
-        var rotation: Int = 0
     }
 
     enum Failure: Error {
@@ -77,14 +77,9 @@ enum BilevelPDFComposer {
             let width = Self.number(page.size.width)
             let height = Self.number(page.size.height)
 
-            // Normalised to the 0/90/180/270 the format allows; a negative or over-turn value is
-            // legal in the wild and `-90 % 360` is -90 in Swift, hence the second modulo.
-            let rotation = ((page.rotation % 360) + 360) % 360
-            let rotateEntry = rotation == 0 ? "" : "/Rotate \(rotation) "
-
             beginObject(pageObject)
             append("""
-            << /Type /Page /Parent 2 0 R /MediaBox [0 0 \(width) \(height)] \(rotateEntry)\
+            << /Type /Page /Parent 2 0 R /MediaBox [0 0 \(width) \(height)] \
             /Resources << /XObject << /Im0 \(imageObject) 0 R >> >> \
             /Contents \(contentObject) 0 R >>
             endobj

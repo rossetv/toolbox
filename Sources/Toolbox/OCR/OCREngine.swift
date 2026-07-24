@@ -196,8 +196,9 @@ struct OCREngine {
     }
 
     /// Render a page **upright** (rotation applied) at `dpi`, one page at a time. Uses
-    /// `PDFPage.thumbnail`, which honours `/Rotate` and produces an exactly-sized raster
-    /// (`PDFService.render` deliberately renders the unrotated media box and is not reused here).
+    /// `PDFPage.thumbnail`, which honours `/Rotate` and produces an exactly-sized raster.
+    /// `PDFService.render` also renders upright, but bounds its output by a `maxDimension` long
+    /// edge; OCR needs an exact-DPI raster, so it keeps its own DPI-driven path here.
     /// The render runs off the cooperative pool; the `NSImage` is freed before returning.
     private func renderUpright(_ page: PDFPage, dpi: CGFloat) async -> CGImage? {
         await withCheckedContinuation { continuation in

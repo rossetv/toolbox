@@ -408,26 +408,76 @@ extension CompressEngineTests {
                       + "rebuild drops everything that is not painted pixels")
     }
 
-    /// A page carrying `/Rotate` must not come back sideways. The bitmap is rendered from the
-    /// unrotated media box, so the composed page has to carry the same `/Rotate` through.
+    /// A page carrying `/Rotate` must not come back sideways or upside-down. Rung 2 renders the
+    /// page **upright** (rotation baked into the pixels) and composes with `/Rotate 0`, so the old
+    /// assertion (shipped `/Rotate` == input `/Rotate`) encoded the double-rotation bug. This
+    /// compares what a **viewer** shows (`PDFPage.thumbnail`, which applies `/Rotate`) for the
+    /// rotated input vs the compressed output — rung-agnostic (gs Rung 1 would keep a real
+    /// `/Rotate`; Rung 2 bakes it in), asserting the output is non-blank, keeps the displayed
+    /// aspect, and matches the input's orientation rather than its 180° flip.
     func testRotatedScanKeepsItsOrientation() async throws {
-        let engine = try makeEngine()
-        let input = try Fixtures.greyscaleBilevelScanPDF()
-        let rotated = input.deletingLastPathComponent().appendingPathComponent("rotated.pdf")
-        let doc = try XCTUnwrap(PDFDocument(url: input))
-        try XCTUnwrap(doc.page(at: 0)).rotation = 90
-        XCTAssertTrue(doc.write(to: rotated))
+        for rotation in [90, 180, 270] {
+            let engine = try makeEngine()
+            let base = try Self.asymmetricBilevelScanPDF()
+            let rotated = base.deletingLastPathComponent()
+                .appendingPathComponent("rot-\(rotation)-\(UUID().uuidString).pdf")
+            let doc = try XCTUnwrap(PDFDocument(url: base))
+            try XCTUnwrap(doc.page(at: 0)).rotation = rotation
+            XCTAssertTrue(doc.write(to: rotated))
 
-        let before = try XCTUnwrap(PDFDocument(url: rotated)?.page(at: 0))
-        let output = input.deletingLastPathComponent().appendingPathComponent("rotated-compressed.pdf")
-        _ = try await engine.compress(rotated, preset: .balanced, to: output) { _ in }
+            let before = try XCTUnwrap(PDFDocument(url: rotated)?.page(at: 0))
+            let output = rotated.deletingLastPathComponent()
+                .appendingPathComponent("out-\(UUID().uuidString).pdf")
+            _ = try await engine.compress(rotated, preset: .balanced, to: output) { _ in }
 
-        let after = try XCTUnwrap(PDFDocument(url: output)?.page(at: 0))
-        XCTAssertEqual(after.rotation, before.rotation, "the page's /Rotate must survive compression")
-        // Rotation is what makes these differ; comparing the displayed bounds catches a page that
-        // kept its rotation value but lost the geometry it applies to.
-        XCTAssertEqual(after.bounds(for: .mediaBox).size.width,
-                       before.bounds(for: .mediaBox).size.width, accuracy: 1)
+            let after = try XCTUnwrap(PDFDocument(url: output)?.page(at: 0))
+            let beforeGrid = MRCInvariantTests.viewerInkGrid(before)
+            let afterGrid = MRCInvariantTests.viewerInkGrid(after)
+
+            XCTAssertGreaterThan(afterGrid.ink, 0.001,
+                                 "rotation \(rotation): the compressed page must not render blank")
+            XCTAssertEqual(Double(afterGrid.w) / Double(afterGrid.h),
+                           Double(beforeGrid.w) / Double(beforeGrid.h), accuracy: 0.05,
+                           "rotation \(rotation): the displayed aspect must survive compression")
+            let toInput = MRCInvariantTests.gridDistance(afterGrid.grid, beforeGrid.grid)
+            let toFlipped = MRCInvariantTests.gridDistance(afterGrid.grid, Array(beforeGrid.grid.reversed()))
+            XCTAssertLessThan(toInput, toFlipped,
+                              "rotation \(rotation): a /Rotate scan must not come back turned twice")
+        }
+    }
+
+    /// A synthetic greyscale bilevel scan (black bars on white → Rung 2) with a decisive corner
+    /// asymmetry, so a 180° flip is unambiguous. Wholly synthetic — no reference to any real file.
+    private static func asymmetricBilevelScanPDF() throws -> URL {
+        let w = 1700, h = 2200
+        let bmp = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceGray(),
+                            bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+        bmp.setFillColor(gray: 1, alpha: 1)
+        bmp.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        bmp.setFillColor(gray: 0, alpha: 1)
+        var y = Double(h) - 200
+        while y > 120 {
+            var x = 120.0
+            while x < Double(w) - 80 {
+                bmp.fill(CGRect(x: x, y: y, width: 26, height: 12))
+                x += 40
+            }
+            y -= 40
+        }
+        // Bitmap origin is bottom-left, so high y is the top of the page: this block sits top-left.
+        bmp.fill(CGRect(x: 90, y: Double(h) - 520, width: 420, height: 420))
+        let image = bmp.makeImage()!
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("asym-bilevel-\(UUID().uuidString).pdf")
+        var media = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let pdf = CGContext(url as CFURL, mediaBox: &media, nil)!
+        pdf.beginPDFPage(nil)
+        pdf.draw(image, in: CGRect(x: 18, y: 18, width: 576, height: 756))
+        pdf.endPDFPage()
+        pdf.closePDF()
+        return url.canonical
     }
 
     /// Regression: cancelling the task while Rung 2 is mid-binarise must propagate
