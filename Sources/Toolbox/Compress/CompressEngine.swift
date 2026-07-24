@@ -307,8 +307,10 @@ struct CompressEngine {
     }
 
     /// Rung 3: per-page MRC with own-render JPEG fallback (spec §5). Returns the composed hybrid's
-    /// byte count and per-page report, or nil to decline the whole document. Only `CancellationError`
-    /// escapes; every other failure is a decline (D10).
+    /// byte count and per-page report, or nil to decline the whole document. Per-page failures decline
+    /// to fallback content internally; a composition or write failure DOES propagate out of this method —
+    /// the routing gate converts it to a whole-document decline at the call site (same catch shape as
+    /// Rung 2's `bilevelCompress` caller). Only `CancellationError` may pass through that call-site catch.
     ///
     /// Reached directly by tests until the routing/D7 gate (Task 15) wires it behind `compress`; it
     /// is `internal` rather than `private` for exactly that reason. `forceEligible` and
