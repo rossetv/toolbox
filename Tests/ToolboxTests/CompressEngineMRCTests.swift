@@ -303,12 +303,14 @@ final class CompressEngineRoutingTests: XCTestCase {
                        "no runner-up when MRC is never attempted")
     }
 
-    /// Regression: a `.scanBilevel` document still routes through Rung 2, not Rung 3. Rung 2 wins
-    /// on a clean bilevel scan without ever calling gs, so the runner here fails the test if it is
-    /// invoked — proving the document went neither to gs nor to MRC — and the report never fires.
+    /// Regression: a `.scanBilevel` document still routes through Rung 2, not Rung 3. Under the
+    /// size race gs always produces a candidate, so it is stubbed to a no-gain copy of the input —
+    /// the CCITT output shipping strictly smaller proves Rung 2 both ran and won the race, and the
+    /// report never fires because MRC was never attempted.
     func testScanBilevelStillRoutesToRungTwo() async throws {
-        let engine = CompressEngine(runner: UnusedRunner())
         let input = try Fixtures.greyscaleBilevelScanPDF()
+        let inputBytes = try Data(contentsOf: input)
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: inputBytes))
         let (output, alternate) = try makeOutputURLs()
         let spy = ReportSpy()
 
@@ -316,9 +318,13 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { _ in spy.fired = true }) { _ in }
 
-        guard case .compressed = outcome else {
+        guard case let .compressed(before, after) = outcome else {
             return XCTFail("a bilevel scan must be compressed by Rung 2, got \(outcome)")
         }
+        XCTAssertEqual(before, inputBytes.count, "`before` is the input size")
+        XCTAssertLessThan(after, before,
+                          "the shipped output must be the CCITT candidate, strictly smaller than the no-gain gs stub")
+        XCTAssertEqual(TestSupport.fileSize(output), after, "the shipped file is the CCITT output")
         XCTAssertFalse(spy.fired, "a Rung-2 document must never touch the MRC report")
         XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
                        "Rung 2 never writes a runner-up")
