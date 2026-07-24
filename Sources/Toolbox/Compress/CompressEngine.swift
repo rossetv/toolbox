@@ -245,7 +245,12 @@ struct CompressEngine {
                 return .compressedHeavy(before: inputSize, after: mrcBytes, runnerUpBytes: outputSize)
             }
             // The hybrid lost (nil, larger or invalid) — fall through to the gs delivery below,
-            // exactly as any non-MRC document; `alternateOutput` is never written (R7).
+            // exactly as any non-MRC document; `alternateOutput` is never written (R7). The
+            // attempt's report is still the spec §6 debugging record regardless of the gate
+            // outcome, so it ships even though the attempt lost.
+            if let mrcResult {
+                mrcReport?(mrcResult.report)
+            }
         }
 
         // 5. Never emit a larger file — on no gain keep the original and write nothing. The

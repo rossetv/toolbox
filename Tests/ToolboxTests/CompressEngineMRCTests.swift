@@ -259,8 +259,9 @@ final class CompressEngineRoutingTests: XCTestCase {
     }
 
     /// The hybrid loses to a tiny gs candidate: the gs output ships as a plain `.compressed`, no
-    /// runner-up file is ever written (R7 — `alternateOutput` untouched), and the report never
-    /// fires. gs is stubbed below the real MRC output's size.
+    /// runner-up file is ever written (R7 — `alternateOutput` untouched). The MRC attempt's report
+    /// still fires on this loss path — it is the spec §6 debugging record for the attempt
+    /// regardless of the gate outcome. gs is stubbed below the real MRC output's size.
     func testHybridLargerThanGsShipsGsOutput() async throws {
         let input = try Fixtures.colourTextScanPDF(pages: 1)
         let tiny = try tinyValidPDF(matching: input)
@@ -270,7 +271,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { _ in spy.fired = true }) { _ in }
+                                                mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
 
         guard case let .compressed(_, after) = outcome else {
             return XCTFail("expected a plain .compressed when gs wins, got \(outcome)")
@@ -279,7 +280,8 @@ final class CompressEngineRoutingTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
                        "no runner-up is written when the hybrid loses (R7)")
-        XCTAssertFalse(spy.fired, "the report must not fire when gs wins")
+        XCTAssertTrue(spy.fired, "the report must still fire on a hybrid loss — it's the debugging record")
+        XCTAssertEqual(spy.report?.verdicts.count, 1)
     }
 
     /// R6/R7: the hybrid beats gs, but gs's own candidate is *not* itself smaller than the input (it
