@@ -81,8 +81,8 @@ enum MRCPageEncoder {
                                          interpolation: nil),
               let foreground = rgbBuffer(of: foregroundImage, width: width, height: height,
                                          interpolation: nil),
-              let ink = greyBuffer(of: maskImage, width: width, height: height,
-                                   interpolation: .none)
+              let ink = MRCSegmenter.greyBuffer(of: maskImage, width: width, height: height,
+                                                interpolation: .none)
         else { return nil }
 
         // 8-bit DeviceRGB output, no alpha — row-addressed via the real width only (C1).
@@ -183,22 +183,4 @@ enum MRCPageEncoder {
         return pixels
     }
 
-    /// 8-bit grey copy of `image`, drawn into a `width × height` DeviceGray context — used for
-    /// the mask, which is already at that size, so this is a format conversion, not a resample.
-    private static func greyBuffer(of image: CGImage, width: Int, height: Int,
-                                   interpolation: CGInterpolationQuality?) -> [UInt8]? {
-        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        if let interpolation { ctx.interpolationQuality = interpolation }
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        guard let base = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
-        let stride = ctx.bytesPerRow
-        var pixels = [UInt8](repeating: 0, count: width * height)
-        for y in 0..<height {
-            let row = base + y * stride
-            for x in 0..<width { pixels[y * width + x] = row[x] }
-        }
-        return pixels
-    }
 }

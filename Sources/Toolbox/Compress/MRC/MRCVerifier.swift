@@ -56,8 +56,10 @@ enum MRCVerifier {
               candidate.width == width, candidate.height == height,
               mask.width == width, mask.height == height else { return nil }
 
-        guard let inputGrey = greyBuffer(from: input, width: width, height: height),
-              let candidateGrey = greyBuffer(from: candidate, width: width, height: height)
+        guard let inputGrey = MRCSegmenter.greyBuffer(of: input, width: width, height: height,
+                                                       interpolation: .none),
+              let candidateGrey = MRCSegmenter.greyBuffer(of: candidate, width: width, height: height,
+                                                           interpolation: .none)
         else { return nil }
 
         let region = dilatedInkRegion(mask, width: width, height: height)
@@ -82,26 +84,6 @@ enum MRCVerifier {
 
         let normalisedError = meanAbsDiff / inputContrast
         return Score(normalisedError: normalisedError, pass: normalisedError <= maxNormalisedError)
-    }
-
-    /// Render `image` into an 8-bit `DeviceGray` context of the given size and return its
-    /// luminance as a tightly packed `width × height` buffer (row-addressed via the context's own
-    /// `bytesPerRow`, C1 — the padding a CoreGraphics row carries is never copied out).
-    private static func greyBuffer(from image: CGImage, width: Int, height: Int) -> [UInt8]? {
-        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        ctx.interpolationQuality = .none
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        guard let base = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
-
-        let stride = ctx.bytesPerRow
-        var out = [UInt8](repeating: 0, count: width * height)
-        for y in 0..<height {
-            let row = base + y * stride
-            for x in 0..<width { out[y * width + x] = row[x] }
-        }
-        return out
     }
 
     /// The mask's ink (bit == 0) dilated by 2 px — two passes of an 8-neighbour maximum. The mask

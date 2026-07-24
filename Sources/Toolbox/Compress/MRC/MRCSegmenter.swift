@@ -220,6 +220,27 @@ enum MRCSegmenter {
         return GreyBuffer(width: w, height: h, pixels: pixels)
     }
 
+    /// 8-bit grey copy of `image`, drawn into a `width × height` DeviceGray context — a format
+    /// conversion/resample rather than the row-compacted full-resolution `greyBuffer(of:)` above.
+    /// Shared by `MRCPageEncoder` and `MRCVerifier`, which both need this exact shape (arbitrary
+    /// target size, optional interpolation) and were previously duplicating it verbatim.
+    static func greyBuffer(of image: CGImage, width: Int, height: Int,
+                           interpolation: CGInterpolationQuality?) -> [UInt8]? {
+        guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceGray(),
+                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        if let interpolation { ctx.interpolationQuality = interpolation }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let base = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+        let stride = ctx.bytesPerRow
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            let row = base + y * stride
+            for x in 0..<width { pixels[y * width + x] = row[x] }
+        }
+        return pixels
+    }
+
     /// Drop ink components below `minComponentArea` (4-connectivity flood fill, iterative
     /// explicit stack — recursion would overflow on megapixel buffers). Each unvisited ink
     /// pixel seeds a component collected into a reusable stack; if it is too small, the
