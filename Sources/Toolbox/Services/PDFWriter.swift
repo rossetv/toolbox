@@ -107,6 +107,9 @@ struct PDFWriter {
                          output: URL,
                          pageText: [Int: [PositionedText]],
                          geometry: [Int: PageGeometry]) throws {
+        // Belt to the engines' own §3.1 guard: `stream` deletes `output` before writing, so
+        // writer-level identity here is the last stop before an overwrite of the user's input.
+        guard input.path != output.path else { throw PDFWriterError.cannotRead }
         guard let data = try? Data(contentsOf: input, options: .mappedIfSafe) else {
             throw PDFWriterError.cannotRead
         }
@@ -138,7 +141,11 @@ struct PDFWriter {
         if manager.fileExists(atPath: output.path) { try manager.removeItem(at: output) }
         _ = manager.createFile(atPath: output.path, contents: nil)
         let handle = try FileHandle(forWritingTo: output)
-        defer { try? handle.close() }
+        var closed = false
+        // Best-effort cleanup for the early-throw paths only; the success path closes loudly
+        // below — a failed close can mean unflushed bytes, which must surface as an error,
+        // not vanish into a `try?`.
+        defer { if !closed { try? handle.close() } }
 
         let chunk = 1 << 22                            // 4 MiB
         var offset = data.startIndex
@@ -148,6 +155,8 @@ struct PDFWriter {
             offset = end
         }
         if !extra.isEmpty { try handle.write(contentsOf: extra) }
+        try handle.close()
+        closed = true
     }
 
     /// Everything appended after the original bytes: the new objects, the new xref section and
