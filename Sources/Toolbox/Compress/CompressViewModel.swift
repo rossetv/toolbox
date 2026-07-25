@@ -906,8 +906,14 @@ final class CompressViewModel: ObservableObject {
            // A shipped `.original` is the untouched input, not an engine result — there is no
            // observed ratio in it to calibrate with.
            shipped.variant != .original,
-           let baseline = analysis.estimates[shipped.preset]?.predictedBytes, baseline > 0 {
-            let targetWantsMRC = analysis.contentType == .scanColour && target != .maximumQuality
+           let baseline = analysis.estimates[shipped.preset]?.predictedBytes, baseline > 0,
+           // `contentType` is nil when the analysis timed out or failed — `Analysis`'s own doc
+           // says a caller reasoning about the engine path (R16) must not assume one. A shipped
+           // `.mrc` variant is only ever produced on a `.scanColour` row, so that gives an
+           // effective classification even when the analysis itself came back unknown; otherwise
+           // withhold calibration rather than silently reading "unknown" as "not scanColour".
+           let classification = analysis.contentType ?? (shipped.variant == .mrc ? .scanColour : nil) {
+            let targetWantsMRC = classification == .scanColour && target != .maximumQuality
             let shippedWasMRC = shipped.variant == .mrc
             if targetWantsMRC == shippedWasMRC {
                 predicted = Int((Double(shipped.bytes) / Double(baseline)) * Double(raw))
