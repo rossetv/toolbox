@@ -3031,10 +3031,11 @@ concurrency is bounded by one normal batch width *by construction* rather than b
       the row stays disarmed for the duration (`recompressState` returns `.none` on
       `row.rowPreset == target`, ahead of everything but the futile check), and move the preset
       change to AFTER the batch. The row is then armed but never run, its runner-up survives, the
-      switch still finds it missing and still re-runs — and the discriminator is stronger than
-      before, not weaker: the selected preset at switch time is `.balanced` while the row's own is
-      `.smallestSize`, so a re-run that wrongly used the CURRENT preset would append `.balanced` and
-      fail the assertion. Task 4's binding constraint is a constraint on the ASSERTION, and the
+      switch still finds it missing and still re-runs — and the discriminator still discriminates
+      (stronger than the ORIGINAL test would be under the new semantics, where the row would have
+      been recompressed to `.balanced` and the distinction destroyed): the selected preset at
+      switch time is `.balanced` while the row's own is `.smallestSize`, so a re-run that wrongly
+      used the CURRENT preset would append `.balanced` and fail the assertion. Task 4's binding constraint is a constraint on the ASSERTION, and the
       assertion survives verbatim, including its message.
 
       The name still earns itself and no coverage is lost, though the shape moves: under this
@@ -3607,7 +3608,8 @@ derives from the version store, and the armed/running/finished chrome follows th
     }
 ```
 
-      and **delete** `CompressView.originalBytes(for:)` outright rather than re-deriving it: its
+      and **delete** `CompressView.originalBytes(for:)` outright (Task 4 re-derived it while
+      Phase 1's popover still needed the argument; Task 6 dropped that caller): its
       only caller was the `originalBytes:` argument of `HeavyCompressionPopover`, and Task 6's
       call-site update to `VersionsPopover(versions:onUse:onPreview:)` drops that argument, so the
       helper arrives at this task already dead. The aggregation it performed is now `RowVersions`'
@@ -3664,7 +3666,8 @@ derives from the version store, and the armed/running/finished chrome follows th
 - [ ] Confirm — and leave a one-line comment where the answer is "unchanged, deliberately" — the
       remaining R17 aggregators: `savedBytes`, `savedDetail`, `savedSummary` (all three already
       route through `model.displayedSizes`, which Task 4 re-derived), `originalBytes(for:)`
-      (**deleted, not re-derived** — the aggregation it performed is satisfied at both its
+      (**re-derived in Task 4** while Phase 1's popover still takes the `originalBytes:` argument,
+      **deleted here** once Task 6 drops that caller — the aggregation it performed is satisfied at both its
       consumers by `RowVersions.originalBytes`: the popover reads it off `versions`, and this file
       reads it in `status(for:)`'s `.done` arm), `canRemove` (`.queued` only —
       an armed row is finished and stays non-removable, per D5's deferral), and the `.animation`
@@ -3689,6 +3692,8 @@ derives from the version store, and the armed/running/finished chrome follows th
       | `open`/`revealOutputs`' `?? job.resultURL` store-first fallbacks above | Deliberate: the store is asked first, the queue record is the fallback for a row the store has no entry for |
       | `ToolQueueTests.testResultURLIsAttributedToTheCorrectJob` and `ToolQueueTests.testAlternateURLFromJobResultLandsOnJob` | The queue's own contract, untouched by this feature |
       | The existing `CompressViewModelTests` FIRST-RUN reads — `resultURL` in `testSwitchTogglesInstantlyAndReversibly`, `testSwitchWithMissingRunnerUpRerunsJob` and `testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling`, and `alternateURL` in `testSwitchWithMissingRunnerUpRerunsJob`, `testSwitchFailingAfterRerunLeavesStateCanonical`, `testLaterBatchDoesNotRewriteAFinishedRowsPreset`, `testRemoveRowDiscardsRunnerUp` and `testClearFinishedDiscardsRunnerUps` | Each reads the URLs of a row that has only ever been through the QUEUE. A first-run row's queue record and its store record agree exactly — the ingest copies one into the other — so these reads are still correct and are left verbatim. Only a RECOMPRESSED row diverges, and no existing test recompresses |
+      | `rerunForSwitch`'s comment "The STORE, never `job.resultURL`/`job.alternateURL`: the queue's record is the first…" (added by Task 4) | Names the symbols precisely in order to FORBID them — a deliberate survivor, not a stale read |
+      | `testAQueuedJobNeverClaimsAnArmedRowsResultPath`'s `XCTAssertNotEqual(newRow.resultURL, armedRowOutput, …)` (added by Task 9) | Reads the queue record of a row that only went through the queue — same first-run-agreement reason as the row above |
 - [ ] Pin the three lead rules this task encodes, in `CompressViewModelTests`. `lead(for:)` and
       `status(for:)` are private members of a `View` struct and are not reachable from the test
       bundle, so each test asserts the exact model-level PAIR the view maps one-to-one onto — the
@@ -4017,3 +4022,5 @@ against `ToolQueue.process`'s stricter FIFO comment, keeping the mechanism.
 4. Deleting a call site makes its callee dead; the sweep that re-derives the callee should have deleted it.
 5. A member carrying arithmetic a prior gate flagged as subtle must arrive with a test — the untestable consumer is the argument for the model-level test, not against it.
 6. Replacing a piece of bookkeeping means inheriting its lifecycle guards.
+## Round 6 — 2026-07-25 — SHIP pending certify (plan-reviewer, Opus, incremental)
+The round-5 major and all nine minors verified resolved against the repo (audit table's 18-call count re-grepped; every survivor-table attribution checked line by line; all three armedSummary branch premises re-derived; the previous-swap test traced through swapShipped and commit). Three new minors, fixed this round: two rows added to the survivor table for hits the fix's own new code introduces (rerunForSwitch's deliberate "never these" comment; the new queued-vs-armed path test), the originalBytes(for:) traceability claim now states re-derived-in-Task-4-then-deleted-in-Task-12 in both places, and the "stronger discriminator" comparative names both states. Lesson-candidates: a "complete list produced by grep" must be re-grepped against the document's own new code; when a later task deletes what an earlier task re-derived, say so in both places; a comparative claim is an assertion about two states — name both or use the absolute form; a semantics change to one shared read prompts a grep for every other shared read the change-set redefines (allFinished checked — clean).
