@@ -1213,7 +1213,11 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { model.jobs.count == 2 }
         model.compress()
 
+        // The gate holds only the SECOND call: the stub throws before it reaches `gate.wait()`, so
+        // the failing row is the only one that can reach a terminal state here.
         try await waitUntil(timeout: 10) { model.runFinishedCount == 1 }
+        XCTAssertNotNil(model.jobs.first { if case .failed = $0.state { return true } else { return false } },
+                        "the row the counter moved for is the failed one")
         XCTAssertEqual(model.runTotalCount, 2)
         XCTAssertGreaterThanOrEqual(model.runProgress, 0.5, "the failed row counts, it does not stall")
 
