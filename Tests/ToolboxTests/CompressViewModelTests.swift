@@ -216,7 +216,7 @@ final class CompressViewModelTests: XCTestCase {
 
         let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
         let versions = try XCTUnwrap(model.versions(for: switchedJob))
-        XCTAssertFalse(versions.shipped?.variant == .mrc,
+        XCTAssertEqual(versions.shipped?.variant, .plain,
                        "two concurrent taps must still land on exactly one switch, not cancel back out")
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.normalBytes,
                        "the shipped file must hold exactly one version's content, not a mangled swap")
