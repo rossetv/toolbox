@@ -119,15 +119,14 @@ struct CompressView: View {
     @ViewBuilder
     private func heavyPopover(for job: ToolJob) -> some View {
         if let versions = model.versions(for: job) {
-            HeavyCompressionPopover(
+            VersionsPopover(
                 versions: versions,
-                originalBytes: originalBytes(for: job),
                 // Request panel dismissal before the swap (SwiftUI dismisses asynchronously, so
                 // a closing panel may still render one stale frame — accepted; the frozen items
                 // collection is untouched, so the panel never sees a shrinking collection).
-                onSwitch: {
+                onUse: { slot in
                     quickLookURL = nil
-                    model.switchVersion(for: job)
+                    model.useVersion(slot, for: job)
                     heavyPopoverJobID = nil
                 },
                 onPreview: { url in
