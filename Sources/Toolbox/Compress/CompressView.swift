@@ -173,6 +173,11 @@ struct CompressView: View {
     /// path that no longer exists. A duplicate of a URL already in the set is inert by comparison:
     /// the arrows land back on a page the user is already looking at.
     private func freezeQuickLookItems(_ items: [URL]) {
+        // An empty `items` has no last URL to pad with — falling through would assign `[]` and
+        // shrink the frozen set to nothing, the exact KVO-reload crash this function exists to
+        // prevent. Unreachable today (no cards, no preview button), but the contract above is
+        // unconditional, so the guard is too.
+        guard !items.isEmpty else { return }
         var next = items
         if let last = next.last {
             while next.count < frozenQuickLookItems.count { next.append(last) }
