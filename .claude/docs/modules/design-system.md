@@ -39,6 +39,16 @@ than styling inline.
 
 ## Gotchas
 
+- **`FileRow` is tool-agnostic about the recompress/arm vocabulary it draws**: `lead`
+  (`FileRow.Lead` — `.accentPill`/`.neutralPill`/`.link`/`.error`) is the trailing
+  cluster's leading item (an armed prediction, a futile/instant-switch note, a
+  per-row error) and `metaAccent` is a second accent-toned clause appended to the
+  meta line ("· will recompress at Smallest"); Compress is the only caller today
+  (`CompressView`), but neither string is hard-coded to it. `SuccessBanner.Tone`
+  (`.success`/`.accent`) is the same split at the banner level: `.accent` (with its
+  own `arrow.triangle.2.circlepath` symbol) is for a state where nothing has run yet
+  — the armed-recompress summary — so a green tick never claims a saving that hasn't
+  happened.
 - **`FileRow.Status.doneHeavy`'s row applies `.fixedSize()`** to its trailing
   `HStack` (which adds the "Heavy compression" capsule alongside the usual
   strikethrough/size/pill/checkmark cluster) — without it, width pressure wraps the
