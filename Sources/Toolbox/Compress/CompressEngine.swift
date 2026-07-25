@@ -195,7 +195,7 @@ struct CompressEngine {
             }
             let staged = work.appendingPathComponent("bilevel.pdf")
             if let bytes = bilevelBytes, bytes < outputSize, bytes < inputSize,
-               try await validatesOffPool(input: workIn, output: staged) {
+               await validatesOffPool(input: workIn, output: staged) {
                 try Task.checkCancellation()
                 let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
                 var placed = false
@@ -233,7 +233,7 @@ struct CompressEngine {
             }
             if let (mrcURL, mrcBytes, report) = mrcResult,
                mrcBytes < outputSize, mrcBytes < inputSize,
-               try await validatesOffPool(input: workIn, output: mrcURL) {
+               await validatesOffPool(input: workIn, output: mrcURL) {
                 // The hybrid wins — deliver it via the same atomic idiom as every other winner.
                 try Task.checkCancellation()
                 let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
@@ -332,20 +332,14 @@ struct CompressEngine {
     /// near-two-tone aborts the whole attempt: a wrongly-binarised photograph is a far worse
     /// outcome than a missed saving.
     /// The D7 gates' validation, off the cooperative pool (§6.1) — rendering sample pages is
-    /// blocking work. A `CancellationError` propagates so a cancelled job aborts instead of
-    /// reading as "invalid, fall to the next rung"; any other validator error keeps the old
-    /// `try?` semantics and reads as invalid. Cancellation inside the hop is a no-op (see
-    /// `offloadBlocking`), so callers keep their own post-await `Task.checkCancellation()`.
-    private func validatesOffPool(input: URL, output: URL) async throws -> Bool {
-        do {
-            return try await offloadBlocking { [validator] in
-                try validator.validate(input: input, output: output, samplePages: 3)
-            }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            return false
-        }
+    /// blocking work. Validation is bounded (`OutputValidator.maxWidenedPages` sampled renders)
+    /// and has no cancellation points of its own — inside the hop there is no current task, so a
+    /// check there would be a silent no-op. Callers keep their post-await
+    /// `Task.checkCancellation()`; any validator error reads as "invalid".
+    private func validatesOffPool(input: URL, output: URL) async -> Bool {
+        (try? await offloadBlocking { [validator] in
+            try validator.validate(input: input, output: output, samplePages: 3)
+        }) ?? false
     }
 
     private func bilevelCompress(_ input: URL,

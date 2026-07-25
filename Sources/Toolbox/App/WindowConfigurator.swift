@@ -44,9 +44,15 @@ enum WindowSetup {
     /// so Tab restarts from the top after e.g. ⌘-Tab away and back; and a future text field
     /// focused by mouse click would need an exemption here — today the main window has none.
     private static var responderObservation: NSKeyValueObservation?
+    private static weak var observedWindow: NSWindow?
 
     private static func installStrayFocusClear(on window: NSWindow) {
-        guard responderObservation == nil else { return }
+        // Keyed to the window instance, not a one-shot: closing the window and reopening it
+        // from the Dock creates a NEW NSWindow, and an observation still bound to the dead one
+        // would silently leave the fresh window outside the net.
+        guard observedWindow !== window else { return }
+        responderObservation?.invalidate()
+        observedWindow = window
         responderObservation = window.observe(\.firstResponder) { window, _ in
             guard let responder = window.firstResponder, responder !== window else { return }
             if NSApp.currentEvent?.type == .keyDown { return }
@@ -75,7 +81,6 @@ enum WindowSetup {
                     // the app declares a single `Window` scene, so there is never a second one
                     // to lose the race.
                     window.setFrameAutosaveName(autosaveName)
-                    installStrayFocusClear(on: window)
                     if !hasSavedFrame {
                         var initial = window.frame
                         initial.origin.y += initial.height - preferredSize.height
@@ -84,6 +89,9 @@ enum WindowSetup {
                         window.center()
                     }
                 }
+                // Outside the naming branch: the net keys on window identity, so every pass
+                // re-arms it for whatever window currently exists (Dock reopen creates a new one).
+                installStrayFocusClear(on: window)
                 // Name the window for the app, not the selected tool: the detail views used to
                 // set it and it read "Compress"/"OCR", which says nothing about what is running.
                 window.title = "Toolbox"

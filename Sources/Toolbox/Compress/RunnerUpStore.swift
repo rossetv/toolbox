@@ -86,13 +86,19 @@ final class RunnerUpStore {
         do {
             try fm.moveItem(at: runnerUp, to: shipped)    // promote the runner-up
         } catch {
-            // Restore with `replaceItemAt`, not `moveItem`: `moveItem` throws when the
-            // destination exists, so anything that recreated `shipped` in this window (a
-            // sync client, the user) would turn a recoverable failure into a vanished file.
-            // If even that fails the file is NOT where the user left it — say so, with the
-            // park path, rather than reporting a mere failed switch.
+            // Restore on the documented path for each state: `shipped` is normally absent (we
+            // just moved it out), so a plain `moveItem` restores it; if something recreated it
+            // in this window (a sync client, the user) `replaceItemAt` swaps that impostor out
+            // rather than throwing the restore away. Never `replaceItemAt` against an absent
+            // destination — that happens to work today but is not documented behaviour.
+            // If even the restore fails, the file is NOT where the user left it — say so, with
+            // the park path, rather than reporting a mere failed switch.
             do {
-                _ = try fm.replaceItemAt(shipped, withItemAt: parked)
+                if fm.fileExists(atPath: shipped.path) {
+                    _ = try fm.replaceItemAt(shipped, withItemAt: parked)
+                } else {
+                    try fm.moveItem(at: parked, to: shipped)
+                }
             } catch {
                 throw SwitchError.shippedStranded(parked: parked)
             }

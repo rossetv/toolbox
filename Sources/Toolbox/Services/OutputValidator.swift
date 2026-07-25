@@ -35,7 +35,6 @@ struct OutputValidator {
         func check(_ indices: [Int]) throws -> (compared: Int, ok: Bool) {
             var compared = 0
             for i in indices {
-                try Task.checkCancellation()
                 guard let outPage = outputDoc.page(at: i),
                       let inPage = inputDoc.page(at: i) else { return (compared, false) }
                 // Per-page render/release. Detect content-loss corruption by comparing ink to the
@@ -87,8 +86,10 @@ struct OutputValidator {
         // outside the narrow sample gets its chance to be checked. The widened pass is an evenly
         // spread sample of at most `maxWidenedPages`, NOT the whole document: every page costs two
         // renders, so widening to a 2000-page scan is minutes of uninterruptible work for a check
-        // that only needs to find one comparable page.
-        try Task.checkCancellation()
+        // that only needs to find one comparable page. No cancellation checks in here: every
+        // production caller runs this inside `offloadBlocking`, where there is no current task
+        // and a check would be a silent no-op — the bounded sample IS the responsiveness story,
+        // and the callers hold their own post-await checks.
         let wideIndices = PDFService.sampleIndices(count: outputDoc.pageCount,
                                                    sample: min(outputDoc.pageCount, Self.maxWidenedPages))
         guard wideIndices.count > indices.count else { return true }   // nothing new to check

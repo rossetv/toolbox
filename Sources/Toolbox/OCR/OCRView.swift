@@ -187,6 +187,11 @@ struct OCRView: View {
             return .inProgress(fraction: fraction > 0 ? fraction : nil)
         case .done(let outcome):
             switch outcome {
+            // Zero pages means the run recognised nothing and wrote no file — a green
+            // "Searchable — 0 pages" would claim a success that never happened (§7.1).
+            case .ocrAdded(0, let skipped):
+                let suffix = skipped > 0 ? " · \(skipped) already had text" : ""
+                return .unchanged("No text recognised\(suffix)")
             case .ocrAdded(let pages, let skipped):
                 let suffix = skipped > 0 ? " · \(skipped) already had text" : ""
                 return .succeeded("Searchable — \(pages) page\(pages == 1 ? "" : "s")\(suffix)")
@@ -253,8 +258,9 @@ struct OCRView: View {
         if model.isRunning {
             return batchProgressText("Reading", finished: finishedCount, total: model.jobs.count)
         }
+        // Zero-page runs wrote no file, so they must not count towards "now searchable".
         let searchable = model.jobs.filter { job in
-            if case .done(.ocrAdded) = job.state { return true } else { return false }
+            if case .done(.ocrAdded(let pages, _)) = job.state { return pages > 0 } else { return false }
         }.count
         if searchable > 0 {
             return "\(searchable) PDF\(searchable == 1 ? " is" : "s are") now searchable."

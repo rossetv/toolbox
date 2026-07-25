@@ -99,6 +99,28 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertTrue(leftoverSwapFiles.isEmpty)
     }
 
+    /// A promote that fails AFTER the shipped file was parked must restore it — via the
+    /// documented `moveItem` path, since the shipped slot is empty at that moment. An absent
+    /// runner-up forces exactly that sequence deterministically.
+    func testFailedPromoteRestoresTheShippedFile() throws {
+        let root = try tempRoot()
+        let store = RunnerUpStore(rootOverride: root)
+
+        let shipped = root.appendingPathComponent("shipped.pdf")
+        try Data("shipped-content".utf8).write(to: shipped)
+        let runnerUp = root.appendingPathComponent("runner-up.pdf")   // never written
+
+        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp)) { error in
+            XCTAssertFalse(error is RunnerUpStore.SwitchError,
+                           "the restore succeeded, so the failure must surface as the promote's own error")
+        }
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("shipped-content".utf8),
+                       "a failed promote must put the user's shipped file back untouched")
+        let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix(".toolbox-swap-") }
+        XCTAssertTrue(leftoverSwapFiles.isEmpty, "the park file must not be left behind")
+    }
+
     /// If the final move (parked -> runner-up slot) fails, the switch has already succeeded from
     /// the user's perspective (shipped holds the new content) — the function must not throw. The
     /// reviewer's suggested lever (pre-existing non-empty directory at the runner-up path) cannot

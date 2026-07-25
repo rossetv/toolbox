@@ -28,8 +28,8 @@ the rings) resets on non-key paths, and a future text field focused by mouse cli
 an exemption in the net — today the main window has none. Focus RINGS still show
 throughout keyboard navigation, per DESIGN.md's accessibility requirement.
 `.focusEffectDisabled()` is the reserved third tool, only for windows outside the main
-window's net where auto-focus draws a permanent ring (the About sheet, the update
-banner) — it hides the ring from keyboard users too, so never reach for it first.
+window's net where auto-focus draws a permanent ring (today: the About sheet alone) — it
+hides the ring from keyboard users too, so never reach for it first.
 
 **Why:** this defect resurfaced repeatedly because each new focusable control or new
 window-key path reintroduced it while fixes stayed local.

@@ -25,6 +25,8 @@ struct PageGeometry: Equatable {
 
 enum PDFWriterError: Error, LocalizedError {
     case cannotRead
+    /// Output resolves to the input itself — writing would destroy the user's file.
+    case sameFile
     case malformedPDF
     /// A page (or the catalog) we must supersede lives in a structure this writer cannot read —
     /// an object stream with a filter it does not implement, or an object that resolves nowhere.
@@ -37,6 +39,7 @@ enum PDFWriterError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .cannotRead: return "The PDF could not be read."
+        case .sameFile: return "The output path would overwrite the input."
         case .malformedPDF: return "The PDF structure could not be parsed."
         case .unsupportedStructure:
             return "This PDF uses a compressed object layout that OCR cannot amend."
@@ -115,7 +118,12 @@ struct PDFWriter {
                          geometry: [Int: PageGeometry]) throws {
         // Belt to the engines' own §3.1 guard: `stream` deletes `output` before writing, so
         // writer-level identity here is the last stop before an overwrite of the user's input.
-        guard input.path != output.path else { throw PDFWriterError.cannotRead }
+        // Same recipe as the engines' guard — canonical, Unicode-normalised, case-folded — so
+        // an APFS case-insensitive alias cannot slip past a byte-equality check.
+        guard input.canonical.path.precomposedStringWithCanonicalMapping.lowercased()
+                != output.canonical.path.precomposedStringWithCanonicalMapping.lowercased() else {
+            throw PDFWriterError.sameFile
+        }
         guard let data = try? Data(contentsOf: input, options: .mappedIfSafe) else {
             throw PDFWriterError.cannotRead
         }
