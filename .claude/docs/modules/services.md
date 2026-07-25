@@ -55,6 +55,12 @@ output re-validation, and the hand-written PDF incremental-update writer. Both
   mixing a `readabilityHandler` with `readDataToEndOfFile` would deadlock (its
   dispatch source consumes EOF and the later blocking read never returns) — see the
   comment at `GhostscriptRunner.runBlocking`'s `ioGroup`/`ioQueue` setup.
+- **Progress is parsed live from the drain loop, not from the returned tail**
+  (`GhostscriptRunner.drainTail`): gs line-flushes `Page N` to the pipe as each page is
+  emitted, but the tail keeps only the last `outputTailLimit` bytes, so a chatty run has
+  already lost its early markers by exit — `onPage` fires per line as bytes arrive
+  instead. Markers are reported monotonically (a repeated or out-of-order page number is
+  dropped), so a caller's progress bar can never move backwards.
 - **A watchdog terminates a runaway gs at `wallClockTimeout`** (default 300 s); a
   process that exits cleanly (status 0) exactly at the deadline is a success, never a
   timeout — the check requires both `didTimeout` **and** a non-zero termination status.
@@ -114,6 +120,14 @@ bound and are easiest to keep honest in one table.
 | `maxBilevelPixels` | the same, on the Rung-2 render | `Sources/Toolbox/Compress/CompressEngine.swift` |
 | `outputTailLimit` (applied to stdout **and** stderr) + `failureMessage` | unbounded attacker-influenced text retained and shown | `Sources/Toolbox/Services/GhostscriptRunner.swift`, `Sources/Toolbox/Compress/CompressEngine.swift` |
 | `wallClockTimeout` | a hung or runaway gs child | `Sources/Toolbox/Services/GhostscriptRunner.swift` |
+| `GhostscriptRunner.maxProgressLineBytes` | a megabyte-long gs diagnostic line with no newline retained by the streamed progress parse | `Sources/Toolbox/Services/GhostscriptRunner.swift` |
+| `OutputValidator.maxWidenedPages` | re-rendering a thousand-page scan (two renders/page) when the narrow sample finds no comparable page | `Sources/Toolbox/Services/OutputValidator.swift` |
+| `OutputValidator.floodedInkCeiling` | the absolute-ink ceiling for a page the relative ink-ratio test can't judge (input below `contentFloor`) — bounds a page flooded to solid ink | `Sources/Toolbox/Services/OutputValidator.swift` |
+| `OutputValidator.maxInkGain` | the ratio ceiling's absolute-headroom counterpart — bounds how much ink coverage a re-encode may add outright | `Sources/Toolbox/Services/OutputValidator.swift` |
+| `PDFWriter.maxStartxrefScanBytes` | an unbounded backward scan for `startxref` in a crafted/truncated PDF tail | `Sources/Toolbox/Services/PDFWriter.swift` |
+| `OCREngine.maxRecognisedTextRuns` | unbounded Vision-recognised text runs held in memory until the writer consumes them | `Sources/Toolbox/OCR/OCREngine.swift` |
+| `CompressEstimator.maxConcurrentEstimates` | unbounded concurrent time-boxed estimate operations queued at once | `Sources/Toolbox/Compress/CompressEstimator.swift` |
+| `FileNaming.maxExtensionBytes` | an absurdly long/hostile file extension in the collision-free output name | `Sources/Toolbox/Shared/FileNaming.swift` |
 
 Both gs streams are bounded, not just stderr: a bogus `-sDEVICE` puts its whole diagnosis
 on stdout with nothing on stderr at all (`GhostscriptRunner.drainTail`, applied to both

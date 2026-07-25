@@ -31,7 +31,7 @@ and drives the batch UI.
 | `Sources/Toolbox/Compress/CompressViewModel.swift` | `@MainActor` state: queue, preset, output folder, per-job estimate overlay, heavy-version switch (`heavyVersions(for:)`, `switchVersion(for:)`, `rerunForSwitch`) |
 | `Sources/Toolbox/Compress/CompressView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel |
 | `Sources/Toolbox/Compress/HeavyCompressionPopover.swift` | The heavy-capsule popover: shows both versions, drives `switchVersion(for:)` |
-| `Sources/Toolbox/Compress/RunnerUpStore.swift` | `RunnerUpStore` — `@MainActor` cache of losing (gs) versions for `.compressedHeavy` jobs (spec R15, documented exception to "no persisted app state"); `sweepStale()` on launch, `removeAllOnDisk()` on quit (`AppDelegate.applicationWillTerminate`, see [App](app.md)) |
+| `Sources/Toolbox/Compress/RunnerUpStore.swift` | `RunnerUpStore` — `@MainActor` cache of losing (gs) versions for `.compressedHeavy` jobs (spec R15, documented exception to "no persisted app state"); `sweepStale()` runs once from `CompressViewModel.init` (see [App](app.md) — `RootView` owns the view model as a `@StateObject` under the app's single `Window` scene, so this fires exactly once per run), `removeAllOnDisk()` on quit (`AppDelegate.applicationWillTerminate`, see [App](app.md)) |
 | `Sources/Toolbox/Compress/MRC/MRCClassifier.swift` | `MRCClassifier.structure(of:)` (R2 structural sweep), `.features(of:)` + `.verdict(features:)` (R3 eligibility envelope), `.sourceImageLongEdge(of:)` (the scan's native pixel resolution — caps the MRC render DPI) |
 | `Sources/Toolbox/Compress/MRC/MRCSegmenter.swift` | `MRCSegmenter.binarise(_:)` (Sauvola-class local-threshold text mask) + `.segment(_:)` (fg/bg colour-layer split; `colourLayer(…flatFill:)` fills the other class — spread-fill for the paper background, flat global-mean fill for the ink foreground) |
 | `Sources/Toolbox/Compress/MRC/MRCPageEncoder.swift` | `MRCPageEncoder.encode(_:preset:)` — CCITT mask + JPEG fg/bg layers; **re-emits the foreground at `MRCSegmenter.foregroundLayerScale` of the mask resolution** (`resample`) so the mask soft-mask stays sharp; `.recompose(_:)` rebuilds a page for the verifier |
@@ -137,8 +137,10 @@ and drives the batch UI.
   card "Original"; `CompressViewModel.HeavyVersions.runnerUpIsOriginal`).
 - **`RunnerUpStore` is the one documented exception to "no persisted app state"**
   (spec R15): it caches the losing gs version on disk (`caches/Toolbox/runner-ups`) so
-  the heavy-capsule popover's switch is instant. `sweepStale()` runs at launch,
-  `removeAllOnDisk()` at quit (`AppDelegate.applicationWillTerminate`) — a crash
+  the heavy-capsule popover's switch is instant. `sweepStale()` runs once, from
+  `CompressViewModel.init` — effectively at launch because `RootView` constructs the
+  `@StateObject` view model exactly once under the app's single `Window` scene (see
+  [App](app.md)) — `removeAllOnDisk()` at quit (`AppDelegate.applicationWillTerminate`) — a crash
   between the two just leaves stale cache files, cleaned on the next launch.
   `switchVersions(shipped:runnerUp:)` exchanges file *content* via three moves (park →
   promote → demote), never rewriting either path, so a mid-switch crash restores the

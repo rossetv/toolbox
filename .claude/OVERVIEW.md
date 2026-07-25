@@ -47,8 +47,12 @@ app's only network request), which sends nothing about the user or their files.
 1. One process. `ToolboxApp.init()` runs a headless self-test hook first
    (`TOOLBOX_SMOKE=compress` — see `App/CompressSmoke.swift`), then a single-instance
    guard (`yieldToExistingInstance()` — activates and yields to an already-running copy
-   of the bundle, skipped under XCTest), then launches the SwiftUI `WindowGroup`
-   (`RootView`), which kicks off `UpdateChecker.check()` in a `.task`.
+   of the bundle, skipped under XCTest), then launches a single SwiftUI `Window` scene
+   (`ToolboxApp.body`, id `"main"` — not `WindowGroup`: a group hands out File ▸ New
+   Window, and the tool view models are not built to be duplicated) hosting `RootView`,
+   which kicks off `UpdateChecker.check()` in a `.task`. `RootView` owns the
+   `CompressViewModel`/`OCRViewModel` as `@StateObject`s, so each is constructed exactly
+   once per app run.
 2. Each Compress/OCR job spawns a **child process**: `/usr/bin/sandbox-exec` wrapping
    the bundled `gs` (Compress only — OCR never shells out, it calls Vision in-process).
 3. `ToolQueue` runs jobs with bounded concurrency (`SystemInfo.performanceCoreCount`

@@ -56,8 +56,10 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 
 No persisted app state (no UserDefaults/Core Data in scope) — every run starts from an
 empty queue. The one documented exception is `RunnerUpStore` (spec R15): Rung 3's losing
-gs versions live in `caches/Toolbox/runner-ups`, swept at launch and emptied at quit
-(`AppDelegate.applicationWillTerminate`) — see [Compress](modules/compress.md).
+gs versions live in `caches/Toolbox/runner-ups`, swept once from `CompressViewModel.init`
+(`RootView` owns it as a `@StateObject` under the app's single `Window` scene, so this
+fires exactly once per run) and emptied at quit (`AppDelegate.applicationWillTerminate`)
+— see [Compress](modules/compress.md), [App](modules/app.md).
 
 ## Boundaries & invariants
 

@@ -31,6 +31,18 @@ window-minimum-size fix-up, and a headless self-test hook.
 
 ## Invariants
 
+- **`ToolboxApp.body` declares a single `Window("Toolbox", id: "main")`, not a
+  `WindowGroup`**: a group hands out File ▸ New Window (⌘N), and a second window would
+  construct a second `CompressViewModel`/`OCRViewModel` — `RunnerUpStore.sweepStale()`
+  (see [Compress](compress.md)) is written to run exactly once per app run, which only
+  holds because `RootView`'s `@StateObject` view models are built exactly once. `WindowSetup.applyMinimumSize`'s frame-autosave-name check (`WindowConfigurator.swift`)
+  also relies on there being only ever one such window.
+- **The stray-focus net is a `firstResponder` KVO watch, not a key-transition
+  notification** — `WindowSetup.installStrayFocusClear(on:)` (`WindowConfigurator.swift`)
+  observes the main window's `firstResponder` directly and clears any assignment whose
+  current event is not `.keyDown`; a `didBecomeKeyNotification` observer misses a
+  POPOVER closing (it never takes key status itself). See
+  `.claude/memory/20260725-stray-focus-ring-invariant.md` for the full invariant.
 - **`RootView` is a plain `HStack`, not `NavigationSplitView`**: that container laid
   the sidebar out a titlebar's height too high (drawing over the traffic lights, the
   first entries scrolled out of view) and, on a slightly-too-small window, collapsed
@@ -48,7 +60,7 @@ window-minimum-size fix-up, and a headless self-test hook.
 - **`Tool.tint` gives each sidebar tile its own colour** — a deliberate divergence
   from `DESIGN.md`'s single-accent rule, recorded in `.claude/DECISIONS.md`
   (2026-07-23); not something to "fix" without the design doc's owner amending it.
-- `CompressSmoke` must run and exit **before** `WindowGroup` renders — it drives the
+- `CompressSmoke` must run and exit **before** the `Window` scene renders — it drives the
   real bundled-gs-under-sandbox path from the actual app process (xctest launches gs
   from a different context, which doesn't exercise the same `Bundle.main` resolution).
 - **`yieldToExistingInstance()` skips under XCTest** (`XCTestConfigurationFilePath` env

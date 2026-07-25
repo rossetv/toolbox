@@ -7,10 +7,11 @@
 
 import Foundation
 
-/// Runs blocking work on a global queue and suspends until it finishes — the bridge
-/// `GhostscriptRunner.run` and `OCREngine.renderUpright` use (§6.1). Engines call this around
-/// synchronous file IO and page rendering so a job suspends instead of parking a cooperative-pool
-/// thread, which would starve every other queued job.
+/// Runs blocking work on a global queue and suspends until it finishes — the same
+/// continuation-on-GCD shape `GhostscriptRunner.run` builds inline (§6.1). The engines call this
+/// around synchronous file IO and page rendering (OCR's write+validate leg, CompressEngine's
+/// validation gates) so a job suspends instead of parking a cooperative-pool thread, which would
+/// starve every other queued job.
 ///
 /// `.userInitiated`, deliberately: this wraps work a user is actively waiting on.
 ///
