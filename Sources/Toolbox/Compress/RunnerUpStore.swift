@@ -68,25 +68,18 @@ final class RunnerUpStore {
         }
     }
 
-    /// Atomically exchange the shipped file's content with the runner-up's (the UI switch).
-    ///
-    /// Throws only when the switch did not happen, in one of two shapes the caller must tell
-    /// apart: any ordinary throw leaves the shipped file exactly as it was, whereas
-    /// `SwitchError.shippedStranded` means the promotion failed AND the shipped file could not be
-    /// restored — it survives at the park path the error names, and nothing else will look for it.
-    /// A successful switch never throws; if the demoted version cannot take the cache slot it is
-    /// discarded, leaving the runner-up absent — callers already handle a missing runner-up.
-    func switchVersions(shipped: URL, runnerUp: URL) throws {
+    /// The shared three-step algorithm behind both `switchVersions` and `promote`: park the
+    /// shipped file beside itself under a dot-temp name (never straight into the cache root — see
+    /// `promote`'s doc for why), move `incoming` into the shipped slot, and on success relocate the
+    /// park into `destination`; on failure to promote, restore the park back to `shipped`.
+    /// `tempPrefix` keeps each caller's dot-temp idiom distinguishable in a crash-leftover sweep.
+    private func performSwap(incoming: URL, shipped: URL, destination: URL, tempPrefix: String) throws {
         let fm = FileManager.default
-        // Parked alongside the shipped file, not in the sweep-on-launch cache dir: a crash in
-        // this window must not destroy the user's already-shipped output. This mirrors the
-        // engine's `.toolbox-<uuid>` dot-temp idiom, so an orphaned park file left after a crash
-        // matches the accepted residual pattern elsewhere in the app.
-        let parked = shipped.deletingLastPathComponent()
-            .appendingPathComponent(".toolbox-swap-\(UUID().uuidString).pdf")
-        try fm.moveItem(at: shipped, to: parked)          // park the shipped version
+        let temp = shipped.deletingLastPathComponent()
+            .appendingPathComponent(".toolbox-\(tempPrefix)-\(UUID().uuidString).pdf")
+        try fm.moveItem(at: shipped, to: temp)            // park the shipped version
         do {
-            try fm.moveItem(at: runnerUp, to: shipped)    // promote the runner-up
+            try fm.moveItem(at: incoming, to: shipped)    // promote the incoming version
         } catch {
             // Restore on the documented path for each state: `shipped` is normally absent (we
             // just moved it out), so a plain `moveItem` restores it; if something recreated it
@@ -97,23 +90,35 @@ final class RunnerUpStore {
             // the park path, rather than reporting a mere failed switch.
             do {
                 if fm.fileExists(atPath: shipped.path) {
-                    _ = try fm.replaceItemAt(shipped, withItemAt: parked)
+                    _ = try fm.replaceItemAt(shipped, withItemAt: temp)
                 } else {
-                    try fm.moveItem(at: parked, to: shipped)
+                    try fm.moveItem(at: temp, to: shipped)
                 }
             } catch {
-                throw SwitchError.shippedStranded(parked: parked)
+                throw SwitchError.shippedStranded(parked: temp)
             }
             throw error
         }
         do {
-            try fm.moveItem(at: parked, to: runnerUp)     // demote the old winner into the cache slot
+            try fm.moveItem(at: temp, to: destination)    // relocate the parked version into the slot
         } catch {
             // The switch already succeeded from the user's perspective — shipped holds the new
             // content. Discard the stranded parked file rather than throw; a missing runner-up is
             // already a designed-for state (R10's re-run path).
-            try? fm.removeItem(at: parked)
+            try? fm.removeItem(at: temp)
         }
+    }
+
+    /// Atomically exchange the shipped file's content with the runner-up's (the UI switch).
+    ///
+    /// Throws only when the switch did not happen, in one of two shapes the caller must tell
+    /// apart: any ordinary throw leaves the shipped file exactly as it was, whereas
+    /// `SwitchError.shippedStranded` means the promotion failed AND the shipped file could not be
+    /// restored — it survives at the park path the error names, and nothing else will look for it.
+    /// A successful switch never throws; if the demoted version cannot take the cache slot it is
+    /// discarded, leaving the runner-up absent — callers already handle a missing runner-up.
+    func switchVersions(shipped: URL, runnerUp: URL) throws {
+        try performSwap(incoming: runnerUp, shipped: shipped, destination: runnerUp, tempPrefix: "swap")
     }
 
     /// The R12 recompress commit: park the currently-shipped file, promote `fresh` into its place,
@@ -144,33 +149,7 @@ final class RunnerUpStore {
     /// The old version therefore survives every path on which the promotion did NOT happen, which
     /// is what lets an armed row keep its result when a recompress fails.
     func promote(fresh: URL, to shipped: URL, parking parked: URL) throws {
-        let fm = FileManager.default
-        let temp = shipped.deletingLastPathComponent()
-            .appendingPathComponent(".toolbox-promote-\(UUID().uuidString).pdf")
-        try fm.moveItem(at: shipped, to: temp)            // 1. park beside the shipped file
-        do {
-            try fm.moveItem(at: fresh, to: shipped)       // 2. promote the fresh result
-        } catch {
-            // Restore on the documented path for each state, exactly as `switchVersions` does:
-            // `shipped` is normally absent here, so a plain `moveItem` restores it; if something
-            // recreated it in this window, `replaceItemAt` swaps that impostor out.
-            do {
-                if fm.fileExists(atPath: shipped.path) {
-                    _ = try fm.replaceItemAt(shipped, withItemAt: temp)
-                } else {
-                    try fm.moveItem(at: temp, to: shipped)
-                }
-            } catch {
-                throw SwitchError.shippedStranded(parked: temp)
-            }
-            throw error
-        }
-        do {
-            try fm.moveItem(at: temp, to: parked)         // 3. into the cache slot
-        } catch {
-            // Best effort, deliberately: see step 3 above. Discard rather than strand.
-            try? fm.removeItem(at: temp)
-        }
+        try performSwap(incoming: fresh, shipped: shipped, destination: parked, tempPrefix: "promote")
     }
 
     func discard(_ url: URL) {
