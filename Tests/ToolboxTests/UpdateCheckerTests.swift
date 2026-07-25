@@ -58,6 +58,16 @@ final class UpdateCheckerTests: XCTestCase {
                      "a bare 'v' tag is an empty version")
         XCTAssertNil(UpdateChecker.parseRelease(payload(tag: "v0.2.0", url: "http://github.com/x")),
                      "a non-HTTPS page URL must be rejected, not opened")
+        XCTAssertNil(UpdateChecker.parseRelease(payload(tag: "v0.2.0", url: "https://evil.example/x")),
+                     "the page URL host must be pinned to github.com")
+        XCTAssertNil(UpdateChecker.parseRelease(payload(
+            tag: "v" + String(repeating: "9", count: 100),
+            url: "https://github.com/x")),
+                     "an oversized version string must be rejected")
+        XCTAssertNil(UpdateChecker.parseRelease(payload(
+            tag: "v" + Array(repeating: "1", count: 200).joined(separator: "."),
+            url: "https://github.com/x")),
+                     "a version with an absurd component count must be rejected")
     }
 
     // MARK: - End-to-end decision (stubbed network)

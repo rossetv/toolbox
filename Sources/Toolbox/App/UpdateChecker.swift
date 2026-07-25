@@ -60,10 +60,18 @@ final class UpdateChecker: ObservableObject {
         }
         guard let payload = try? JSONDecoder().decode(Payload.self, from: data),
               let url = URL(string: payload.html_url),
-              url.scheme == "https" else { return nil }
+              url.scheme == "https",
+              // Pin to the release host we actually queried — a compromised or
+              // malicious API response must not one-click the user to an arbitrary host.
+              url.host == "github.com" else { return nil }
         let version = payload.tag_name.hasPrefix("v")
             ? String(payload.tag_name.dropFirst()) : payload.tag_name
-        guard !version.isEmpty else { return nil }
+        guard !version.isEmpty,
+              // Bound length and component count so a hostile tag (e.g. "1" + ".0" x 100_000)
+              // can't blow up parsing/comparison or overflow the UI banner.
+              version.count <= 32,
+              version.split(separator: ".", omittingEmptySubsequences: false).count <= 8
+        else { return nil }
         return Release(version: version, pageURL: url)
     }
 
