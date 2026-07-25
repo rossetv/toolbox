@@ -134,7 +134,7 @@ final class CompressViewModelTests: XCTestCase {
 
     /// A `.compressedHeavy` outcome surfaces both versions through `versions(for:)`, with the
     /// heavy version shipped by default (R7/R8).
-    func testCompressedHeavyOutcomePublishesHeavyVersions() async throws {
+    func testCompressedHeavyOutcomePublishesBothVersions() async throws {
         let env = try HeavyEnv()
         let model = env.model
         model.add([env.input])
