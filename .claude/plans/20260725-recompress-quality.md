@@ -830,6 +830,12 @@ existing display path onto the store, with **no behaviour change**. The existing
 > failed-switch row, and `testLaterBatchDoesNotRewriteAFinishedRowsPreset`'s
 > `XCTAssertEqual(env.stub.presets.last, .smallestSize)`. A rewritten assertion reads as a
 > weakened gate and will be sent back.
+>
+> The constraint binds the ASSERTIONS, not the setup around them. One test's setup does change
+> later: Task 10's `compress()` arms finished rows, which breaks
+> `testLaterBatchDoesNotRewriteAFinishedRowsPreset`'s second batch, so that task moves the test's
+> preset change to after the batch — intent, assertion and message all verbatim. Nothing changes in
+> THIS task, where the test still passes exactly as written.
 
 **Files**
 - Modify: `Sources/Toolbox/Compress/CompressViewModel.swift`
@@ -868,12 +874,24 @@ existing display path onto the store, with **no behaviour change**. The existing
       Adjust only the accessor, never the expected value. Add `try XCTUnwrap` where an accessor
       became optional — the byte, URL and variant accessors all did; `capsuleTitle` did not.
 
-      Two test DOC COMMENTS also name the old accessor and would survive a call-sites-only rename,
-      leaving the file documenting a symbol that no longer exists: the one above
-      `testCompressedHeavyOutcomePublishesHeavyVersions` ("surfaces both versions through
-      `heavyVersions(for:)`") and the one above `testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize`
-      ("`heavyVersions(for:)` must mark it so the popover labels that card 'Original'"). Both say
-      `versions(for:)` after this step; the wording is otherwise untouched.
+      SIX test DOC COMMENTS also name members this task deletes and would survive a
+      call-sites-only rename, leaving the file documenting symbols that no longer exist. All six
+      are rewritten in this step; the wording is otherwise untouched.
+
+      | Doc comment above | Names | Becomes |
+      |---|---|---|
+      | `testCompressedHeavyOutcomePublishesHeavyVersions` | "surfaces both versions through `heavyVersions(for:)`" | `versions(for:)` |
+      | `testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize` | "`heavyVersions(for:)` must mark it so the popover labels that card 'Original'" | `versions(for:)` |
+      | `testSwitchTogglesInstantlyAndReversibly` | "flips `shippedIsHeavy`" | "flips which version is shipped" |
+      | `testDisplayedBytesTracksShippedVersion` | "`displayedBytes` drives the row's size badge/percent" | "the shipped version's byte count drives the row's size badge/percent" |
+      | `testCapsuleTitleFlipsOnSwitch` | "it must flip with `shippedIsHeavy` and … matching `HeavyCompressionPopover.normalTitle`'s \"Normal\"" | "it must flip with the shipped version and … matching the label `VersionsPopover.label(_:slot:)` gives the parked card, \"Normal\"" |
+      | `testCapsuleTitleReadsOriginalWhenRunnerUpIsInput` | "matching the popover's `normalTitle`" | "matching the label `VersionsPopover.label(_:slot:)` gives that card" |
+
+      The last two are a CONTENT coupling across the track fork: `normalTitle` is a member of
+      `HeavyCompressionPopover.swift`, the file Track P's Task 6 renames to `VersionsPopover.swift`
+      and rewrites. Both citations are therefore reworded to the SURVIVING vocabulary —
+      `VersionsPopover.label(_:slot:)` — in this task, so no later track has to reach back into
+      `CompressViewModelTests.swift` (Track E's file) to repair a dead citation.
 - [ ] Run the suite and watch it fail to compile (`versions(for:)` does not exist yet):
 
 ```sh
@@ -1079,7 +1097,20 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
       already filters `switchFailures` on every sink emission. The line simply clears the removed
       row's message at removal time rather than one emission later, keeping every removal path in
       one place. Then `pruneStaleEstimateState` calls `versionStore.retain(only: liveIDs)` where it
-      filtered `switched`/`jobPresets`.
+      filtered `switched`/`jobPresets`, and inherits `jobPresets`' other guard as well —
+      **replacing a piece of bookkeeping means inheriting its lifecycle guards**, and the two
+      dictionaries that take over its roles are otherwise never filtered:
+
+```swift
+        pendingPresets = pendingPresets.filter { liveIDs.contains($0.key) }
+        recompressErrors = recompressErrors.filter { liveIDs.contains($0.key) }
+```
+
+      `pendingPresets` takes over `jobPresets`' IN-FLIGHT role and, unlike it, is consumed on
+      ingest — but only for a `.done` job. A `.failed` job never reaches `ingestCompletedJobs`'s
+      switch, so its entry is never consumed and would outlive the row without this line.
+      `recompressErrors` (declared earlier in this task) is cleared only at the start of the next run
+      and on a preset change, neither of which fires when a row is simply removed.
 - [ ] Rewrite `cancel()`'s reclaim over the reservation ledger, keeping the exact rule the
       `isDoneHeavy` check encoded (a reservation the store now owns as a committed runner-up is
       kept; everything else is reclaimed):
@@ -2107,6 +2138,30 @@ route destroys the delivered state this feature exists to protect.
         model.preset = .maximumQuality
         XCTAssertNil(model.recompressErrors[job.id],
                      "the user moved on; a message about the Smallest attempt is now stale")
+
+        // The SECOND half of this test's own name: the next run clears it too. Fail the row again
+        // (the preset change re-armed it at Maximum quality), then start a fresh run and assert the
+        // message is gone — `compress()` clears `recompressErrors` at the START of the run, so it
+        // must be absent while that run is still in flight, not merely after it settles.
+        env.stub.throwOnCall = env.stub.callCount + 1
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertNotNil(model.recompressErrors[job.id], "the Maximum-quality attempt failed too")
+
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        // The preset is deliberately LEFT at Maximum quality: a failed recompress records no
+        // preset (R1), so the row is still armed at it and a fresh run needs no preset change.
+        // Only the run's own clear can green the assertion below — the preset half this test
+        // already covered cannot.
+        model.compress()
+        try await waitUntil(timeout: 5) { model.isRunning }
+        XCTAssertNil(model.recompressErrors[job.id],
+                     "the next run clears the previous run's messages at its start")
+        await gate.open()
+        try await waitUntil(timeout: 10) { !model.isRunning }
     }
 
     /// R9 + R12: cancelling during the QUEUE phase must stop the recompress phase before it
@@ -2374,8 +2429,12 @@ route destroys the delivered state this feature exists to protect.
         let plans: [RecompressPlan] = armedJobs.map { job in
             let shipped = versionStore.versions(for: job.id)?.shipped
             // R11: the row's own result path, even if "Save to" changed since. A row that shipped
-            // nothing (no-gain) has none, so it allocates from the current folder normally.
-            let output = shipped?.url
+            // nothing (no-gain) has none, so it takes the name the loop above ALREADY allocated for
+            // it — `jobs` is a 1:1 map of `queue.jobs`, so an armed row is always in that loop and
+            // `outputs[job.id]` is always present. Allocating a second time from the same
+            // `reserved` ledger would collide with the first pass's own entry and hand the row
+            // `<name>-compressed-1.pdf`.
+            let output = shipped?.url ?? outputs[job.id]
                 ?? FileNaming.output(for: job.url, suffix: "compressed", folder: folder,
                                      reserving: &reserved)
             return RecompressPlan(
@@ -2387,7 +2446,19 @@ route destroys the delivered state this feature exists to protect.
         }
 ```
 
-- [ ] Add the phase runner and the per-row body:
+- [ ] Add the phase runner and the per-row body. **Recorded disposition — the per-tick
+      `Task { @MainActor in … }` in `recompress`'s `report` stays as written**, even though
+      `ToolQueue.process`'s own `report` deliberately uses `DispatchQueue.main.async` and says why
+      ("tasks carry no ordering guarantee, so two ticks could land swapped and walk the progress bar
+      backwards; the main queue is FIFO"). The asymmetry is real and the choice here is deliberate:
+      `ToolQueue`'s ticks feed `setState`, a per-job STATE MACHINE whose guard exists to stop a late
+      tick resurrecting a `.done` job into `.running` — an ordering failure there strands a row for
+      ever. These ticks feed `recompressProgress[id]`, a plain per-row fraction — read by the row's
+      own overlay and summed into `runProgress`, and recomputed from the dictionary on every
+      `publishJobs()`, so there is no state machine to strand: a swapped pair moves one row's
+      fraction by a frame and the next tick corrects it. It also matches `rerunForSwitch`'s existing form in this same file, so
+      changing it here alone would leave two shapes for one job. Noted against `ToolQueue`'s
+      stricter FIFO choice; the mechanism is unchanged.
 
 ```swift
     /// The armed rows, through the engine directly. A sliding window of the same width as a normal
@@ -2819,8 +2890,12 @@ concurrency is bounded by one normal batch width *by construction* rather than b
         let plans: [RecompressPlan] = armed.map { job in
             let shipped = versionStore.versions(for: job.id)?.shipped
             // R11: the row's own result path, even if "Save to" changed since. A row that shipped
-            // nothing (no-gain) has none, so it allocates from the current folder normally.
-            let output = shipped?.url
+            // nothing (no-gain) has none, so it takes the name the loop above ALREADY allocated for
+            // it — `jobs` is a 1:1 map of `queue.jobs`, so an armed row is always in that loop and
+            // `outputs[job.id]` is always present. Allocating a second time from the same
+            // `reserved` ledger would collide with the first pass's own entry and hand the row
+            // `<name>-compressed-1.pdf`.
+            let output = shipped?.url ?? outputs[job.id]
                 ?? FileNaming.output(for: job.url, suffix: "compressed", folder: folder,
                                      reserving: &reserved)
             return RecompressPlan(
@@ -2942,6 +3017,100 @@ concurrency is bounded by one normal batch width *by construction* rather than b
     }
 ```
 
+- [ ] **Update `testLaterBatchDoesNotRewriteAFinishedRowsPreset` — the one existing test this
+      task's `compress()` semantics break.** Today the test's second batch runs at `.balanced` with
+      a `.smallestSize`-finished row in the list. Before this feature that row was inert; after it,
+      the row ARMS (`rowPreset .smallestSize` ≠ selected `.balanced`) and phase 2 recompresses it —
+      so by the time the test reaches its switch, `setSlot` has discarded the old runner-up file,
+      `removeItem(at: job.alternateURL)` throws, and `switchVersion` takes the instant branch
+      against the NEW runner-up, so `waitUntil` never sees the engine call it is waiting for and
+      times out. Task 10's "all green" and Task 13's mandated test gate are unreachable until this
+      is fixed.
+
+      The fix is **intent-preserving**: run the second batch at the finished row's OWN preset, so
+      the row stays disarmed for the duration (`recompressState` returns `.none` on
+      `row.rowPreset == target`, ahead of everything but the futile check), and move the preset
+      change to AFTER the batch. The row is then armed but never run, its runner-up survives, the
+      switch still finds it missing and still re-runs — and the discriminator is stronger than
+      before, not weaker: the selected preset at switch time is `.balanced` while the row's own is
+      `.smallestSize`, so a re-run that wrongly used the CURRENT preset would append `.balanced` and
+      fail the assertion. Task 4's binding constraint is a constraint on the ASSERTION, and the
+      assertion survives verbatim, including its message.
+
+      The name still earns itself and no coverage is lost, though the shape moves: under this
+      feature "a later batch at a different preset" is no longer an inert list change — it IS a
+      recompress, and it is covered as one by this task's own `testMixedRunCountsBothSets` and
+      `testTheRecompressPhaseWaitsForTheQueuePhase`. What this test uniquely pins is the surviving
+      invariant its name states: a row's recorded preset is the row's own, and anything that
+      regenerates that row must use it rather than whatever is selected now. The full updated test:
+
+```swift
+    func testLaterBatchDoesNotRewriteAFinishedRowsPreset() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .smallestSize
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        // A second file joins the list alongside the finished row. The batch runs at the finished
+        // row's OWN preset, which leaves that row disarmed (R3) — so this run is a pure queue
+        // batch and the finished row's parked runner-up is untouched by it.
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        model.compress()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+
+        // NOW the user selects a different preset. Both rows arm, but nothing runs: arming changes
+        // nothing until the button (D1), so the first row still holds the pair its own batch made.
+        model.preset = .balanced
+
+        // The first row's runner-up vanishes, so switching it honestly re-runs the job — which
+        // must go through the engine at the preset that row was compressed at.
+        let job = try XCTUnwrap(model.jobs.first { $0.url == env.input })
+        try FileManager.default.removeItem(at: try XCTUnwrap(job.alternateURL))
+        let callsBefore = env.stub.callCount
+
+        model.switchVersion(for: job)
+        try await waitUntil(timeout: 5) {
+            env.stub.callCount > callsBefore && !model.isSwitchRerunning.contains(job.id)
+        }
+
+        XCTAssertEqual(env.stub.presets.last, .smallestSize,
+                       "the re-run must reproduce the row's own output, not the current preset")
+    }
+```
+
+- [ ] **Audit the rest of the existing suite against the same semantics change** — a behaviour
+      change to a shared entry point is a diff on every existing test that calls it. A test is
+      AFFECTED only if a finished row's recorded preset differs from the selected preset at a
+      SECOND `compress()`; anything else never reaches phase 2. Produced by grepping every
+      `model.compress()` call in `CompressViewModelTests.swift` and attributing each to its test:
+
+      | Test | `compress()` calls | Outcome |
+      |---|---|---|
+      | `testAddIsIgnoredWhileABatchIsRunning` | 1 | unaffected — no finished row exists when it runs |
+      | `testThreeFileSyntheticBatchCompressesEndToEnd` | 1 | unaffected |
+      | `testCompressedHeavyOutcomePublishesHeavyVersions` | 1 | unaffected |
+      | `testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize` | 1 | unaffected |
+      | `testCompressedHeavyRetainsMRCReportOnJob` | 1 | unaffected |
+      | `testSwitchTogglesInstantlyAndReversibly` | 1 | unaffected |
+      | `testCapsuleTitleFlipsOnSwitch` | 1 | unaffected |
+      | `testCapsuleTitleReadsOriginalWhenRunnerUpIsInput` | 1 | unaffected |
+      | `testSavedBytesUsesShippedVersionForHeavyJob` | 1 | unaffected |
+      | `testDisplayedBytesTracksShippedVersion` | 1 | unaffected |
+      | `testSwitchWithMissingRunnerUpRerunsJob` | 1 | unaffected — its second engine call comes from `rerunForSwitch`, not from `compress()` |
+      | `testSwitchFailingAfterRerunLeavesStateCanonical` | 1 | unaffected — same, via the re-run |
+      | `testLaterBatchDoesNotRewriteAFinishedRowsPreset` | **2** | **AFFECTED** — rewritten in the step above |
+      | `testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling` | 1 | unaffected |
+      | `testRemoveRowDiscardsRunnerUp` | 1 | unaffected |
+      | `testClearFinishedDiscardsRunnerUps` | 1 | unaffected |
+      | `testCancelDiscardsRunnerUpReservations` | 1 | unaffected |
+
+      Exactly one existing test calls `compress()` twice, and it is the one rewritten above. The
+      new tests this plan adds are written against the new semantics from the start and are not in
+      scope here.
 - [ ] Run the suite; all green.
 - [ ] Commit: `feat(compress): run queued and armed rows as one serialised batch`
 
@@ -2955,8 +3124,13 @@ Both Phase-2 tracks are merged into the feature branch and the suite is green be
 
 **Model:** opus · **Track:** serial (Phase 3)
 
-Three aggregates the view depends on that only the model can express, plus the cache-lifecycle and
-capsule regressions R20 asks for.
+One aggregate the view depends on that only the model can express, plus the cache-lifecycle and
+capsule regressions R20 asks for, plus the two members introduced elsewhere whose only consumers are
+private to a `View` and so unreachable from the test bundle — `armedSummary`'s arithmetic (Task 8)
+and `useVersion(.previous,…)` end to end (Task 4). Both are asserted here, at the model, for the
+same reason Task 12's lead-derivation tests are: an untestable consumer is the argument FOR a
+model-level test, not against one. This task adds no new implementation for either — the code under
+test already landed in Tasks 4 and 8.
 
 **Files**
 - Modify: `Sources/Toolbox/Compress/CompressViewModel.swift`
@@ -2966,11 +3140,21 @@ capsule regressions R20 asks for.
 - Produces:
   - `var allFinished: Bool` (now false while any row is armed)
 - Consumes: `CompressViewModel.RunComposition` / `runComposition` — declared and maintained by
-  Task 10, which owns the run bookkeeping. Nothing here re-declares it.
+  Task 10, which owns the run bookkeeping. Nothing here re-declares it. Also `armedSummary` /
+  `ArmedSummary`, `recompressPrediction(for:at:)` and `analysis(for:)` (Task 8), `useVersion(_:for:)`
+  and `recompressErrors` (Task 4), and the test-side `HeavyEnv(before:contentType:)` seam (Task 8) —
+  all consumed by the tests above, none re-declared here.
 
 **Steps**
 
-- [ ] Write the failing tests:
+- [ ] Write the tests. **Not all of them fail first, and that is the point of siting them here:**
+      only `testAllFinishedIsFalseWhileARowIsArmed` exercises this task's own change and fails
+      before it. The other seven are regressions over behaviour that already landed in Phase 1 and
+      Phase 2 — the cache lifecycle, the capsule on a plain row, `armedSummary`'s arithmetic and
+      `useVersion(.previous,…)` — whose only production consumers are private to a `View` and so
+      unreachable from the test bundle. They belong on the MERGED branch, which is the first point
+      at which the store, the arming state, the prediction and the recompress commit all exist
+      together to be asserted against.
 
 ```swift
     // MARK: armed-state aggregates and cache lifecycle (R4/R17/R18)
@@ -3042,9 +3226,181 @@ capsule regressions R20 asks for.
         XCTAssertEqual(row.count, 2, "current + previous still draws the capsule")
         XCTAssertEqual(row.capsuleTitle, "Versions")
     }
+
+    // MARK: the armed banner's arithmetic (R4)
+
+    /// `armedSummary.extraSaving` is the banner's only number and Task 8's prediction feeds it, so
+    /// all three of its branches are pinned here — the untestable consumer (`armedDetail`, private
+    /// to a `View`) is the argument FOR asserting at the model, not against asserting at all.
+    /// Branch 1: a confident armed row moving to a smaller preset contributes a positive extra.
+    func testArmedSummarySumsThePredictedExtraSaving() async throws {
+        // Task 8's proven confident pair: `.scanColour` shipped MRC at Balanced and armed at
+        // Smallest Size keeps `targetWantsMRC == shippedWasMRC == true`, so the calibration branch
+        // runs and a confident number exists.
+        let env = try HeavyEnv(contentType: .scanColour)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .smallestSize
+        let job = try XCTUnwrap(model.jobs.first)
+        let analysis = try XCTUnwrap(model.analysis(for: job))
+        // The premise, measured rather than assumed: the sign of `extraSaving` is the sign of
+        // `balanced - smallest` in the estimator's own figures, because the prediction is the
+        // shipped size scaled by that ratio.
+        XCTAssertLessThan(try XCTUnwrap(analysis.estimates[.smallestSize]?.predictedBytes),
+                          try XCTUnwrap(analysis.estimates[.balanced]?.predictedBytes),
+                          "the estimator must rate Smallest Size below Balanced for this row")
+
+        // Read the prediction back rather than recomputing it: `Int(_:)` truncates, and a
+        // differently bracketed expression of the same real number lands a byte away.
+        let predicted = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.armedCount, 1)
+        XCTAssertEqual(summary.queuedCount, 0)
+        XCTAssertEqual(summary.extraSaving, HeavyEnv.heavyBytes - predicted)
+        XCTAssertGreaterThan(try XCTUnwrap(summary.extraSaving), 0,
+                             "the banner reads \u{2248} saves another N")
+    }
+
+    /// Branch 2: moving UP in quality predicts a bigger file, so the extra is zero or negative —
+    /// the banner must be able to say "files may grow for the extra quality" rather than show a
+    /// negative saving. The row is shipped at Smallest Size and armed at Balanced, the same
+    /// repeating-path pair in reverse, over a large original so the "must beat the original" guard
+    /// cannot suppress the prediction and send this test down the nil branch instead.
+    func testArmedSummaryGoesNonPositiveWhenTheArmedPresetIsLessAggressive() async throws {
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour)
+        let model = env.model
+        model.preset = .smallestSize
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        let predicted = try XCTUnwrap(model.recompressPrediction(for: job, at: .balanced),
+                                      "the prediction must exist, or this asserts the nil branch")
+        XCTAssertGreaterThan(predicted, HeavyEnv.heavyBytes,
+                             "Balanced is rated above Smallest Size, so the scaled figure grows")
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.extraSaving, HeavyEnv.heavyBytes - predicted)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(summary.extraSaving), 0)
+    }
+
+    /// Branch 3: no armed row has a confident prediction ⇒ `extraSaving` is nil, so the banner
+    /// shows no detail line rather than a fabricated zero. `armedCount` is asserted alongside it,
+    /// or "nil because there is no summary at all" would pass for the wrong reason.
+    func testArmedSummaryWithholdsTheExtraWhenNoRowPredictsConfidently() async throws {
+        // Task 8's proven no-confident-prediction pair: `.bornDigital` is never MRC-eligible while
+        // `HeavyEnv` always ships MRC, so the raw multi-megabyte estimate is used and the "must
+        // beat the original" guard fires against the 1 kB original.
+        let env = try HeavyEnv(before: 1_000, contentType: .bornDigital)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .maximumQuality
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertNil(model.recompressPrediction(for: job, at: .maximumQuality))
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.armedCount, 1, "the row IS armed — the number is what is missing")
+        XCTAssertNil(summary.extraSaving)
+    }
+
+    // MARK: the previous version, end to end (R7/R15)
+
+    /// R7's third card: "Use this" on the PREVIOUS version swaps the delivered file back, records
+    /// and all. The whole point of parking it is that this costs no engine call, so the engine must
+    /// not be entered — and the file on disk must actually change, not just the record describing it.
+    func testUsingThePreviousVersionSwapsTheDeliveredFileBack() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        var job = try XCTUnwrap(model.jobs.first)
+        var row = try XCTUnwrap(model.versions(for: job))
+        let deliveredURL = try XCTUnwrap(row.shipped?.url)
+        XCTAssertEqual(row.shipped?.bytes, 700)
+        XCTAssertEqual(row.shipped?.preset, .smallestSize)
+        XCTAssertEqual(row.previous?.bytes, HeavyEnv.heavyBytes)
+        XCTAssertEqual(row.previous?.preset, .balanced)
+        XCTAssertEqual(try fileSize(deliveredURL), 700)
+        let callsBefore = env.stub.callCount
+
+        model.useVersion(.previous, for: job)
+
+        job = try XCTUnwrap(model.jobs.first)
+        row = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(env.stub.callCount, callsBefore, "an instant switch enters no engine")
+        XCTAssertEqual(row.shipped?.bytes, HeavyEnv.heavyBytes, "the previous version is shipped")
+        XCTAssertEqual(row.shipped?.preset, .balanced)
+        XCTAssertEqual(row.previous?.bytes, 700, "…and the Smallest result takes the previous slot")
+        XCTAssertEqual(row.previous?.preset, .smallestSize)
+        XCTAssertEqual(row.shipped?.url, deliveredURL, "the delivered path is stable across a switch")
+        // The record is not the proof: the user's own file at that path must now hold the other
+        // version's content.
+        XCTAssertEqual(try fileSize(deliveredURL), HeavyEnv.heavyBytes)
+    }
+
+    /// A vanished PREVIOUS version can never be regenerated (a re-run reproduces the row's own
+    /// preset, not the previous one), so it must say so beside the row and drop the slot — while
+    /// leaving the perfectly good delivered result exactly where it is.
+    func testUsingAVanishedPreviousVersionReportsItAndDropsTheSlot() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        let previous = try XCTUnwrap(model.versions(for: job)?.previous?.url)
+        try FileManager.default.removeItem(at: previous)
+        let callsBefore = env.stub.callCount
+
+        model.useVersion(.previous, for: job)
+
+        XCTAssertEqual(env.stub.callCount, callsBefore, "a vanished previous is never re-run")
+        XCTAssertNil(model.versions(for: job)?.previous, "the slot is dropped, not left dangling")
+        XCTAssertEqual(model.recompressErrors[job.id],
+                       "That version is no longer available — recompress at "
+                       + "\(CompressPreset.balanced.title) to get it back.")
+        XCTAssertEqual(model.versions(for: job)?.shipped?.bytes, 700,
+                       "a message beside the row, never a failure that hides a good result")
+    }
 ```
 
-- [ ] Run and watch them fail.
+- [ ] Run them. `testAllFinishedIsFalseWhileARowIsArmed` must FAIL (its `armedCount` guard is added
+      below); the other seven must PASS on the merged branch. A red one among those seven is a
+      genuine regression in Phase 1 or Phase 2 work, not a missing implementation here — diagnose
+      it before writing a line of the step below.
 - [ ] Implement:
 
 ```swift
@@ -3249,13 +3605,16 @@ derives from the version store, and the armed/running/finished chrome follows th
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
-
-    private func originalBytes(for job: ToolJob) -> Int {
-        model.versions(for: job)?.originalBytes ?? 0
-    }
 ```
 
-      and make `outputNamePreview` honest for a recompress-only run:
+      and **delete** `CompressView.originalBytes(for:)` outright rather than re-deriving it: its
+      only caller was the `originalBytes:` argument of `HeavyCompressionPopover`, and Task 6's
+      call-site update to `VersionsPopover(versions:onUse:onPreview:)` drops that argument, so the
+      helper arrives at this task already dead. The aggregation it performed is now `RowVersions`'
+      own `originalBytes`, which the popover reads off `versions` directly and this file reads in
+      `status(for:)`'s `.done` arm above — nothing is lost by the deletion.
+
+      Then make `outputNamePreview` honest for a recompress-only run:
 
 ```swift
         // A recompress replaces the row's existing file — naming a new one would be a lie.
@@ -3304,7 +3663,10 @@ derives from the version store, and the armed/running/finished chrome follows th
 
 - [ ] Confirm — and leave a one-line comment where the answer is "unchanged, deliberately" — the
       remaining R17 aggregators: `savedBytes`, `savedDetail`, `savedSummary` (all three already
-      route through `model.displayedSizes`, which Task 4 re-derived), `canRemove` (`.queued` only —
+      route through `model.displayedSizes`, which Task 4 re-derived), `originalBytes(for:)`
+      (**deleted, not re-derived** — the aggregation it performed is satisfied at both its
+      consumers by `RowVersions.originalBytes`: the popover reads it off `versions`, and this file
+      reads it in `status(for:)`'s `.done` arm), `canRemove` (`.queued` only —
       an armed row is finished and stays non-removable, per D5's deferral), and the `.animation`
       values on the root view, which gain `value: model.armedCount` so arming animates like the
       other state changes. **Plus one model-side confirmation, because it is the last reader of a
@@ -3313,9 +3675,20 @@ derives from the version store, and the armed/running/finished chrome follows th
       4) — after a recompress the queue's record is the first run's, and it is nil outright on a
       no-gain row a recompress promoted, so a stale read would make "Use this" silently do nothing
       on exactly the rows this feature creates. Grep the branch for `resultURL` and `alternateURL`
-      and account for every remaining hit: the legitimate survivors are `ToolQueue`'s own writes
-      (R19, untouched), OCR's `resultURL ?? url` open fallback (R19, untouched), and the `?? job.resultURL`
-      store-first fallbacks in `open`/`revealOutputs` above.
+      and account for every remaining hit. The complete list of legitimate survivors, produced by
+      that grep rather than from memory:
+
+      | Survivor | Why it stays |
+      |---|---|
+      | `ToolQueue.process`'s two writes (`jobs[index].resultURL`/`.alternateURL`) | R19 — the shared layer is not modified by any task |
+      | `ToolQueue.JobResult`'s `alternateURL` property and its `init(_:outputURL:alternateURL:mrcReport:)` | R19 — the queue's own result type |
+      | `ToolJob`'s `resultURL`/`alternateURL` declarations, their `init` initialisation to nil, and the type's doc comment naming `resultURL` | The queue's per-job record of the FIRST run. Still written, still read by OCR and by the fallbacks below; the store supersedes it for compress display only, it does not replace it |
+      | The queue-phase `JobResult(outcome, outputURL: output, alternateURL: alternate, mrcReport:)` construction inside `compress()` | This is what PUTS the first run's URLs on the job — removing it would break the store's only queue-side input |
+      | `ingestCompletedJobs`' own `guard let url = job.resultURL` / `let alternate = job.alternateURL` reads (added by Task 4) | The other half of that pair: the ingest reads back exactly what the construction above wrote, in the same emission. This is the ONE place the queue record is authoritative, because it is the moment before the store has a record at all |
+      | `OCRView`'s `job.resultURL ?? job.url` open fallback | R19 — OCR has no version store |
+      | `open`/`revealOutputs`' `?? job.resultURL` store-first fallbacks above | Deliberate: the store is asked first, the queue record is the fallback for a row the store has no entry for |
+      | `ToolQueueTests.testResultURLIsAttributedToTheCorrectJob` and `ToolQueueTests.testAlternateURLFromJobResultLandsOnJob` | The queue's own contract, untouched by this feature |
+      | The existing `CompressViewModelTests` FIRST-RUN reads — `resultURL` in `testSwitchTogglesInstantlyAndReversibly`, `testSwitchWithMissingRunnerUpRerunsJob` and `testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling`, and `alternateURL` in `testSwitchWithMissingRunnerUpRerunsJob`, `testSwitchFailingAfterRerunLeavesStateCanonical`, `testLaterBatchDoesNotRewriteAFinishedRowsPreset`, `testRemoveRowDiscardsRunnerUp` and `testClearFinishedDiscardsRunnerUps` | Each reads the URLs of a row that has only ever been through the QUEUE. A first-run row's queue record and its store record agree exactly — the ingest copies one into the other — so these reads are still correct and are left verbatim. Only a RECOMPRESSED row diverges, and no existing test recompresses |
 - [ ] Pin the three lead rules this task encodes, in `CompressViewModelTests`. `lead(for:)` and
       `status(for:)` are private members of a `View` struct and are not reachable from the test
       bundle, so each test asserts the exact model-level PAIR the view maps one-to-one onto — the
@@ -3443,10 +3816,10 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
 | R1 arming rules | Task 7 (`recompressState`), Task 2 (`rowPreset`) |
 | R2 armed row appearance | Task 5 (`FileRow.Lead`, `metaAccent`, `leadView` in all three finished clusters incl. `.unchanged`), Task 12 (`lead`/`metaAccent`, lead-derivation tests) |
 | R3 reversibility | Task 7 (derived state; `testReselectingTheRowsPresetDisarmsIt`) |
-| R4 banner and footer | Task 8 (`armedSummary`), Task 11 (`allFinished`), Task 12 (headline/detail/button) |
+| R4 banner and footer | Task 8 (`armedSummary`), Task 11 (`allFinished`, plus the three `armedSummary` arithmetic tests), Task 12 (headline/detail/button) |
 | R5 mixed queued + armed | Task 10 (one run, counts), Task 12 (`actionTitle`) |
 | R6 futile suppression | Task 7 (`futileAttempts`), Task 4 (first-run no-gain), Task 9 (recompress no-gain) |
-| R7 instant switch | Task 7 (`.instantSwitch`), Task 12 (`Switch instantly` link → `useVersion(.previous,…)`) |
+| R7 instant switch | Task 7 (`.instantSwitch`), Task 11 (`useVersion(.previous,…)` end to end, and the vanished-previous message), Task 12 (`Switch instantly` link → `useVersion(.previous,…)`) |
 | R8 direct-engine path | Task 9 (`recompress`, progress overlay, state flips at commit) |
 | R9 batch semantics | Task 9 (`cancel()`: `runCancelled` + `recompressTask?.cancel()`, and the reclaim loop), Task 10 (phases, `runProgress`, the `runCancelled` guard before phase 2, terminal-row recording for `.done` AND `.failed`), Task 12 (running bar, disable rules) |
 | R10 missing-original guard | Task 8 (`isOriginalMissing` gates `recompressPrediction`; `testPredictionIsWithheldWhenTheOriginalIsGone`), Task 9 (`testMissingOriginalReportsPerRowAndLeavesTheResultIntact`), Task 12 (error lead ahead of the armed pill; `testAnArmedRowWithAMissingOriginalOffersNoPrediction`) |
@@ -3456,7 +3829,7 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
 | R14 version store | Tasks 2, 4 (ingest), 9 (slot replacement discards) |
 | R15 capsule + popover | Task 2 (`capsuleTitle`, `cards`), Task 6 (2/3 cards), Task 11 (capsule-on-plain-row), Task 12 (`.doneHeavy` on ≥2 versions, Quick Look freeze) |
 | R16 estimate honesty | Task 3 (classification), Task 8 (calibration + three tests) |
-| R17 aggregator sweep | Task 4 (model side, incl. `rerunForSwitch`'s URLs off the store), Task 11 (`allFinished`), Task 12 (view side, enumerated, plus the `resultURL`/`alternateURL` grep confirmation) |
+| R17 aggregator sweep | Task 4 (model side, incl. `rerunForSwitch`'s URLs off the store), Task 11 (`allFinished`), Task 12 (view side, enumerated, incl. deleting the dead `originalBytes(for:)`, plus the tabulated `resultURL`/`alternateURL` grep survivors) |
 | R18 cache lifecycle | Task 2 (`discardRow`/`retain`), Task 4 (funnelled removal), Task 11 (test) |
 | R19 shared layer | Global constraint: `ToolQueue.swift` is not modified by any task |
 | R20 tests | Distributed: Tasks 1, 2, 3, 7, 8, 9, 10, 11 each carry their own |
@@ -3605,3 +3978,42 @@ now added there and to the Phase 1 track-plan row.
 4. Inserting a cancellation checkpoint routes a new path into an existing catch arm — the arm's comment is part of the diff's blast radius, not just its control flow.
 ## Round 4 — 2026-07-25 — SHIP pending certify (plan-reviewer, Opus, incremental)
 All four round-3 findings verified resolved — the corrected prediction test re-derived end to end (its headroom is now an algebraic bound over the whole input domain, independent of the fixture's size), the runTask deletion proven compile-safe against the shipping code, Task 4's file list confirmed load-bearing. Three new minors, all comment/table accuracy, fixed this round: the cancellation-arm comment now states the alternate conditionally; the R9 coverage row credits cancel() to Task 9 and drops the deleted third mechanism; the "only reachable pair" claim is scoped to this row's shipped preset. Lesson-candidates: an algebraic bound over the input domain beats a fixture measurement as a test premise; deleting a member is a diff on every index that describes it; a comment fixed to cover a second path must state each path's artefacts conditionally; "the only reachable X" is a universal quantifier and carries its proof burden.
+
+## Round 5 — 2026-07-25 — NO-SHIP (plan-reviewer, Opus, full certify)
+
+Round 4's three minors were verified as landed. The full certify then found what four incremental
+rounds could not: one MAJOR — this feature's own new `compress()` semantics break an EXISTING test.
+`testLaterBatchDoesNotRewriteAFinishedRowsPreset` runs its second batch at a preset the finished row
+was not compressed at, which before this feature left that row inert and after it ARMS the row, so
+phase 2 recompresses it, `setSlot` discards the runner-up the test then tries to delete, and the
+switch takes the instant branch instead of the re-run the test waits for — making Task 10's "all
+green" and Task 13's mandated test gate unreachable while Task 4 forbids rewriting the assertion.
+Resolved intent-preserving: Task 10 now runs that second batch at the row's own preset and moves the
+preset change to after it (row armed, never run, runner-up intact, re-run still exercised, and the
+assertion stronger as a discriminator, verbatim), with Task 4's binding constraint clarified as
+binding the assertion, and a suite-wide audit step tabulating all seventeen tests that call
+`compress()` against the rule that only a second `compress()` over a differently-presetted finished
+row is affected. Nine minors, all fixed this round: the plans loop now reuses the queued pass's
+`outputs[job.id]` instead of allocating a second time from the shared reservation ledger (which
+would have handed a promoted no-gain row `<name>-compressed-1.pdf`); Task 4's doc-comment step grew
+from two entries to a six-row table, with the two `normalTitle` citations reworded to Track P's
+surviving `VersionsPopover.label(_:slot:)` vocabulary so no later track reaches back into Track E's
+file; `pruneStaleEstimateState` now filters `pendingPresets` (whose entry a `.failed` job never
+consumes) and `recompressErrors`; Task 12 DELETES the dead `CompressView.originalBytes(for:)` rather
+than re-deriving it, with the R17 sweep line saying so; the `resultURL`/`alternateURL` survivor list
+is now a grep-produced table naming the queue-phase `JobResult` construction, `ToolJob`'s own
+declarations and init, and each existing first-run test read; `armedSummary`'s arithmetic gains
+three tests in Task 11, one per branch, each on a pair Task 8 already proved reachable;
+`useVersion(.previous,…)` gains an end-to-end test asserting the on-disk swap and a second for the
+vanished-previous message; the recompress-error lifetime test now asserts the next-run half its own
+name promises; and Task 9 records a one-line disposition for its per-tick `Task { @MainActor in … }`
+against `ToolQueue.process`'s stricter FIFO comment, keeping the mechanism.
+
+**Lesson-candidates** (the reviewer's, one line each):
+
+1. A behaviour change to a shared entry point is a diff on every existing test that calls it.
+2. Two allocation loops over the same job set will collide through the reservation ledger they share — reuse the first pass's allocation.
+3. An enumeration written as a closed list is a claim that must be produced by grep, not by memory — and omitted items in another track's file are also a track-independence defect.
+4. Deleting a call site makes its callee dead; the sweep that re-derives the callee should have deleted it.
+5. A member carrying arithmetic a prior gate flagged as subtle must arrive with a test — the untestable consumer is the argument for the model-level test, not against it.
+6. Replacing a piece of bookkeeping means inheriting its lifecycle guards.
