@@ -602,9 +602,14 @@ final class CompressViewModel: ObservableObject {
             // An explicit button press NEVER fails silently (R12), and the version they kept is
             // named so the message is actionable. Every error reaching here left the shipped file
             // exactly as it was — `promote`'s contract guarantees it for every throw except
-            // `shippedStranded`, which the arm above already took.
-            let kept = versionStore.versions(for: plan.id)?.shipped?.preset ?? plan.target
-            recompressErrors[plan.id] = "Recompress failed — kept your \(kept.title) version"
+            // `shippedStranded`, which the arm above already took. A no-gain row has no shipped
+            // file at all (`ingestCompletedJobs`'s `.noGain` arm records `shipped: nil`), so it must
+            // not be told it "kept" a version it never received.
+            if let kept = versionStore.versions(for: plan.id)?.shipped?.preset {
+                recompressErrors[plan.id] = "Recompress failed — kept your \(kept.title) version"
+            } else {
+                recompressErrors[plan.id] = "Recompress failed — this file is unchanged"
+            }
         }
         recompressProgress[plan.id] = nil
         runCompleted.insert(plan.id)
