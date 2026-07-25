@@ -529,6 +529,7 @@ final class CompressViewModelTests: XCTestCase {
         model.compress()
         try await waitUntil(timeout: 5) { model.isRunning }
         try await waitUntil(timeout: 5) { env.stub.callCount > callsAfterSwitch }
+        try await waitUntil(timeout: 5) { !model.isRunning }
     }
 
     /// A mid-switch row still shows/queues as `.done` (ec61602), so `clearFinished()` must refuse
@@ -557,8 +558,10 @@ final class CompressViewModelTests: XCTestCase {
 
         model.clearFinished()
         XCTAssertEqual(model.jobs.count, 1, "the row survives while its switch is in flight")
+        XCTAssertNotNil(model.versions(for: job)?.runnerUp,
+                         "the parked slot the re-run is regenerating must survive")
         XCTAssertNotNil(model.versions(for: job)?.shipped,
-                         "the parked file must not be discarded mid-swap")
+                         "the row's version record survives the refusal")
 
         await gate.open()
         _ = await switching
@@ -1345,7 +1348,8 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 10) { !model.isRunning }
 
         let secondJob = try XCTUnwrap(model.jobs.last)
-        XCTAssertNotEqual(model.versions(for: secondJob)?.runnerUp?.url, runnerUpURL,
+        let secondRunnerUp = try XCTUnwrap(model.versions(for: secondJob)?.runnerUp?.url)
+        XCTAssertNotEqual(secondRunnerUp, runnerUpURL,
                           "a queued job must not claim an existing row's live runner-up path")
     }
 
