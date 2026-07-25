@@ -84,6 +84,7 @@ struct VersionsPopover: View {
                     .pointingHandCursor()
             } else {
                 Text("Current").themeFont(.micro).foregroundStyle(Theme.Colors.link)
+                    .padding(.vertical, 5).padding(.horizontal, 12)
             }
         }
         .frame(maxWidth: .infinity)
