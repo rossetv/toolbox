@@ -150,12 +150,7 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         try Data("runner-up-content".utf8).write(to: runnerUp)
 
-        let acl = Process()
-        acl.executableURL = URL(fileURLWithPath: "/bin/chmod")
-        acl.arguments = ["+a", "everyone deny add_file,add_subdirectory", runDir.path]
-        try acl.run()
-        acl.waitUntilExit()
-        XCTAssertEqual(acl.terminationStatus, 0, "setting up the ACL must succeed for the test to be meaningful")
+        try Fixtures.denyingNewEntries(true, at: runDir)
 
         try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
 

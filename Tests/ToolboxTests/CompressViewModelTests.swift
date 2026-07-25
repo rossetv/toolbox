@@ -1776,7 +1776,8 @@ final class CompressViewModelTests: XCTestCase {
         // Deny creating entries in the OUTPUT folder — the same asymmetric ACL lever
         // `RunnerUpStoreTests` uses — so parking the shipped file beside itself throws, while the
         // previous version, which lives in the cache root, is untouched.
-        try denyingNewEntries(true, at: outputFolder)
+        try Fixtures.denyingNewEntries(true, at: outputFolder)
+        defer { try? Fixtures.denyingNewEntries(false, at: outputFolder) }
 
         await model.useVersion(.previous, for: job)
 
@@ -1796,7 +1797,7 @@ final class CompressViewModelTests: XCTestCase {
         // Retry once the folder takes new entries again. It must go through — which is also the
         // proof that the failure path released the re-entrancy guard (a retry that no-ops looks
         // identical to one that failed).
-        try denyingNewEntries(false, at: outputFolder)
+        try Fixtures.denyingNewEntries(false, at: outputFolder)
         await model.useVersion(.previous, for: job)
 
         job = try XCTUnwrap(model.jobs.first)
@@ -1804,19 +1805,6 @@ final class CompressViewModelTests: XCTestCase {
                        "the retry must swap for real")
         XCTAssertEqual(try fileSize(deliveredURL), HeavyEnv.heavyBytes)
         XCTAssertNil(model.recompressErrors[job.id], "a successful retry clears the failure note")
-    }
-
-    /// Add or remove the ACL that lets a directory's existing entries be read and removed but no
-    /// new ones be created — the deterministic stand-in for a read-only output folder.
-    private func denyingNewEntries(_ deny: Bool, at directory: URL) throws {
-        let chmod = Process()
-        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
-        chmod.arguments = [deny ? "+a" : "-a", "everyone deny add_file,add_subdirectory",
-                           directory.path]
-        try chmod.run()
-        chmod.waitUntilExit()
-        XCTAssertEqual(chmod.terminationStatus, 0,
-                       "the ACL must apply for the test to be meaningful")
     }
 
     // MARK: lead derivation (R2/R6/R10/R12)
