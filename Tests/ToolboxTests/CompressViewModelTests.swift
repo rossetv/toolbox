@@ -467,18 +467,33 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { model.jobs.count == 1 }
         model.compress()
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let job1 = try XCTUnwrap(env.doneHeavyJob(model))
 
-        // A second file joins the list alongside the finished row. The batch runs at the finished
-        // row's OWN preset, which leaves that row disarmed (R3) — so this run is a pure queue
-        // batch and the finished row's parked runner-up is untouched by it.
+        // Arm the finished row at .balanced and let the engine come back no-gain, so the row is
+        // recorded FUTILE at .balanced (R6) without touching the shipped version at all — `rowPreset`
+        // reads `shipped?.preset` first (R14), so it stays .smallestSize throughout.
+        env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
+                                          shippedBytes: nil, runnerUpBytes: nil) }
+        model.preset = .balanced
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.versions(for: job1)?.rowPreset, .smallestSize)
+        env.stub.script = nil
+
+        // A second file joins the list alongside the finished row, and the batch runs at .balanced
+        // too — the SAME preset the row is now futile at. Being futile, the row does not arm (R6),
+        // so it takes no part in this run's engine calls and `ToolQueue` never touches it: this is
+        // the adversarial batch-time case — a later batch running at a preset that differs from the
+        // finished row's own, while that row sits out the run untouched. Recording a pending preset
+        // for it anyway (the §9.5 defect) would let the row's finished record get silently rewritten
+        // to .balanced on the next ingest, even though nothing recompressed it.
         model.add([try Fixtures.bornDigitalPDF()])
         try await waitUntil(timeout: 5) { model.jobs.count == 2 }
         model.compress()
         try await waitUntil(timeout: 10) { !model.isRunning }
 
-        // NOW the user selects a different preset. Both rows arm, but nothing runs: arming changes
-        // nothing until the button (D1), so the first row still holds the pair its own batch made.
-        model.preset = .balanced
+        XCTAssertEqual(model.versions(for: job1)?.rowPreset, .smallestSize,
+                       "a later batch that didn't recompress this row must not rewrite its preset")
 
         // The first row's runner-up vanishes, so switching it honestly re-runs the job — which
         // must go through the engine at the preset that row was compressed at.
