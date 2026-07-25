@@ -69,7 +69,8 @@ final class EstimatorTests: XCTestCase {
         let input = try Fixtures.imagePDF()
 
         let start = Date()
-        let estimate = await estimator.estimate(input, preset: .balanced)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertLessThan(elapsed, 1.0, "estimate took \(elapsed)s — real per-file analysis should return promptly")
@@ -80,7 +81,8 @@ final class EstimatorTests: XCTestCase {
         let estimator = CompressEstimator(timeBudget: 0.5)
         let input = try Fixtures.bornDigitalPDF()
 
-        let estimate = await estimator.estimate(input, preset: .balanced)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
 
         XCTAssertFalse(estimate.isFallback)
     }
@@ -91,7 +93,8 @@ final class EstimatorTests: XCTestCase {
         let input = try Fixtures.imagePDF()
 
         let start = Date()
-        let estimate = await estimator.estimate(input, preset: .balanced)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertLessThan(elapsed, 1.0, "the time box should return well before the injected 2s delay")
@@ -103,7 +106,8 @@ final class EstimatorTests: XCTestCase {
         let estimator = CompressEstimator(analyser: FailingAnalyser(), timeBudget: 0.5)
         let input = try Fixtures.imagePDF()
 
-        let estimate = await estimator.estimate(input, preset: .smallestSize)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.smallestSize])
 
         XCTAssertTrue(estimate.isFallback)
         XCTAssertGreaterThan(estimate.predictedBytes, 0)
@@ -135,7 +139,8 @@ final class EstimatorTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("does-not-exist-\(UUID().uuidString).pdf")
 
-        let estimate = await estimator.estimate(missing, preset: .balanced)
+        let analysis = await estimator.analyse(missing)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
 
         XCTAssertTrue(estimate.isFallback)
     }

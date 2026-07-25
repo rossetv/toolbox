@@ -52,11 +52,6 @@ struct CompressEstimator {
         let estimates: [CompressPreset: SizeEstimate]
     }
 
-    func estimate(_ input: URL, preset: CompressPreset) async -> SizeEstimate {
-        await analyse(input).estimates[preset] ?? Self.fallbackEstimate(
-            inputSize: Self.fileSize(input), preset: preset)
-    }
-
     /// Predictions for EVERY preset, from a single analysis pass.
     ///
     /// The costly part is inspecting the document (page count + content classification); the
