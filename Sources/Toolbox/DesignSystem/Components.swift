@@ -560,12 +560,7 @@ struct FileRow: View {
             // The name column absorbs the squeeze instead (lineLimit + middle truncation).
             .fixedSize()
         case .error(let message):
-            Label {
-                Text(message).themeFont(.micro).lineLimit(1)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-            }
-            .foregroundStyle(.red)
+            errorLabel(message)
         }
     }
 
@@ -579,15 +574,19 @@ struct FileRow: View {
         case .link(let title):
             LinkButton(title: title) { onLeadTap?() }
         case .error(let message):
-            Label {
-                Text(message).themeFont(.micro).lineLimit(1)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-            }
-            .foregroundStyle(.red)
+            errorLabel(message)
         case nil:
             EmptyView()
         }
+    }
+
+    private func errorLabel(_ message: String) -> some View {
+        Label {
+            Text(message).themeFont(.micro).lineLimit(1)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+        }
+        .foregroundStyle(.red)
     }
 
     /// "Heavy compression ⌄" — neutral tag + affordance that it opens something (spec R8).
