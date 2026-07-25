@@ -63,6 +63,12 @@ struct CompressView: View {
             return true
         }
         .overlay { dropHighlight }
+        // A popover left open when a run starts must not silently swallow "Use this" as a
+        // no-op mid-run (R9): dismiss it the moment the run begins, matching the disable
+        // convention used elsewhere for `model.isRunning`.
+        .onChange(of: model.isRunning) { _, isRunning in
+            if isRunning { heavyPopoverJobID = nil }
+        }
     }
 
     // MARK: sections
@@ -105,7 +111,10 @@ struct CompressView: View {
                                 status: status(for: job),
                                 onRemove: canRemove(job) ? { model.remove(job) } : nil,
                                 onOpen: { open(job) },
-                                onHeavyTap: { heavyPopoverJobID = job.id },
+                                onHeavyTap: {
+                                    guard !model.isRunning else { return }
+                                    heavyPopoverJobID = job.id
+                                },
                                 heavyCapsuleTitle: model.versions(for: job)?.capsuleTitle ?? "Heavy compression",
                                 heavyPopoverPresented: isShowingHeavyPopover(for: job.id),
                                 heavyPopoverContent: { AnyView(heavyPopover(for: job)) },
