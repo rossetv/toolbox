@@ -125,9 +125,10 @@ struct CompressView: View {
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {
                     SectionLabel("Quality")
-                    // All five refuse-while-running sites — this selector, "+ Add", "Clear
+                    // Five of the six refuse-while-running sites — this selector, "+ Add", "Clear
                     // finished", `outputFolderRow` and the drop guard — key on `model.isRunning`,
-                    // which now spans BOTH run phases: unchanged, deliberately (R9).
+                    // which now spans BOTH run phases: unchanged, deliberately (R9). The sixth,
+                    // `useVersion(_:for:)`, refuses in the model instead of being disabled here.
                     SegmentedPreset(options: presetOptions,
                                     selection: presetSelection,
                                     isEnabled: !model.isRunning)
