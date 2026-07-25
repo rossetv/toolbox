@@ -448,6 +448,54 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.isRunning }
     }
 
+    /// The symmetric guard: `compress()` must refuse while a switch's re-run is in flight, not just
+    /// while `isRunning` is true — otherwise phase 2's promote would race the very shipped path an
+    /// outstanding switch is still rewriting, and reservations would be handed out for paths that
+    /// are transiently absent mid-swap (R9).
+    func testCompressIsRefusedWhileASwitchIsInFlight() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let runnerUpURL = try XCTUnwrap(job.alternateURL)
+        // Vanish the runner-up so the switch falls through to `rerunForSwitch` and hits the engine,
+        // and freeze that re-run mid-flight so `isSwitchRerunning` stays populated.
+        try FileManager.default.removeItem(at: runnerUpURL)
+        let gate = Gate()
+        env.stub.gate = gate
+        let callsBefore = env.stub.callCount
+
+        async let switching: Void = model.switchVersion(for: job)
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        XCTAssertTrue(model.isSwitchRerunning.contains(job.id))
+        XCTAssertFalse(model.isRunning, "the switch's re-run, not a compress run, is in flight")
+
+        // An armed/queued row present alongside the in-flight switch.
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        XCTAssertFalse(model.canCompress, "the footer button must disable, not silently no-op")
+
+        model.compress()
+        XCTAssertFalse(model.isRunning, "compress() must not start a run while a switch is in flight")
+        XCTAssertEqual(env.stub.callCount, callsBefore + 1,
+                       "the engine must not be invoked by the refused compress() call")
+
+        await gate.open()
+        _ = await switching
+        try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
+
+        // Now that the switch has landed, compress() must work again.
+        XCTAssertTrue(model.canCompress)
+        let callsAfterSwitch = env.stub.callCount
+        model.compress()
+        try await waitUntil(timeout: 5) { model.isRunning }
+        try await waitUntil(timeout: 5) { env.stub.callCount > callsAfterSwitch }
+    }
+
     /// If the runner-up vanished, the switch re-runs the job, but the *final* swap back into the
     /// switched state can still fail (store contract: a throw means `shipped` is unchanged). That
     /// must not be recorded as a switch — the row must stay canonical (heavy still shipped).

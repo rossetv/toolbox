@@ -294,7 +294,9 @@ final class CompressViewModel: ObservableObject {
         }.count
     }
 
-    var canCompress: Bool { engine != nil && !isRunning && (hasQueuedWork || armedCount > 0) }
+    var canCompress: Bool {
+        engine != nil && !isRunning && isSwitchRerunning.isEmpty && (hasQueuedWork || armedCount > 0)
+    }
 
     func add(_ urls: [URL]) {
         // Gated on `isRunning`: `compress()` snapshots `queue.jobs` and reserves an output name for
@@ -365,7 +367,10 @@ final class CompressViewModel: ObservableObject {
     }
 
     func compress() {
-        guard let engine, !isRunning else { return }
+        // Also refused while a switch is in flight: `switchVersions`'s promote is still rewriting
+        // the shipped path an outstanding switch owns, and a fresh run here would hand out cache
+        // reservations for paths that are transiently absent mid-swap (R9).
+        guard let engine, !isRunning, isSwitchRerunning.isEmpty else { return }
         let chosen = preset
         let folder = outputFolder
         // Allocate every output name up front, serially, on this thread — BEFORE the concurrent
