@@ -772,10 +772,13 @@ final class CompressViewModel: ObservableObject {
                 display.state = .failed(failure)
             } else if let fraction = recompressProgress[job.id] {
                 display.state = .running(fraction)
-            } else if isSwitchRerunning.contains(job.id) {
+            } else if let fraction = rerunProgress[job.id] {
                 // R10 re-run overlay: the queue still reports the job `.done`, but the switch is
-                // re-computing it, so the row shows progress until the re-run lands.
-                display.state = .running(rerunProgress[job.id] ?? 0)
+                // re-computing it, so the row shows progress until the re-run lands. Only the
+                // genuine engine re-run populates `rerunProgress` (set by `rerunForSwitch`); a
+                // plain instant swap only sets `isSwitchRerunning` as a re-entrancy guard and must
+                // keep rendering the row's normal `.done`/`.doneHeavy` state throughout (R4/R7).
+                display.state = .running(fraction)
             } else if analysingIDs.contains(job.id), isStillQueued(job) {
                 display.state = .analysing
             }
@@ -937,9 +940,10 @@ final class CompressViewModel: ObservableObject {
         guard !isRunning else { return }
         // Re-entrancy guard: a second tap (either slot, or the popover's "Use this") before the
         // first switch lands would otherwise interleave two swaps on the same paths off-main-actor.
-        // Reuses `isSwitchRerunning` — the set already drives the row's busy overlay in
-        // `publishJobs()` — rather than adding a second set for the same "this row is mid-switch"
-        // fact. Must be checked and set in this synchronous prefix, before the first `await` below.
+        // Reuses `isSwitchRerunning` for membership only — a plain instant swap never touches
+        // `rerunProgress`, so `publishJobs()` keeps rendering the row's normal `.done`/`.doneHeavy`
+        // state; only `rerunForSwitch`'s genuine engine re-run overlays the busy `.running` state
+        // (R4/R7). Must be checked and set in this synchronous prefix, before the first `await`.
         guard !isSwitchRerunning.contains(job.id) else { return }
         guard let row = versions(for: job),
               let shipped = row.shipped,

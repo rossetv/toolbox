@@ -258,6 +258,41 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
     }
 
+    /// A plain instant swap (the parked file still exists — no engine re-run) must render the row
+    /// as finished throughout, never as a running job (R4/R7): `isSwitchRerunning` is only a
+    /// re-entrancy guard, and `publishJobs()` must not treat guard membership alone as "busy" —
+    /// only a genuine `rerunForSwitch` re-run (which populates `rerunProgress`) may do that.
+    /// There is no seam to gate `performSwap`'s GCD hop (`RunnerUpStoreTests` doesn't gate it
+    /// either), so this polls on a concurrent task instead of pausing mid-flight; `Task.yield()`
+    /// gives the scheduler real opportunities to interleave and observe a corrupted frame if one
+    /// existed.
+    func testPlainSwitchNeverExposesARunningRowOrDropsAllFinished() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+
+        let watchdog = Task { @MainActor () -> Bool in
+            var corrupted = false
+            while !Task.isCancelled {
+                if env.doneHeavyJob(model) == nil { corrupted = true }
+                if !model.allFinished { corrupted = true }
+                await Task.yield()
+            }
+            return corrupted
+        }
+
+        await model.switchVersion(for: job)
+
+        watchdog.cancel()
+        let corrupted = try await watchdog.value
+        XCTAssertFalse(corrupted,
+                       "a plain swap must keep the row .done/.doneHeavy and allFinished true throughout")
+    }
+
     /// `capsuleTitle` drives the row's capsule label; it must flip with the shipped version and use
     /// the popover's own vocabulary for the parked version — "Normal compression" when the runner-up
     /// is a real gs output, matching the label `VersionsPopover.label(_:slot:)` gives the parked
