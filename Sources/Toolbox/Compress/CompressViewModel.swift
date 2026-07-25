@@ -972,8 +972,6 @@ final class CompressViewModel: ObservableObject {
     /// The popover's switch, and its "Use this" per card. Instant when the parked file still
     /// exists; if the RUNNER-UP has vanished, honestly re-runs the job and applies the requested
     /// switch on completion (R10).
-    func switchVersion(for job: ToolJob) async { await useVersion(.runnerUp, for: job) }
-
     func useVersion(_ slot: VersionSlot, for job: ToolJob) async {
         // R9's sixth mutating control: a row can still read `.doneHeavy` between `compress()`
         // starting and phase 2 reaching it, so without this guard a switch here could start a
