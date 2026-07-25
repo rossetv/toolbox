@@ -69,7 +69,7 @@ fixed.
   `→ ≈<predicted>` (or `→ may not shrink`, R16), and an accent caption appended to the meta
   line: "will recompress at <preset title>" ("will try <preset title>" for noGain rows). The
   armed style is additive — nothing reads as lost.
-- **R3 — Reversibility.** Re-selecting a preset that matches a row's shipped version disarms it
+- **R3 — Reversibility.** Re-selecting a preset that matches the row's preset (R1) disarms it
   instantly; when no row is armed the UI is exactly the step-1 finished state. No state survives
   disarming except the futile-attempt record (R6).
 - **R4 — Banner and footer in the armed state.** While ≥1 row is armed: the success banner is
@@ -210,8 +210,8 @@ design review 2026-07-25), each reading the named files first-hand:
   `testLaterBatchDoesNotRewriteAFinishedRowsPreset` pins it.
 - `wantsMRC = classification == .scanColour && preset != .maximumQuality` — Maximum quality is
   always plain gs; the calibrated ratio cannot cross that boundary.
-- `CompressEstimator` models gs only (flat per-content-type reductions) — uncalibrated it
-  predicts a heavy row's recompression *grows* the file ~4×.
+- `CompressEstimator` models gs only (per-content-type base reductions, payload-ratio-scaled
+  for scans) — uncalibrated it predicts a heavy row's recompression *grows* the file ~4×.
 - `RunnerUpStore` is session-only (swept at launch, `removeAllOnDisk` at quit) and its
   `switchVersions` implements the park/promote/restore contract R12 reuses.
 - `FileRow` draws the capsule only in `.doneHeavy`; `HeavyCompressionPopover` is 340 pt, two
@@ -242,3 +242,5 @@ design review 2026-07-25), each reading the named files first-hand:
 2 major (R16 one-directional carve-out, R1 noGain preset undefined), 7 minor (R15 title family, R4/R5 mixed+upgrade banner, R7 cross-ref, dangling D4 citation, unnamed prior specs, unverifiable mockup URL, false .failed parenthetical). All fixed this round. Lesson-candidates: resolve every D/R pointer; audit carve-outs both directions; define rules for outcome shapes that ship nothing; capture visual contracts in-repo.
 ## Round 2 — 2026-07-25 — SHIP pending certify (spec-reviewer, Fable 5, incremental)
 Both majors verified fixed; 7 minors verified fixed; 3 new minors (R1 gloss vs operative clause, R4 sum membership, R16 per-row eligibility phrasing) fixed this round. Lesson-candidates: check a gloss against operative clauses for every state history; state aggregate membership when rows can be non-numeric; phrase joint eligibility per-row.
+## Round 3 — 2026-07-25 — SHIP (spec-reviewer, Fable 5, full certify)
+All evidence bullets code-verified; cross-refs resolve; D1-D6 fidelity confirmed. 2 wording minors (R3 gloss -> "row's preset (R1)", estimator parenthetical corrected) fixed this round. Lesson-candidates: sweep sibling glosses over the same state machine when fixing one; evidence parentheticals must match the code's formula.
