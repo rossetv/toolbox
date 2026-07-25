@@ -573,6 +573,46 @@ final class CompressViewModelTests: XCTestCase {
         let versions = try XCTUnwrap(model.versions(for: settled))
         XCTAssertTrue(versions.shipped?.variant == .mrc,
                       "the failed post-regeneration switch must leave the row canonical (heavy shipped)")
+        // The failed switch is an explicit button press that must not fail silently (R12) — the
+        // row keeps a note explaining it, exactly like the instant-swap path's own failure message.
+        XCTAssertEqual(model.recompressErrors[job.id],
+                       "Switch failed — kept your \(model.preset.title) version. Try again.")
+    }
+
+    /// A re-run switch that DOES land must clear any stale failure note left by a previous
+    /// attempt on the same row — the re-run tail must clear `recompressErrors` exactly like the
+    /// instant-swap success path already does (32380c4), never leaving a "try again" note beside
+    /// a switch that just succeeded.
+    func testRerunSwitchClearsAStaleRecompressErrorOnSuccess() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        try await env.runToDone()
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let runnerUpURL = try XCTUnwrap(job.alternateURL)
+        try FileManager.default.removeItem(at: runnerUpURL)
+
+        // First attempt: fail the post-regeneration swap exactly as the sibling test above, so a
+        // failure note is recorded.
+        let gate = Gate()
+        env.stub.gate = gate
+        let callsBefore = env.stub.callCount
+        await model.useVersion(.runnerUp, for: job)
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        try FileManager.default.removeItem(at: runnerUpURL)
+        await gate.open()
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(job.id) }
+        XCTAssertNotNil(model.recompressErrors[job.id], "the failed attempt leaves its note")
+
+        // Second attempt: the failed attempt deleted the runner-up itself (to force the failure
+        // above), so it is still gone — this still re-runs, but nothing deletes the freshly
+        // regenerated file this time, so the switch lands.
+        let settled = try XCTUnwrap(env.doneHeavyJob(model))
+        await model.useVersion(.runnerUp, for: settled)
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(settled.id) }
+
+        XCTAssertNil(model.recompressErrors[settled.id],
+                     "a switch that lands must clear the previous attempt's failure note")
     }
 
     /// A second batch at a different preset must not rewrite what an ALREADY-FINISHED row was
