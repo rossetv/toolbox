@@ -1096,6 +1096,109 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertNotNil(model.versions(for: job)?.shipped)
     }
 
+    // MARK: one run, two phases (R5/R9)
+
+    /// R5: newly added files and armed rows form ONE run behind one button. The counts the button
+    /// is titled from must see both sets.
+    func testMixedRunCountsBothSets() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        XCTAssertEqual(model.pendingCount, 0)
+        XCTAssertEqual(model.armedCount, 0)
+
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        XCTAssertEqual(model.pendingCount, 1, "only queued: the button reads Compress")
+        XCTAssertEqual(model.armedCount, 0)
+
+        model.preset = .smallestSize
+        XCTAssertEqual(model.pendingCount, 1)
+        XCTAssertEqual(model.armedCount, 1, "both sets: the button reads Compress K · Recompress M")
+        XCTAssertTrue(model.canCompress)
+    }
+
+    /// The armed set alone is enough to arm the button — with nothing queued, "Recompress N PDFs"
+    /// must still be pressable.
+    func testArmedRowsAloneEnableTheButton() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        XCTAssertFalse(model.canCompress)
+
+        model.preset = .smallestSize
+        XCTAssertTrue(model.canCompress)
+    }
+
+    /// Risk 2's resolution, asserted: the recompress phase does not start until the queue phase is
+    /// done, so the two mechanisms never run at once and the batch width is never doubled.
+    func testTheRecompressPhaseWaitsForTheQueuePhase() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        let callsBefore = env.stub.callCount
+
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        // The queued job is suspended in the engine. The armed row must not have started.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(env.stub.callCount, callsBefore + 1,
+                       "the armed row must wait for the queue phase to finish")
+
+        await gate.open()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+        XCTAssertEqual(env.stub.callCount, callsBefore + 2)
+    }
+
+    /// R9's progress bar is scoped to THIS run's rows: a recompress of one row among several
+    /// finished ones opens at zero, not at "already mostly done".
+    func testRunProgressIsScopedToTheRunsOwnRows() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input, try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        model.compress()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        let armed = model.armedCount
+        model.compress()
+        try await waitUntil(timeout: 5) { model.isRunning }
+
+        XCTAssertEqual(model.runTotalCount, armed, "the denominator is this run's rows only")
+        XCTAssertEqual(model.runFinishedCount, 0, "nothing in this run has finished yet")
+        XCTAssertLessThan(model.runProgress, 1.0)
+
+        await gate.open()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+    }
+
     // MARK: helpers
 
     private func fileSize(_ url: URL) throws -> Int {
@@ -1220,19 +1323,22 @@ final class CompressViewModelTests: XCTestCase {
     }
 
     /// A one-shot latch: `wait()` suspends until `open()` is called (or returns at once if already open).
+    /// A latch, not a handoff: phase 2 runs up to `performanceCoreCount` recompresses at once, so
+    /// two engine calls can be suspended here simultaneously. A single stored continuation would
+    /// let the second waiter overwrite (and orphan) the first.
     private actor Gate {
         private var opened = false
-        private var continuation: CheckedContinuation<Void, Never>?
+        private var continuations: [CheckedContinuation<Void, Never>] = []
 
         func wait() async {
             if opened { return }
-            await withCheckedContinuation { continuation = $0 }
+            await withCheckedContinuation { continuations.append($0) }
         }
 
         func open() {
             opened = true
-            continuation?.resume()
-            continuation = nil
+            for continuation in continuations { continuation.resume() }
+            continuations = []
         }
     }
 

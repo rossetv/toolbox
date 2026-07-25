@@ -129,6 +129,27 @@ final class CompressViewModel: ObservableObject {
     /// first writer lives.
     private var runCompleted: Set<ToolJob.ID> = []
 
+    /// The rows of the run currently in flight — queued and armed alike. The progress bar's
+    /// denominator: a recompress of 2 rows among 5 finished ones must open at 0%, not 60%.
+    @Published private(set) var runIDs: [ToolJob.ID] = []
+
+    /// This run's QUEUED rows. Deliberately NOT `runIDs`, which also holds the armed rows: an
+    /// armed row is `.done` from beginning to end (R8), so a state-driven sweep over `runIDs`
+    /// would count every armed row as finished on the first emission after the run started — a
+    /// 1-queued + 1-armed run would open its bar at 50%, the exact failure `runIDs` exists to
+    /// prevent. Armed rows are recorded by `recompress` itself, the only thing that knows when
+    /// one has genuinely finished.
+    private var runQueuedIDs: Set<ToolJob.ID> = []
+
+    /// What the run in flight is made of, captured at its start. Arming is suppressed for the
+    /// duration of a run, so the composition cannot be re-derived once it is under way — and the
+    /// progress bar's verb ("Compressing" vs "Recompressing") depends on it.
+    struct RunComposition: Equatable {
+        let queued: Int
+        let armed: Int
+    }
+    @Published private(set) var runComposition = RunComposition(queued: 0, armed: 0)
+
     /// The queue's own jobs, unmodified — `jobs` above is derived from this plus the local
     /// estimate/analysing state below.
     private var rawJobs: [ToolJob] = []
@@ -181,6 +202,7 @@ final class CompressViewModel: ObservableObject {
             guard let self else { return }
             self.rawJobs = jobs
             self.ingestCompletedJobs()
+            self.recordTerminalRunRows()
             self.pruneStaleEstimateState()
             self.publishJobs()
         }
@@ -232,11 +254,47 @@ final class CompressViewModel: ObservableObject {
         }
     }
 
+    /// Every QUEUED row of this run that has reached a terminal state. Separate from
+    /// `ingestCompletedJobs` on purpose: that path is outcome-driven and `.failed` carries no
+    /// outcome, so a failure would never be counted and the bar would stall for ever one row
+    /// short of 1. Membership is also what keeps rows finished by an EARLIER batch out — they are
+    /// `.done` too, and counting them would push `runFinishedCount` past `runIDs.count`.
+    private func recordTerminalRunRows() {
+        for job in rawJobs where runQueuedIDs.contains(job.id) {
+            switch job.state {
+            case .done, .failed: runCompleted.insert(job.id)
+            case .queued, .analysing, .running: continue
+            }
+        }
+    }
+
     var hasQueuedWork: Bool {
         jobs.contains { if case .queued = $0.state { return true } else { return false } }
     }
 
-    var canCompress: Bool { engine != nil && !isRunning && hasQueuedWork }
+    var runTotalCount: Int { runIDs.count }
+    var runFinishedCount: Int { runCompleted.count }
+
+    var runProgress: Double {
+        guard !runIDs.isEmpty else { return 0 }
+        var total = Double(runCompleted.count)
+        for job in jobs where runIDs.contains(job.id) && !runCompleted.contains(job.id) {
+            if case .running(let fraction) = job.state { total += fraction }
+        }
+        return total / Double(runIDs.count)
+    }
+
+    /// Rows waiting to be compressed for the first time (R5's K).
+    var pendingCount: Int {
+        jobs.filter { job in
+            switch job.state {
+            case .queued, .analysing: return true
+            case .running, .done, .failed: return false
+            }
+        }.count
+    }
+
+    var canCompress: Bool { engine != nil && !isRunning && (hasQueuedWork || armedCount > 0) }
 
     func add(_ urls: [URL]) {
         // Gated on `isRunning`: `compress()` snapshots `queue.jobs` and reserves an output name for
@@ -329,7 +387,10 @@ final class CompressViewModel: ObservableObject {
             // batch must not hand either to a new same-basename job.)
             if isStillQueued(job) { pendingPresets[job.id] = chosen }
         }
-        let plans: [RecompressPlan] = armedJobs.map { job in
+        // `armedJobs` is read BEFORE `isRunning` goes true: arming is suppressed for the duration
+        // of a run (R9), so the set must be captured while it still exists.
+        let armed = armedJobs
+        let plans: [RecompressPlan] = armed.map { job in
             let shipped = versionStore.versions(for: job.id)?.shipped
             // R11: the row's own result path, even if "Save to" changed since. A row that shipped
             // nothing (no-gain) has none, so it takes the name the loop above ALREADY allocated for
@@ -347,14 +408,21 @@ final class CompressViewModel: ObservableObject {
                 parked: versionStore.reservePreviousURL(for: job.url, reserving: &reserved),
                 runnerUp: store.reserveURL(for: job.url, reserving: &reserved))
         }
-        runReservations = alternates
+        let queuedIDs = queue.jobs.filter(isStillQueued).map(\.id)
+        runIDs = queuedIDs + plans.map(\.id)
+        // The queued subset is tracked separately: see `runQueuedIDs`. An armed row is `.done`
+        // throughout, so only `recompress` may mark one finished.
+        runQueuedIDs = Set(queuedIDs)
+        runComposition = RunComposition(queued: queuedIDs.count, armed: plans.count)
         // Per-run state, cleared at the START of the run: the messages of the run before are stale
         // the moment a new one begins, and the cancel flag must not outlive the run that set it.
         recompressErrors = [:]
         runCompleted = []
         runCancelled = false
+        runReservations = alternates
         isRunning = true
         Task {
+            // Phase 1 — the queued rows, through the shared queue exactly as before.
             await queue.run { job, report in
                 // A missing reservation means `add` let a file into the batch after the up-front
                 // allocation pass — fail this one job loudly rather than silently allocating a
@@ -382,10 +450,19 @@ final class CompressViewModel: ObservableObject {
                     return JobResult(outcome, outputURL: output, mrcReport: capturedReport)
                 }
             }
-            // The batch is over: its in-flight reservations are settled (done-heavy runner-ups now
-            // live on the job's `alternateURL`), so nothing here is `cancel`'s to discard anymore.
-            runReservations = [:]
+            // Phase 2 — the armed rows, through the engine directly. SERIALISED after phase 1, not
+            // alongside it: running both mechanisms at once would put 2 × the batch width of gs
+            // processes on the machine, and the spec bounds the total to one normal batch. One
+            // button, one bar, one cancel — and the bound holds by construction (Risk 2).
+            // `runRecompressPhase` opens with the `runCancelled` guard, which is what makes a
+            // cancel landing during phase 1 stop the run here instead of starting phase 2.
             await runRecompressPhase(plans, engine: engine)
+            // The batch is over: its in-flight reservations are settled (every committed runner-up
+            // is now owned by `versionStore`), so nothing here is `cancel`'s to discard any more.
+            runReservations = [:]
+            runIDs = []
+            runQueuedIDs = []
+            runComposition = RunComposition(queued: 0, armed: 0)
             isRunning = false
         }
     }
@@ -783,9 +860,7 @@ final class CompressViewModel: ObservableObject {
             confident = true
             total += (row.shipped?.bytes ?? row.originalBytes) - predicted
         }
-        // `pendingCount` lands on the model in Task 10; until then the same predicate, inline.
-        return ArmedSummary(armedCount: armed.count,
-                            queuedCount: jobs.filter { isStillQueued($0) }.count,
+        return ArmedSummary(armedCount: armed.count, queuedCount: pendingCount,
                             extraSaving: confident ? total : nil)
     }
 
