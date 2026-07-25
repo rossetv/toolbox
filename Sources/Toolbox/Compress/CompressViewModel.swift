@@ -707,20 +707,10 @@ final class CompressViewModel: ObservableObject {
             // nothing to park either way. `plan.output` is the row's existing result path when one
             // exists (R11), so the fresh result simply lands there directly — the recompress
             // succeeded and there is no lie to tell (R12).
-            // Off the main actor for the same reason `promote` is, though this one is a rename by
-            // construction — `plan.temp` is allocated in `plan.output`'s own directory, so it never
-            // crosses a volume and never degrades to a copy.
-            let (temp, output) = (plan.temp, plan.output)
-            try await withCheckedThrowingContinuation { continuation in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    do {
-                        try FileManager.default.moveItem(at: temp, to: output)
-                        continuation.resume()
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
+            // Inline on the main actor, deliberately unlike `promote`: `plan.temp` is allocated in
+            // `plan.output`'s own directory, so this is a same-volume rename, not a copy — a
+            // metadata-only operation, not the payload I/O `promote`'s off-actor hop exists for.
+            try FileManager.default.moveItem(at: plan.temp, to: plan.output)
             versionStore.setShipped(FileVersion(url: plan.output, bytes: shippedBytes,
                                                 preset: plan.target, variant: variant),
                                     for: plan.id)
