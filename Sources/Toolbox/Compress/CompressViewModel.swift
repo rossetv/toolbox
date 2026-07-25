@@ -901,6 +901,11 @@ final class CompressViewModel: ObservableObject {
     func switchVersion(for job: ToolJob) { useVersion(.runnerUp, for: job) }
 
     func useVersion(_ slot: VersionSlot, for job: ToolJob) {
+        // R9's sixth mutating control: a row can still read `.doneHeavy` between `compress()`
+        // starting and phase 2 reaching it, so without this guard a switch here could start a
+        // second engine run against the same path phase 2's commit is about to drive through
+        // `promote` — unserialised, last write wins.
+        guard !isRunning else { return }
         guard let row = versions(for: job),
               let shipped = row.shipped,
               let parked = slot == .runnerUp ? row.runnerUp : row.previous else { return }

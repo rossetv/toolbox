@@ -375,6 +375,47 @@ final class CompressViewModelTests: XCTestCase {
                        "the runner-up slot must hold the regenerated heavy version's bytes")
     }
 
+    /// R9's sixth mutating control: an armed row can still read `.doneHeavy` between `compress()`
+    /// starting and phase 2 reaching it, so without the `isRunning` guard a switch here would race
+    /// a second engine run against the in-flight run's own commit. Assert `useVersion` is a no-op
+    /// for the whole run.
+    func testUseVersionIsIgnoredWhileARunIsInFlight() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let runnerUpURL = try XCTUnwrap(job.alternateURL)
+        // Vanish the runner-up so a permitted switch would fall through to `rerunForSwitch` and
+        // hit the engine — the exact second run the guard must prevent.
+        try FileManager.default.removeItem(at: runnerUpURL)
+
+        // A second row to occupy a genuinely in-flight run, gated so it stays mid-flight.
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        let callsBefore = env.stub.callCount
+
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        XCTAssertTrue(model.isRunning)
+
+        model.useVersion(.runnerUp, for: job)
+        XCTAssertEqual(env.stub.callCount, callsBefore + 1,
+                       "useVersion must not start a second engine run while a run is in flight")
+        XCTAssertFalse(model.isSwitchRerunning.contains(job.id))
+
+        await gate.open()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+    }
+
     /// If the runner-up vanished, the switch re-runs the job, but the *final* swap back into the
     /// switched state can still fail (store contract: a throw means `shipped` is unchanged). That
     /// must not be recorded as a switch — the row must stay canonical (heavy still shipped).
