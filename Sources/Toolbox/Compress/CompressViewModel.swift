@@ -597,8 +597,9 @@ final class CompressViewModel: ObservableObject {
     /// commit, which touches only its own id and its own pre-reserved paths; and `cancel()`, whose
     /// discard loop walks `runReservations` — the batch's up-front runner-up allocation — and so
     /// never reaches the separate reservation a plan carries. R9's cancel semantics are unchanged
-    /// too: the swap runs detached and does not inherit cancellation, so one already begun runs to
-    /// completion rather than tearing, exactly as a blocked main actor used to guarantee.
+    /// too: the swap runs on a GCD queue bridged with a checked continuation, which does not inherit
+    /// cancellation, so one already begun runs to completion rather than tearing, exactly as a
+    /// blocked main actor used to guarantee.
     private func commit(_ outcome: JobOutcome, plan: RecompressPlan,
                         report: MRCDocumentReport?) async throws {
         let fm = FileManager.default
@@ -672,9 +673,16 @@ final class CompressViewModel: ObservableObject {
             // construction — `plan.temp` is allocated in `plan.output`'s own directory, so it never
             // crosses a volume and never degrades to a copy.
             let (temp, output) = (plan.temp, plan.output)
-            try await Task.detached(priority: .userInitiated) {
-                try FileManager.default.moveItem(at: temp, to: output)
-            }.value
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        try FileManager.default.moveItem(at: temp, to: output)
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
             versionStore.setShipped(FileVersion(url: plan.output, bytes: shippedBytes,
                                                 preset: plan.target, variant: variant),
                                     for: plan.id)
@@ -914,9 +922,9 @@ final class CompressViewModel: ObservableObject {
     /// The popover's switch, and its "Use this" per card. Instant when the parked file still
     /// exists; if the RUNNER-UP has vanished, honestly re-runs the job and applies the requested
     /// switch on completion (R10).
-    func switchVersion(for job: ToolJob) { useVersion(.runnerUp, for: job) }
+    func switchVersion(for job: ToolJob) async { await useVersion(.runnerUp, for: job) }
 
-    func useVersion(_ slot: VersionSlot, for job: ToolJob) {
+    func useVersion(_ slot: VersionSlot, for job: ToolJob) async {
         // R9's sixth mutating control: a row can still read `.doneHeavy` between `compress()`
         // starting and phase 2 reaching it, so without this guard a switch here could start a
         // second engine run against the same path phase 2's commit is about to drive through
@@ -938,7 +946,7 @@ final class CompressViewModel: ObservableObject {
 
         if FileManager.default.fileExists(atPath: parked.url.path) {
             do {
-                try store.switchVersions(shipped: shipped.url, runnerUp: parked.url)
+                try await store.switchVersions(shipped: shipped.url, runnerUp: parked.url)
                 versionStore.swapShipped(with: slot, for: job.id)
                 publishJobs()   // no state moved, but the row's badge/capsule read from the store
                 return
@@ -1044,7 +1052,7 @@ final class CompressViewModel: ObservableObject {
                         rerunReports[id] = capturedReport
                         if !wantHeavy {
                             do {
-                                try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+                                try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
                                 versionStore.swapShipped(with: .runnerUp, for: id)
                             } catch let stranded as RunnerUpStore.SwitchError {
                                 // The regenerated winner is parked under a hidden name that

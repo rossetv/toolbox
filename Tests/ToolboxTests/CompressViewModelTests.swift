@@ -208,7 +208,7 @@ final class CompressViewModelTests: XCTestCase {
         // The shipped file starts as the heavy version (our stub wrote `heavyBytes` there).
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         var versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertFalse(versions.shipped?.variant == .mrc, "after a switch the row ships the normal version")
@@ -219,7 +219,7 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.normalBytes,
                        "the shipped file now holds the normal version's content")
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertTrue(versions.shipped?.variant == .mrc, "switching again restores the heavy version")
@@ -242,13 +242,13 @@ final class CompressViewModelTests: XCTestCase {
         var versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.capsuleTitle, "Heavy compression")
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.capsuleTitle, "Normal compression",
                        "the parked version is a real gs output, not the untouched input")
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.capsuleTitle, "Heavy compression",
@@ -267,7 +267,7 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
         let versions = try XCTUnwrap(model.versions(for: switchedJob))
         XCTAssertFalse(versions.shipped?.variant == .mrc)
@@ -291,7 +291,7 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(saved.after, HeavyEnv.heavyBytes,
                        "the heavy version ships by default, so it must be counted")
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         saved = try XCTUnwrap(model.displayedSizes(for: job))
         XCTAssertEqual(saved.after, HeavyEnv.normalBytes,
@@ -312,13 +312,13 @@ final class CompressViewModelTests: XCTestCase {
         var versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(try XCTUnwrap(versions.shipped?.bytes), HeavyEnv.heavyBytes)
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(try XCTUnwrap(versions.shipped?.bytes), HeavyEnv.normalBytes,
                        "after switching to normal, the badge must show the normal version's bytes")
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(try XCTUnwrap(versions.shipped?.bytes), HeavyEnv.heavyBytes,
@@ -345,7 +345,7 @@ final class CompressViewModelTests: XCTestCase {
         env.stub.gate = gate
         let callsBefore = env.stub.callCount
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         // Wait until the re-run has genuinely entered the engine (callCount bumped), then the row
         // must be in its running state and flagged as re-running.
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
@@ -407,7 +407,7 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
         XCTAssertTrue(model.isRunning)
 
-        model.useVersion(.runnerUp, for: job)
+        await model.useVersion(.runnerUp, for: job)
         XCTAssertEqual(env.stub.callCount, callsBefore + 1,
                        "useVersion must not start a second engine run while a run is in flight")
         XCTAssertFalse(model.isSwitchRerunning.contains(job.id))
@@ -440,7 +440,7 @@ final class CompressViewModelTests: XCTestCase {
         env.stub.gate = gate
         let callsBefore = env.stub.callCount
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
         // The stub has written both files and is now suspended on the gate — delete the runner-up
         // it just wrote before releasing it, so the switch that follows finds nothing to promote.
@@ -501,7 +501,7 @@ final class CompressViewModelTests: XCTestCase {
         try FileManager.default.removeItem(at: try XCTUnwrap(job.alternateURL))
         let callsBefore = env.stub.callCount
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
         try await waitUntil(timeout: 5) {
             env.stub.callCount > callsBefore && !model.isSwitchRerunning.contains(job.id)
         }
@@ -524,14 +524,14 @@ final class CompressViewModelTests: XCTestCase {
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         let shippedURL = try XCTUnwrap(job.resultURL)
-        model.switchVersion(for: job)                       // now shipping the normal version
+        await model.switchVersion(for: job)                       // now shipping the normal version
         job = try XCTUnwrap(env.doneHeavyJob(model))
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.normalBytes)
 
         try FileManager.default.removeItem(at: shippedURL)  // the user deletes it in Finder
         let callsBefore = env.stub.callCount
 
-        model.switchVersion(for: job)
+        await model.switchVersion(for: job)
 
         XCTAssertEqual(env.stub.callCount, callsBefore,
                        "a row whose delivered file is gone must not be re-run behind the user's back")
@@ -1501,7 +1501,7 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(try fileSize(deliveredURL), 700)
         let callsBefore = env.stub.callCount
 
-        model.useVersion(.previous, for: job)
+        await model.useVersion(.previous, for: job)
 
         job = try XCTUnwrap(model.jobs.first)
         row = try XCTUnwrap(model.versions(for: job))
@@ -1539,7 +1539,7 @@ final class CompressViewModelTests: XCTestCase {
         try FileManager.default.removeItem(at: previous)
         let callsBefore = env.stub.callCount
 
-        model.useVersion(.previous, for: job)
+        await model.useVersion(.previous, for: job)
 
         XCTAssertEqual(env.stub.callCount, callsBefore, "a vanished previous is never re-run")
         XCTAssertNil(model.versions(for: job)?.previous, "the slot is dropped, not left dangling")

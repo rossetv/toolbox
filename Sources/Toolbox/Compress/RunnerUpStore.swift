@@ -74,12 +74,31 @@ final class RunnerUpStore {
     /// park into `destination`; on failure to promote, restore the park back to `shipped`.
     /// `tempPrefix` keeps each caller's dot-temp idiom distinguishable in a crash-leftover sweep.
     ///
-    /// `nonisolated` and synchronous, so each caller decides which executor the moves run on: the
-    /// switch path calls it inline on the main actor (one click, one row, on an app that is idle by
-    /// `useVersion`'s `guard !isRunning`), while `promote` awaits it off the main actor because the
-    /// recompress commit runs it once per row inside phase 2's sliding window.
+    /// `nonisolated` and `async`: the blocking body runs on a GCD queue bridged with a checked
+    /// continuation (CODE_GUIDELINES §6.1's named shape — see `GhostscriptRunner.run`), never
+    /// inline on the caller's executor. Both `switchVersions` (the main actor, one click, one row,
+    /// on an app that is idle by `useVersion`'s `guard !isRunning`) and `promote` (the recompress
+    /// commit, once per row inside phase 2's sliding window) await it off whichever actor called.
     private nonisolated func performSwap(incoming: URL, shipped: URL, destination: URL,
-                                         tempPrefix: String) throws {
+                                         tempPrefix: String) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try self.performSwapBlocking(incoming: incoming, shipped: shipped,
+                                                 destination: destination, tempPrefix: tempPrefix)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// The straight-line blocking `FileManager` I/O — never called directly; always through
+    /// `performSwap`'s GCD bridge above, which keeps it off both the main actor and the
+    /// cooperative pool.
+    private nonisolated func performSwapBlocking(incoming: URL, shipped: URL, destination: URL,
+                                                  tempPrefix: String) throws {
         let fm = FileManager.default
         let temp = shipped.deletingLastPathComponent()
             .appendingPathComponent(".toolbox-\(tempPrefix)-\(UUID().uuidString).pdf")
@@ -123,8 +142,8 @@ final class RunnerUpStore {
     /// restored — it survives at the park path the error names, and nothing else will look for it.
     /// A successful switch never throws; if the demoted version cannot take the cache slot it is
     /// discarded, leaving the runner-up absent — callers already handle a missing runner-up.
-    func switchVersions(shipped: URL, runnerUp: URL) throws {
-        try performSwap(incoming: runnerUp, shipped: shipped, destination: runnerUp, tempPrefix: "swap")
+    func switchVersions(shipped: URL, runnerUp: URL) async throws {
+        try await performSwap(incoming: runnerUp, shipped: shipped, destination: runnerUp, tempPrefix: "swap")
     }
 
     /// The R12 recompress commit: park the currently-shipped file, promote `fresh` into its place,
@@ -159,14 +178,13 @@ final class RunnerUpStore {
     /// which is routinely a different volume, where `moveItem` silently degrades to a copy of the
     /// whole PDF. Run once per row through phase 2's sliding window on the main actor, that copy
     /// freezes the UI. The caller nevertheless AWAITS the transfer — a fire-and-forget swap would
-    /// leave the parked file's arrival racing the commit that records its slot. The work runs in a
-    /// detached task deliberately: it must not inherit cancellation, or a cancel landing mid-swap
-    /// would tear the three steps apart with the user's file in the dot-temp.
+    /// leave the parked file's arrival racing the commit that records its slot. `performSwap`'s
+    /// GCD-queue bridge deliberately does not inherit cancellation — a checked continuation never
+    /// does — so a cancel landing mid-swap cannot tear the three steps apart with the user's file
+    /// in the dot-temp.
     nonisolated func promote(fresh: URL, to shipped: URL, parking parked: URL) async throws {
-        try await Task.detached(priority: .userInitiated) { [self] in
-            try performSwap(incoming: fresh, shipped: shipped, destination: parked,
-                            tempPrefix: "promote")
-        }.value
+        try await performSwap(incoming: fresh, shipped: shipped, destination: parked,
+                              tempPrefix: "promote")
     }
 
     func discard(_ url: URL) {

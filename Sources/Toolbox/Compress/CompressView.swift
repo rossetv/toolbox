@@ -119,7 +119,7 @@ struct CompressView: View {
                                 heavyPopoverPresented: isShowingHeavyPopover(for: job.id),
                                 heavyPopoverContent: { AnyView(heavyPopover(for: job)) },
                                 lead: lead(for: job),
-                                onLeadTap: { model.useVersion(.previous, for: job) },
+                                onLeadTap: { Task { await model.useVersion(.previous, for: job) } },
                                 metaAccent: metaAccent(for: job))
                     }
                 }
@@ -150,7 +150,7 @@ struct CompressView: View {
                 // collection is untouched, so the panel never sees a shrinking collection).
                 onUse: { slot in
                     quickLookURL = nil
-                    model.useVersion(slot, for: job)
+                    Task { await model.useVersion(slot, for: job) }
                     heavyPopoverJobID = nil
                 },
                 onPreview: { url in

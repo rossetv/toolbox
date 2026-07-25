@@ -45,7 +45,7 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(urlB.lastPathComponent, "scan-runner-up-1.pdf")
     }
 
-    func testSwitchExchangesContents() throws {
+    func testSwitchExchangesContents() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -54,7 +54,7 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         try Data("runner-up-content".utf8).write(to: runnerUp)
 
-        try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+        try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
 
         XCTAssertEqual(try Data(contentsOf: shipped), Data("runner-up-content".utf8))
         XCTAssertEqual(try Data(contentsOf: runnerUp), Data("shipped-content".utf8))
@@ -62,7 +62,7 @@ final class RunnerUpStoreTests: XCTestCase {
 
     /// If promoting the runner-up fails, the parked shipped file must be restored — the user's
     /// output must survive every failure path.
-    func testSwitchRestoresOnFailure() throws {
+    func testSwitchRestoresOnFailure() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -71,7 +71,10 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         // No runner-up file written — the promote move must fail.
 
-        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+        do {
+            try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+            XCTFail("an absent runner-up must fail the switch")
+        } catch {}
         XCTAssertTrue(FileManager.default.fileExists(atPath: shipped.path))
         XCTAssertEqual(try Data(contentsOf: shipped), Data("shipped-content".utf8))
     }
@@ -80,7 +83,7 @@ final class RunnerUpStoreTests: XCTestCase {
     /// throw with the runner-up untouched. Promoting it into the vacant path would leave the cache
     /// slot empty while the row still claims two versions, which is how the caller ends up shipping
     /// one version under the other's label and byte count.
-    func testSwitchWithAbsentShippedThrowsAndLeavesTheRunnerUpInPlace() throws {
+    func testSwitchWithAbsentShippedThrowsAndLeavesTheRunnerUpInPlace() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -88,7 +91,10 @@ final class RunnerUpStoreTests: XCTestCase {
         let runnerUp = root.appendingPathComponent("runner-up.pdf")
         try Data("runner-up-content".utf8).write(to: runnerUp)
 
-        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+        do {
+            try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+            XCTFail("an absent shipped file must fail the switch")
+        } catch {}
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: shipped.path),
                        "a failed switch must not conjure the deleted file back")
@@ -102,7 +108,7 @@ final class RunnerUpStoreTests: XCTestCase {
     /// A promote that fails AFTER the shipped file was parked must restore it — via the
     /// documented `moveItem` path, since the shipped slot is empty at that moment. An absent
     /// runner-up forces exactly that sequence deterministically.
-    func testFailedPromoteRestoresTheShippedFile() throws {
+    func testFailedPromoteRestoresTheShippedFile() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -110,7 +116,10 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         let runnerUp = root.appendingPathComponent("runner-up.pdf")   // never written
 
-        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp)) { error in
+        do {
+            try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+            XCTFail("an absent runner-up must fail the promote")
+        } catch {
             XCTAssertFalse(error is RunnerUpStore.SwitchError,
                            "the restore succeeded, so the failure must surface as the promote's own error")
         }
@@ -129,7 +138,7 @@ final class RunnerUpStoreTests: XCTestCase {
     /// runner-up's directory while still permitting removal of existing ones — asymmetric in
     /// exactly the way needed: the promote (which removes the runner-up entry) succeeds, and only
     /// the demote (which creates a new entry there) fails.
-    func testDemoteFailureDoesNotThrowAndShippedHoldsNewContent() throws {
+    func testDemoteFailureDoesNotThrowAndShippedHoldsNewContent() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -148,7 +157,7 @@ final class RunnerUpStoreTests: XCTestCase {
         acl.waitUntilExit()
         XCTAssertEqual(acl.terminationStatus, 0, "setting up the ACL must succeed for the test to be meaningful")
 
-        XCTAssertNoThrow(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+        try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
 
         XCTAssertEqual(try Data(contentsOf: shipped), Data("runner-up-content".utf8))
 
