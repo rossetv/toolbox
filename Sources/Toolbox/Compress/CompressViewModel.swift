@@ -504,6 +504,10 @@ final class CompressViewModel: ObservableObject {
             runIDs = []
             runQueuedIDs = []
             runComposition = RunComposition(queued: 0, armed: 0)
+            // Matches the reset above: left uncleared here, `runCompleted` would keep the finished
+            // run's ids until the NEXT `compress()` zeroes it at its own start — a stale collection
+            // outliving the run it was scoped to.
+            runCompleted = []
             isRunning = false
         }
     }
