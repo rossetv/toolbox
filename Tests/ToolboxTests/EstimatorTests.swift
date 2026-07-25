@@ -121,7 +121,7 @@ final class EstimatorTests: XCTestCase {
 
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<(CompressEstimator.maxConcurrentEstimates * 4) {
-                group.addTask { _ = await estimator.estimateAll(input) }
+                group.addTask { _ = await estimator.analyse(input) }
             }
         }
 
@@ -138,5 +138,30 @@ final class EstimatorTests: XCTestCase {
         let estimate = await estimator.estimate(missing, preset: .balanced)
 
         XCTAssertTrue(estimate.isFallback)
+    }
+
+    /// The recompress prediction (R16) can only tell whether the engine path repeats if it knows
+    /// the row's classification, so a successful analysis must surface it alongside the estimates.
+    func testAnalysisSurfacesTheContentTypeAlongsideTheEstimates() async throws {
+        let estimator = CompressEstimator()
+        let input = try Fixtures.bornDigitalPDF()
+
+        let analysis = await estimator.analyse(input)
+
+        XCTAssertEqual(analysis.contentType, .bornDigital)
+        XCTAssertEqual(analysis.estimates.count, CompressPreset.allCases.count)
+    }
+
+    /// A failed or timed-out analysis has no classification to offer, and says so rather than
+    /// guessing — the prediction then falls back to the raw estimate.
+    func testAnalysisReportsNoContentTypeWhenAnalysisFails() async throws {
+        let estimator = CompressEstimator()
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("absent-\(UUID().uuidString).pdf")
+
+        let analysis = await estimator.analyse(missing)
+
+        XCTAssertNil(analysis.contentType)
+        XCTAssertTrue(analysis.estimates[.balanced]?.isFallback == true)
     }
 }

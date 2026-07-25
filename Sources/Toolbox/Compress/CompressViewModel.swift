@@ -66,8 +66,10 @@ final class CompressViewModel: ObservableObject {
     /// The queue's own jobs, unmodified — `jobs` above is derived from this plus the local
     /// estimate/analysing state below.
     private var rawJobs: [ToolJob] = []
-    /// Predictions for every preset, per job — computed once, so changing preset is a lookup.
-    private var estimates: [UUID: [CompressPreset: SizeEstimate]] = [:]
+    /// Per-job analysis — every preset's prediction plus the classification behind them, computed
+    /// once, so changing preset is a lookup and the recompress prediction (R16) can tell whether
+    /// the engine path repeats.
+    private var analyses: [UUID: CompressEstimator.Analysis] = [:]
     private var analysingIDs: Set<UUID> = []
     private var estimationTasks: [UUID: Task<Void, Never>] = [:]
 
@@ -271,9 +273,9 @@ final class CompressViewModel: ObservableObject {
 
         estimationTasks[job.id] = Task { [weak self] in
             guard let self else { return }
-            let all = await self.estimator.estimateAll(job.url)
+            let analysis = await self.estimator.analyse(job.url)
             guard !Task.isCancelled else { return }
-            self.estimates[job.id] = all
+            self.analyses[job.id] = analysis
             self.analysingIDs.remove(job.id)
             self.estimationTasks[job.id] = nil
             self.publishJobs()
@@ -298,7 +300,7 @@ final class CompressViewModel: ObservableObject {
     /// `clearFinished()`), so it never grows unbounded across a long session.
     private func pruneStaleEstimateState() {
         let liveIDs = Set(rawJobs.map(\.id))
-        estimates = estimates.filter { liveIDs.contains($0.key) }
+        analyses = analyses.filter { liveIDs.contains($0.key) }
         analysingIDs = analysingIDs.filter { liveIDs.contains($0) }
         switched = switched.filter { liveIDs.contains($0) }
         jobPresets = jobPresets.filter { liveIDs.contains($0.key) }
@@ -316,7 +318,7 @@ final class CompressViewModel: ObservableObject {
     private func publishJobs() {
         jobs = rawJobs.map { job in
             var display = job
-            display.estimate = estimates[job.id]?[preset]
+            display.estimate = analyses[job.id]?.estimates[preset]
             if let rerunReport = rerunReports[job.id] { display.mrcReport = rerunReport }
             if let failure = switchFailures[job.id] {
                 // Deliberately ahead of the re-run overlay: a failure recorded by the re-run's own
