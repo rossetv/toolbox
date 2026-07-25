@@ -317,18 +317,25 @@ final class CompressViewModel: ObservableObject {
     }
 
     func remove(_ job: ToolJob) {
+        // Matches `add(_:)`'s guard: a recompressing row is `.done` throughout (R8), so a mid-run
+        // `remove` would discard a runner-up whose commit is still in flight. The view already
+        // never offers removal on such a row, but the invariant belongs to the type that owns the
+        // state, not to every caller (CODE_GUIDELINES.md §6.3).
+        guard !isRunning else { return }
         discardRunnerUp(for: job)
         queue.remove(job.id)
     }
 
     func clearFinished() {
-        // Refuse outright while any switch is in flight: after ec61602 a mid-switch row still
-        // displays and queues as `.done`, so `isFinished`/`removeCompleted` cannot tell it apart
-        // from a genuinely finished row. Clearing would discard the parked file
-        // `useVersion`/`rerunForSwitch` is mid-copy into. One coarse guard beats threading an
-        // excluded-ids filter through `ToolQueue.removeCompleted()`, which OCR also calls and has
-        // no notion of switches (R19).
-        guard isSwitchRerunning.isEmpty else { return }
+        // Refuse outright while a run (queued or armed) is in flight: a recompressing row is
+        // `.done` throughout (R8), so `isFinished`/`removeCompleted` cannot tell it apart from a
+        // genuinely finished row, and clearing would discard a runner-up mid-commit
+        // (CODE_GUIDELINES.md §6.3). Also refused while any switch is in flight: after ec61602 a
+        // mid-switch row still displays and queues as `.done`, so clearing would discard the
+        // parked file `useVersion`/`rerunForSwitch` is mid-copy into. One coarse guard beats
+        // threading an excluded-ids filter through `ToolQueue.removeCompleted()`, which OCR also
+        // calls and has no notion of switches (R19).
+        guard !isRunning, isSwitchRerunning.isEmpty else { return }
         for job in jobs where isFinished(job) { discardRunnerUp(for: job) }
         queue.removeCompleted()
     }
