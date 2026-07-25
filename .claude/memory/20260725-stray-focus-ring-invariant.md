@@ -18,8 +18,11 @@ one fixed remedy — apply the remedy at build time, never a one-off patch:
    historically the sidebar header. The standing net is
    `WindowSetup.installStrayFocusClear(on:)` (`App/WindowConfigurator.swift`): a KVO
    watch on the main window's `firstResponder` that clears any assignment whose current
-   event is not `.keyDown`. Do NOT regress it to a `didBecomeKeyNotification` observer —
-   that misses the popover path, which was proven live.
+   event is not `.keyDown`. Do NOT regress the CLEARING to a `didBecomeKeyNotification`
+   observer — that misses the popover path, which was proven live. (A `didBecomeKey`
+   observer IS legitimately used for ARMING the watch on a new window —
+   `installArmingObserver` — because a Dock-reopened window appears without
+   `RootView.onAppear` re-firing; arming and clearing are different jobs.)
 
 Remedy 1 leaves keyboard navigation alone entirely (it only reacts to a click). Remedy 2
 enforces "only keyboard-driven focus may stand": Tab/arrow focus arrives as `.keyDown`
