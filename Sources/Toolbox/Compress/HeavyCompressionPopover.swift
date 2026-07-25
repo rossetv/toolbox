@@ -10,12 +10,33 @@ import SwiftUI
 /// The capsule's popover: both versions side by side with real thumbnails and on-disk sizes;
 /// one button swaps them instantly (spec R9–R11). Copy is the user-approved mock's, verbatim.
 struct HeavyCompressionPopover: View {
-    let versions: CompressViewModel.HeavyVersions
+    let versions: RowVersions
     let originalBytes: Int
     let onSwitch: () -> Void
     let onPreview: (URL) -> Void
 
     var body: some View {
+        // This popover only ever draws for a row with both versions: `versions(for:)` returned
+        // nil otherwise, and the capsule that opens it is drawn only on a `.doneHeavy` row —
+        // which Task 12 derives from `row.count > 1`, i.e. exactly the rows that have a pair.
+        // One unwrap here keeps the card code identical to today's.
+        if let shipped = versions.shipped, let runnerUp = versions.runnerUp {
+            content(shipped: shipped, runnerUp: runnerUp)
+        }
+    }
+
+    @ViewBuilder
+    private func content(shipped: FileVersion, runnerUp: FileVersion) -> some View {
+        let shippedIsHeavy = shipped.variant == .mrc
+        let heavyURL = (shippedIsHeavy ? shipped : runnerUp).url
+        let normalURL = (shippedIsHeavy ? runnerUp : shipped).url
+        // "Normal" is the losing gs compression; when gs bloated, the parked alternative is the
+        // untouched input and calling it "Normal" with a savings pill would be a lie (R6/R7). The
+        // same positional selector as `normalURL`, deliberately: the label must describe whichever
+        // record currently occupies the NORMAL position, and a switch moves records between the
+        // shipped and runner-up positions.
+        let normalTitle = ((shippedIsHeavy ? runnerUp : shipped).variant == .original)
+            ? "Original" : "Normal"
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Heavy compression").themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
@@ -24,15 +45,17 @@ struct HeavyCompressionPopover: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 12) {
-                versionCard(title: "Heavy", url: heavyURL, bytes: versions.heavyBytes,
-                            current: versions.shippedIsHeavy)
-                versionCard(title: normalTitle, url: normalURL, bytes: versions.normalBytes,
-                            current: !versions.shippedIsHeavy)
+                versionCard(title: "Heavy", url: heavyURL,
+                            bytes: (shippedIsHeavy ? shipped : runnerUp).bytes,
+                            current: shippedIsHeavy)
+                versionCard(title: normalTitle, url: normalURL,
+                            bytes: (shippedIsHeavy ? runnerUp : shipped).bytes,
+                            current: !shippedIsHeavy)
             }
             HStack {
                 Spacer()
-                Button(versions.shippedIsHeavy ? "Switch to \(normalTitle.lowercased())"
-                                               : "Switch to heavy",
+                Button(shippedIsHeavy ? "Switch to \(normalTitle.lowercased())"
+                                      : "Switch to heavy",
                        action: onSwitch)
                     .buttonStyle(.plain)
                     .clearsClickFocus()
@@ -47,13 +70,6 @@ struct HeavyCompressionPopover: View {
         .padding(16)
         .frame(width: 340)
     }
-
-    private var heavyURL: URL { versions.shippedIsHeavy ? versions.shippedURL : versions.runnerUpURL }
-    private var normalURL: URL { versions.shippedIsHeavy ? versions.runnerUpURL : versions.shippedURL }
-
-    /// "Normal" is the losing gs compression; when gs bloated, the parked alternative is the
-    /// untouched input and calling it "Normal" with a savings pill would be a lie (R6/R7).
-    private var normalTitle: String { versions.runnerUpIsOriginal ? "Original" : "Normal" }
 
     private func versionCard(title: String, url: URL, bytes: Int, current: Bool) -> some View {
         VStack(spacing: 6) {

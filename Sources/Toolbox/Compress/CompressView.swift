@@ -97,7 +97,7 @@ struct CompressView: View {
                                 onRemove: canRemove(job) ? { model.remove(job) } : nil,
                                 onOpen: { open(job) },
                                 onHeavyTap: { heavyPopoverJobID = job.id },
-                                heavyCapsuleTitle: model.heavyVersions(for: job)?.capsuleTitle ?? "Heavy compression",
+                                heavyCapsuleTitle: model.versions(for: job)?.capsuleTitle ?? "Heavy compression",
                                 heavyPopoverPresented: isShowingHeavyPopover(for: job.id),
                                 heavyPopoverContent: { AnyView(heavyPopover(for: job)) })
                     }
@@ -118,7 +118,7 @@ struct CompressView: View {
 
     @ViewBuilder
     private func heavyPopover(for job: ToolJob) -> some View {
-        if let versions = model.heavyVersions(for: job) {
+        if let versions = model.versions(for: job) {
             HeavyCompressionPopover(
                 versions: versions,
                 originalBytes: originalBytes(for: job),
@@ -131,7 +131,7 @@ struct CompressView: View {
                     heavyPopoverJobID = nil
                 },
                 onPreview: { url in
-                    frozenQuickLookItems = [versions.shippedURL, versions.runnerUpURL]
+                    frozenQuickLookItems = versions.cards.map(\.version.url)
                     quickLookURL = url
                 })
         }
@@ -145,8 +145,7 @@ struct CompressView: View {
     }
 
     private func originalBytes(for job: ToolJob) -> Int {
-        if case .done(.compressedHeavy(let before, _, _)) = job.state { return before }
-        return 0
+        model.versions(for: job)?.originalBytes ?? 0
     }
 
     /// Batch progress with a live count, mirroring the mockup's "Compressing 2 of 3…" bar.
@@ -334,10 +333,10 @@ struct CompressView: View {
             case .compressed(let before, let after):
                 return .done(originalBytes: before, newBytes: after)
             case .compressedHeavy(let before, let after, _):
-                guard let versions = model.heavyVersions(for: job) else {
+                guard let versions = model.versions(for: job) else {
                     return .done(originalBytes: before, newBytes: after)
                 }
-                return .doneHeavy(originalBytes: before, newBytes: versions.displayedBytes)
+                return .doneHeavy(originalBytes: before, newBytes: versions.shipped?.bytes ?? after)
             case .noGain:
                 return .unchanged("Already optimised")
             case .ocrAdded, .alreadySearchable:

@@ -132,7 +132,7 @@ final class CompressViewModelTests: XCTestCase {
 
     // MARK: runner-up switch + lifecycle (Task 18)
 
-    /// A `.compressedHeavy` outcome surfaces both versions through `heavyVersions(for:)`, with the
+    /// A `.compressedHeavy` outcome surfaces both versions through `versions(for:)`, with the
     /// heavy version shipped by default (R7/R8).
     func testCompressedHeavyOutcomePublishesHeavyVersions() async throws {
         let env = try HeavyEnv()
@@ -144,18 +144,20 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
-        let versions = try XCTUnwrap(model.heavyVersions(for: job))
-        XCTAssertTrue(versions.shippedIsHeavy)
-        XCTAssertEqual(versions.heavyBytes, HeavyEnv.heavyBytes)
-        XCTAssertEqual(versions.normalBytes, HeavyEnv.normalBytes)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: versions.shippedURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: versions.runnerUpURL.path))
-        XCTAssertFalse(versions.runnerUpIsOriginal,
+        let versions = try XCTUnwrap(model.versions(for: job))
+        XCTAssertTrue(versions.shipped?.variant == .mrc)
+        XCTAssertEqual(try XCTUnwrap(versions.cards.first(where: { $0.version.variant == .mrc })?.version.bytes),
+                       HeavyEnv.heavyBytes)
+        XCTAssertEqual(try XCTUnwrap(versions.cards.first(where: { $0.version.variant != .mrc })?.version.bytes),
+                       HeavyEnv.normalBytes)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(versions.shipped?.url).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(versions.runnerUp?.url).path))
+        XCTAssertFalse(versions.runnerUp?.variant == .original,
                        "a gs runner-up smaller than the input is not the original")
     }
 
     /// When the engine parked the ORIGINAL instead of a gs runner-up (gs bloated, so
-    /// `runnerUpBytes == before` — R6/R7 field fix), `heavyVersions(for:)` must mark it so the
+    /// `runnerUpBytes == before` — R6/R7 field fix), `versions(for:)` must mark it so the
     /// popover labels that card "Original" rather than "Normal".
     func testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize() async throws {
         let env = try HeavyEnv(before: HeavyEnv.normalBytes)
@@ -167,8 +169,8 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
-        let versions = try XCTUnwrap(model.heavyVersions(for: job))
-        XCTAssertTrue(versions.runnerUpIsOriginal)
+        let versions = try XCTUnwrap(model.versions(for: job))
+        XCTAssertTrue(versions.runnerUp?.variant == .original)
     }
 
     /// A report the engine hands back via the `mrcReport` closure is retained on the job result
@@ -191,8 +193,8 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(job.mrcReport, expectedReport)
     }
 
-    /// The switch swaps the files in place and flips `shippedIsHeavy`; a second switch restores the
-    /// original state. The byte counts stay intrinsic to each version (R10).
+    /// The switch swaps the files in place and flips which version is shipped; a second switch
+    /// restores the original state. The byte counts stay intrinsic to each version (R10).
     func testSwitchTogglesInstantlyAndReversibly() async throws {
         let env = try HeavyEnv()
         let model = env.model
@@ -208,23 +210,26 @@ final class CompressViewModelTests: XCTestCase {
 
         model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
-        var versions = try XCTUnwrap(model.heavyVersions(for: job))
-        XCTAssertFalse(versions.shippedIsHeavy, "after a switch the row ships the normal version")
-        XCTAssertEqual(versions.heavyBytes, HeavyEnv.heavyBytes, "byte counts are intrinsic")
-        XCTAssertEqual(versions.normalBytes, HeavyEnv.normalBytes)
+        var versions = try XCTUnwrap(model.versions(for: job))
+        XCTAssertFalse(versions.shipped?.variant == .mrc, "after a switch the row ships the normal version")
+        XCTAssertEqual(try XCTUnwrap(versions.cards.first(where: { $0.version.variant == .mrc })?.version.bytes),
+                       HeavyEnv.heavyBytes, "byte counts are intrinsic")
+        XCTAssertEqual(try XCTUnwrap(versions.cards.first(where: { $0.version.variant != .mrc })?.version.bytes),
+                       HeavyEnv.normalBytes)
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.normalBytes,
                        "the shipped file now holds the normal version's content")
 
         model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
-        versions = try XCTUnwrap(model.heavyVersions(for: job))
-        XCTAssertTrue(versions.shippedIsHeavy, "switching again restores the heavy version")
+        versions = try XCTUnwrap(model.versions(for: job))
+        XCTAssertTrue(versions.shipped?.variant == .mrc, "switching again restores the heavy version")
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
     }
 
-    /// `capsuleTitle` drives the row's capsule label; it must flip with `shippedIsHeavy` and use
+    /// `capsuleTitle` drives the row's capsule label; it must flip with the shipped version and use
     /// the popover's own vocabulary for the parked version — "Normal compression" when the runner-up
-    /// is a real gs output, matching `HeavyCompressionPopover.normalTitle`'s "Normal".
+    /// is a real gs output, matching the label `VersionsPopover.label(_:slot:)` gives the parked
+    /// card, "Normal".
     func testCapsuleTitleFlipsOnSwitch() async throws {
         let env = try HeavyEnv()
         let model = env.model
@@ -234,24 +239,25 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
-        var versions = try XCTUnwrap(model.heavyVersions(for: job))
+        var versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.capsuleTitle, "Heavy compression")
 
         model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
-        versions = try XCTUnwrap(model.heavyVersions(for: job))
+        versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.capsuleTitle, "Normal compression",
                        "the parked version is a real gs output, not the untouched input")
 
         model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
-        versions = try XCTUnwrap(model.heavyVersions(for: job))
+        versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.capsuleTitle, "Heavy compression",
                        "switching back restores the heavy label")
     }
 
     /// When the runner-up is the untouched original (R6/R7 field fix), switching to it must label
-    /// the capsule "Original" — matching the popover's `normalTitle` — not "Normal compression".
+    /// the capsule "Original" — matching the label `VersionsPopover.label(_:slot:)` gives that card
+    /// — not "Normal compression".
     func testCapsuleTitleReadsOriginalWhenRunnerUpIsInput() async throws {
         let env = try HeavyEnv(before: HeavyEnv.normalBytes)
         let model = env.model
@@ -263,8 +269,8 @@ final class CompressViewModelTests: XCTestCase {
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         model.switchVersion(for: job)
         let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
-        let versions = try XCTUnwrap(model.heavyVersions(for: switchedJob))
-        XCTAssertFalse(versions.shippedIsHeavy)
+        let versions = try XCTUnwrap(model.versions(for: switchedJob))
+        XCTAssertFalse(versions.shipped?.variant == .mrc)
         XCTAssertEqual(versions.capsuleTitle, "Original")
     }
 
@@ -292,8 +298,8 @@ final class CompressViewModelTests: XCTestCase {
                        "after switching to normal, the banner totals must use the normal bytes")
     }
 
-    /// `displayedBytes` drives the row's size badge/percent (R10); it must track whichever version
-    /// is actually shipped, not always the heavy one.
+    /// The shipped version's byte count drives the row's size badge/percent (R10); it must track
+    /// whichever version is actually shipped, not always the heavy one.
     func testDisplayedBytesTracksShippedVersion() async throws {
         let env = try HeavyEnv()
         let model = env.model
@@ -303,19 +309,19 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
-        var versions = try XCTUnwrap(model.heavyVersions(for: job))
-        XCTAssertEqual(versions.displayedBytes, HeavyEnv.heavyBytes)
+        var versions = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(try XCTUnwrap(versions.shipped?.bytes), HeavyEnv.heavyBytes)
 
         model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
-        versions = try XCTUnwrap(model.heavyVersions(for: job))
-        XCTAssertEqual(versions.displayedBytes, HeavyEnv.normalBytes,
+        versions = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(try XCTUnwrap(versions.shipped?.bytes), HeavyEnv.normalBytes,
                        "after switching to normal, the badge must show the normal version's bytes")
 
         model.switchVersion(for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
-        versions = try XCTUnwrap(model.heavyVersions(for: job))
-        XCTAssertEqual(versions.displayedBytes, HeavyEnv.heavyBytes,
+        versions = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(try XCTUnwrap(versions.shipped?.bytes), HeavyEnv.heavyBytes,
                        "switching back must show the heavy version's bytes again")
     }
 
@@ -352,8 +358,9 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
 
         let settled = try XCTUnwrap(env.doneHeavyJob(model))
-        let versions = try XCTUnwrap(model.heavyVersions(for: settled))
-        XCTAssertFalse(versions.shippedIsHeavy, "the re-run lands on the requested (normal) version")
+        let versions = try XCTUnwrap(model.versions(for: settled))
+        XCTAssertFalse(versions.shipped?.variant == .mrc,
+                       "the re-run lands on the requested (normal) version")
         XCTAssertTrue(FileManager.default.fileExists(atPath: runnerUpURL.path),
                       "the re-run regenerated the runner-up")
         // With the refuse-overwrite stub, a switch that silently no-ops (R10's original bug) would
@@ -402,8 +409,8 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
 
         let settled = try XCTUnwrap(env.doneHeavyJob(model))
-        let versions = try XCTUnwrap(model.heavyVersions(for: settled))
-        XCTAssertTrue(versions.shippedIsHeavy,
+        let versions = try XCTUnwrap(model.versions(for: settled))
+        XCTAssertTrue(versions.shipped?.variant == .mrc,
                       "the failed post-regeneration switch must leave the row canonical (heavy shipped)")
     }
 
@@ -474,7 +481,7 @@ final class CompressViewModelTests: XCTestCase {
             return XCTFail("expected the row to report the failed switch, got \(row.state)")
         }
         XCTAssertFalse(message.isEmpty)
-        XCTAssertNil(model.heavyVersions(for: row),
+        XCTAssertNil(model.versions(for: row),
                      "the row must stop advertising a version pair it cannot back")
         XCTAssertNil(model.displayedSizes(for: row),
                      "and must stop contributing bytes to the batch totals")
