@@ -182,7 +182,7 @@ final class RunnerUpStore {
     /// GCD-queue bridge deliberately does not inherit cancellation — a checked continuation never
     /// does — so a cancel landing mid-swap cannot tear the three steps apart with the user's file
     /// in the dot-temp.
-    nonisolated func promote(fresh: URL, to shipped: URL, parking parked: URL) async throws {
+    func promote(fresh: URL, to shipped: URL, parking parked: URL) async throws {
         try await performSwap(incoming: fresh, shipped: shipped, destination: parked,
                               tempPrefix: "promote")
     }
