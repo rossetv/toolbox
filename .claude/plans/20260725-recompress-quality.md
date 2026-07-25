@@ -1761,7 +1761,8 @@ because a ratio learned on one path does not transfer to the other.
     /// A row whose engine path repeats scales the raw estimate by what the engine actually did —
     /// the calibration that stops an MRC row's recompression being predicted as a 4× growth.
     func testPredictionScalesByTheObservedRatioWhenThePathRepeats() async throws {
-        // `.scanColour` at `.smallestSize` is the only HeavyEnv-reachable pair giving
+        // `.scanColour` at `.smallestSize` is the only pair reachable from this row's `.balanced`
+        // shipped preset giving
         // `targetWantsMRC == shippedWasMRC == true` with a non-degenerate ratio: `HeavyEnv` always
         // ships `.compressedHeavy` (`shippedWasMRC` is always true), so the repeating-path case
         // needs a target that is ALSO MRC-eligible — `.scanColour` + a non-Maximum preset — not
@@ -2449,8 +2450,9 @@ route destroys the delivered state this feature exists to protect.
             try commit(outcome, plan: plan, report: capturedReport)
         } catch is CancellationError {
             // Cancelled. On the throwing path the engine's atomic-write contract left no output;
-            // on the post-checkpoint path its result exists at plan.temp (and its alternate at
-            // plan.runnerUp) — the two lines below remove both. Nothing was committed either way,
+            // on the post-checkpoint path its result exists at plan.temp (and, when the engine
+            // produced one, its alternate at plan.runnerUp) — the two lines below remove both.
+            // Nothing was committed either way,
             // so the row keeps its previous result (R9).
             try? fm.removeItem(at: plan.temp)
             store.discard(plan.runnerUp)
@@ -3446,7 +3448,7 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
 | R6 futile suppression | Task 7 (`futileAttempts`), Task 4 (first-run no-gain), Task 9 (recompress no-gain) |
 | R7 instant switch | Task 7 (`.instantSwitch`), Task 12 (`Switch instantly` link → `useVersion(.previous,…)`) |
 | R8 direct-engine path | Task 9 (`recompress`, progress overlay, state flips at commit) |
-| R9 batch semantics | Task 10 (phases, `runProgress`, the three-mechanism cancel + `runCancelled` guard, terminal-row recording for `.done` AND `.failed`), Task 12 (running bar, disable rules) |
+| R9 batch semantics | Task 9 (`cancel()`: `runCancelled` + `recompressTask?.cancel()`, and the reclaim loop), Task 10 (phases, `runProgress`, the `runCancelled` guard before phase 2, terminal-row recording for `.done` AND `.failed`), Task 12 (running bar, disable rules) |
 | R10 missing-original guard | Task 8 (`isOriginalMissing` gates `recompressPrediction`; `testPredictionIsWithheldWhenTheOriginalIsGone`), Task 9 (`testMissingOriginalReportsPerRowAndLeavesTheResultIntact`), Task 12 (error lead ahead of the armed pill; `testAnArmedRowWithAMissingOriginalOffersNoPrediction`) |
 | R11 output path pinned + seeding | Task 1 (`reservationKey`), Task 9 (plans, seeding, two tests) |
 | R12 commit protocol | Task 1 (`promote`'s three-step park-beside-shipped shape, four tests), Task 9 (`commit`, the `SwitchError` arm ahead of the generic catch, `recompressErrors` lifetime), Task 12 (error lead outranks the armed pill) |
@@ -3601,3 +3603,5 @@ now added there and to the Phase 1 track-plan row.
 2. Rewriting a doc comment to be honest is a proof, not a patch: the moment a comment reads "no current reader", the member is dead and the follow-through is deletion, not annotation.
 3. A test's numeric headroom that rests on an unmeasured generated fixture is an unverified premise even when the test passes — a repeat-offender class now, belongs in review-lessons.md.
 4. Inserting a cancellation checkpoint routes a new path into an existing catch arm — the arm's comment is part of the diff's blast radius, not just its control flow.
+## Round 4 — 2026-07-25 — SHIP pending certify (plan-reviewer, Opus, incremental)
+All four round-3 findings verified resolved — the corrected prediction test re-derived end to end (its headroom is now an algebraic bound over the whole input domain, independent of the fixture's size), the runTask deletion proven compile-safe against the shipping code, Task 4's file list confirmed load-bearing. Three new minors, all comment/table accuracy, fixed this round: the cancellation-arm comment now states the alternate conditionally; the R9 coverage row credits cancel() to Task 9 and drops the deleted third mechanism; the "only reachable pair" claim is scoped to this row's shipped preset. Lesson-candidates: an algebraic bound over the input domain beats a fixture measurement as a test premise; deleting a member is a diff on every index that describes it; a comment fixed to cover a second path must state each path's artefacts conditionally; "the only reachable X" is a universal quantifier and carries its proof burden.
