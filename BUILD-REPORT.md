@@ -2,83 +2,92 @@
 
 *What was built, what was verified first-hand, what is deliberately not done, and what needs you.*
 
-Supersedes the earlier overnight report: that one predated the UI fixes, object-stream support, the
-PDFWriter rewrite and Rung 2, and several of its statements are no longer true.
+Supersedes the previous report: that one predated Rung 3 (MRC), the runner-up switching UI, the
+field-fix rounds that followed the first real-world use, and the parallelised test suite — its
+"Rung 3 not built" and "155 tests" statements are no longer true.
 
 ## Status
 
 | Area | State |
 |---|---|
 | Compress — Rung 1 (Ghostscript) | shipping |
-| Compress — Rung 2 (binarise + CCITT G4) | shipping |
-| Compress — Rung 3 (MRC) | **not built** — deliberate, see below |
+| Compress — Rung 2 (binarise + CCITT G4) | shipping, including OCR'd scans (text layer preserved, raced against gs) |
+| Compress — Rung 3 (MRC, per-page mask/foreground/background) | **shipping** on Balanced/Smallest for colour scans, behind a size race against the gs output |
 | OCR (Apple Vision + incremental update) | shipping, including object-stream PDFs |
-| UI | rebuilt against the design mockup and driven end-to-end |
-| Tests | **155, 0 failures** |
+| UI | driven end-to-end, including the heavy-compression capsule, popover and version switching |
+| Tests | **251, 0 failures — 88 s wall** (8 parallel workers) |
 | Packaging | DMG builds, installs and compresses |
 | Notarisation | **blocked on your Apple Developer ID** |
 
 ## Verified, not claimed
 
-Everything here was run and read, not inferred:
+Everything here was run and read, not inferred — most of it re-verified for this report:
 
-- Full suite: **155 tests, 0 failures**.
-- All six mechanical gates in `.claude/GATES.md` pass, including one that packages the DMG and
-  asserts the **shipped bundle** really compresses.
-- The packaged app, installed from the DMG to /Applications, compressed a real PDF by roughly
-  **72.5%**, page count preserved, Ghostscript under the sandbox.
-- The app was driven through its UI: files added via the picker, a batch compressed, results opened,
-  Reveal in Finder confirmed to select the actual output file.
+- Full suite: **251 tests, 0 failures, 88 seconds** with `-parallel-testing-enabled YES`.
+- All six mechanical gates in `.claude/GATES.md` pass, including the one that packages the DMG and
+  asserts the **shipped bundle** really compresses under the sandbox.
+- The packaged Release app was driven through its UI on real scans: a six-page colour scan came out
+  at **−70 % (2.5 MB → 744 KB)** with visibly crisp text, an eleven-page colour scan at −70 %, and a
+  seven-page black-and-white document at −97 % via CCITT. Output pages were rendered to images and
+  inspected by eye: sharp, correctly oriented, colour preserved.
+- The heavy-compression capsule, its popover, and switching between the shipped and parked versions
+  were exercised in the running app; the capsule label follows the shipped version ("Heavy
+  compression" / "Normal compression" / "Original") and the savings badge disappears at zero saving.
 - Sandbox containment probed directly: Ghostscript launches, network egress is blocked, and reads
   outside the granted scope are denied.
 - Gatekeeper behaviour checked (`spctl` rejects the unnotarised build; stripping quarantine clears it).
 
-## What changed since the first report
+## What changed since the previous report
 
-**The UI was broken and is now fixed.** As first shipped, the app was effectively unusable: the
-sidebar was invisible and no button did anything. Three independent defects:
+**Rung 3 (MRC) was built and shipped.** Per-page classify → segment → CCITT mask + JPEG
+foreground/background layers → verify → compose, weighed per document against the plain gs output;
+the loser is parked and the UI offers a switch. Getting it from "ships" to "usable" took two field
+rounds:
 
-1. Two `.fileImporter` modifiers were attached to the same view. On macOS they conflict and neither
-   presents — so every route into the app silently did nothing. Replaced with `NSOpenPanel`.
-2. The window could open smaller than its content minimum. SwiftUI's `.frame(minWidth:)` only clips,
-   so the sidebar collapsed to zero width. Now enforced on the `NSWindow` itself.
-3. `NavigationSplitView` laid the sidebar out a titlebar's height too high, hiding its first entries
-   and drawing the rest over the traffic lights. Replaced with an explicit split.
+1. **Upside-down pages.** The renderer bakes a page's `/Rotate` into upright pixels, and the
+   composer then re-stamped the original `/Rotate` — so viewers rotated twice. The composers now
+   never emit `/Rotate`; the guarding test compares rendered pixels against a viewer-true reference
+   instead of trusting metadata (which is how the bug had hidden).
+2. **Blurry text.** The CCITT text mask is applied as the foreground JPEG's soft-mask, and viewers
+   resample the mask down to the foreground image's pixel grid — a foreground stored at low
+   resolution therefore smeared every glyph regardless of mask sharpness. The foreground is now
+   emitted near the mask's resolution, the fill under it is flat, and the render is capped at the
+   source scan's resolution; output became sharper **and** smaller (and roughly 3× faster).
 
-**Rung 2 was added**, and it closes a real gap rather than a theoretical one. Ghostscript's mono
-settings only apply to images that are *already* 1-bit, so a greyscale scan that merely looks
-black-and-white is treated as a grey image — such scans were measured **growing** rather than
-shrinking through Rung 1, so the app would report them as "already optimised". Rung 2 binarises
-first, then encodes CCITT G4 via ImageIO and reassembles the page.
+**Rung 2 was opened to OCR'd scans.** A scanned document that this app's own OCR tool had processed
+carried a text layer, which the classifier read as "born-digital" — so the scan never reached CCITT
+and lost its −90 %-class win. Classification now keys on full-page image coverage, the CCITT rebuild
+is raced against the gs candidate (so a noisy scan on which CCITT loses simply ships gs — opening
+the routing cannot regress any document), and the OCR text layer is re-embedded through the same
+writer the OCR tool uses, declining to gs whenever it cannot be re-embedded faithfully.
 
-**Object streams are now supported**, so OCR no longer declines Acrobat-optimised PDFs. (Unit-tested; OCR
-coverage across a mixed sample has not been re-measured since.)
+**UI field fixes.** The heavy-compression capsule label now follows the shipped version after a
+switch; stray macOS 26 focus rings after mouse clicks were cleared via the existing
+clear-on-click focus pattern (keyboard focus rings remain); Quick Look previews no longer crash the
+version popover.
 
-**PDFWriter was rewritten** after an adversarial review: a byte-level tokeniser, correct handling of
-literal strings and CRLF, bounded object scans, an integer-overflow guard, streaming I/O with a
-per-job memory bound, and a cap on page rasters.
-
-**Polish**: generated app icon, "Toolbox" throughout macOS, smaller default window, hand cursors
-on controls, page counts, predicted-saving badges, and the mockup's progress and completion states.
+**The suite got fast.** Parallel test execution (8 workers) plus the MRC source-resolution cap took
+the full suite from 43 minutes serial to 88 seconds — the previously planned "fast local tier" became
+unnecessary and was dropped.
 
 ## Deliberately not done
 
-- **MRC (Rung 3).** This is where the large wins on *colour* scans would come from. It is a
-  substantial subsystem and its value depends entirely on segmentation quality, which is an empirical
-  question — the specification requires a spike before building it, and that spike has not produced a
-  verdict. Building it on optimism would be the wrong call; shipping without it is explicitly allowed.
-- **JBIG2.** Better than CCITT G4 on bilevel scans, but it needs viewer-support verification before it
-  could be a default, and it requires a native library. CCITT is universally supported and already
-  delivers the large win.
-- **Relaxing the OCR validation net.** The writer has since been properly rewritten, so this is
-  unblocked — but the verbatim-prefix invariant is cheap and is the single strongest guarantee in the
-  codebase, so it should stay permanently regardless.
+- **Per-page routing.** Classification is per document: one colour page cannot send a 20-page
+  document to MRC, and a coloured stamp on one page of a near-bilevel document keeps the whole
+  document on gs. Explicitly deferred — revisit if real documents keep leaving wins on the table.
+- **JBIG2.** Better than CCITT G4 on bilevel scans, but it needs viewer-support verification and a
+  native library. CCITT is universally supported and already delivers the large win.
+- **Relaxing the OCR validation net.** The verbatim-prefix invariant is cheap and is the single
+  strongest guarantee in the codebase; it stays permanently.
 
 ## What needs you
 
 - **An Apple Developer ID.** Without it the DMG is ad-hoc signed: fine to run locally, not
   distributable. Users must strip the quarantine flag or right-click → Open. CI already has the
   signing and notarisation steps written, gated on `APPLE_*` secrets.
+- **Delete the old installed copy.** The bundle identifier changed to `com.toolbox.app`; an older
+  installed build under the previous identifier runs happily beside the new one and wins name-based
+  launches. Remove it when installing the new DMG.
 
 ## Testing the DMG
 
@@ -98,14 +107,13 @@ xattr -dr com.apple.quarantine /Applications/Toolbox.app
 ## Process notes worth keeping
 
 - Two privacy leaks were introduced and caught before anything was pushed: a local absolute path,
-  and separately one exposing the account name — the latter in two shipping source files.
-  Both were scrubbed from the entire branch history and independently verified. A semantic gate now
-  guards the class, applied by intent rather than by the specific directory it names.
-- The UI defects existed because the original build was never driven, only launched. Building,
-  launching and "tests pass" did not catch a completely unusable interface; clicking it did.
-- An abandoned jbig2enc/leptonica native-encoder experiment (Rung 2 ended up shipping on ImageIO's
-  CCITT encoder instead, linking no native library) left a dead `.cpp` file in the compile sources
-  and header/library search paths in `project.yml` pointing at a git-ignored tree. The project
-  built and gated green only on the machine that happened to still have that tree — CI would have
-  failed on the first push. No Swift code referenced any native symbol, so it was dead weight, now
-  deleted. Verified by building and running the full suite with the tree moved aside.
+  and separately one exposing the account name — both scrubbed from the entire branch history and
+  independently verified. A semantic gate now guards the class, applied by intent rather than by the
+  specific directory it names; it has since caught two further wording-level leaks in review.
+- The UI defects existed because the original build was never driven, only launched. The same lesson
+  recurred with MRC: green tests and engine-level validation missed defects that rendering the
+  output and looking at it caught in minutes. Driving the packaged app and eyeballing real output is
+  now part of "done" here.
+- A QA session was nearly derailed by testing the wrong binary: the OS resolved the app's name to a
+  stale build under the old bundle identifier. When results contradict the code, confirm *which*
+  binary produced them before debugging the code.
