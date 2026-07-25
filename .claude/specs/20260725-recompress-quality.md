@@ -58,9 +58,9 @@ fixed.
 - **R1 — Who arms.** With no run in flight, selecting preset P arms every job whose *row
   preset* ≠ P and which can recompress: `.done(.compressed)`, `.done(.compressedHeavy)`, and
   `.done(.noGain)` rows arm; `.failed` rows never arm (their recourse is re-adding the file);
-  `.queued`/`.analysing` rows are untouched (they will simply run at P). **A row's preset** is
-  the preset of its most recent attempt: the shipped version's recorded preset where one exists
-  (R14), else the recorded attempt preset for rows that shipped nothing (noGain). A first-run
+  `.queued`/`.analysing` rows are untouched (they will simply run at P). **A row's preset** is:
+  the shipped version's recorded preset where one exists (R14), else the recorded preset of its
+  most recent attempt (rows that have shipped nothing — noGain). A first-run
   noGain at P0 records (job, P0) as futile exactly as a recompress noGain does (R6), so
   re-selecting P0 shows the futile caption, never a re-arm. A job whose row preset = P is not
   armed. Arming is pure view-model state — `job.state` does not change.
@@ -75,7 +75,8 @@ fixed.
 - **R4 — Banner and footer in the armed state.** While ≥1 row is armed: the success banner is
   replaced by an accent armed banner — "Will recompress N PDF(s) at <preset title>" — and the
   footer's primary button reads "Recompress N PDFs". The banner's detail line depends on the
-  summed prediction: positive extra saving → "≈ saves another <bytes>"; zero-or-negative (the
+  summed prediction — summed over armed rows with a confident prediction only; "may not shrink"
+  rows contribute nothing: positive extra saving → "≈ saves another <bytes>"; zero-or-negative (the
   quality-upgrade direction) → "files may grow for the extra quality"; every armed row "may not
   shrink" → no detail line. In the mixed state (R5) the banner headline is "Will compress K and
   recompress M PDFs" with the same detail rules over the armed rows only. Both fixed regions
@@ -158,8 +159,9 @@ fixed.
 - **R16 — Estimate honesty.** The armed pill's prediction: scale the estimator's per-preset
   figure by the row's observed ratio (actual result ÷ estimate at the row preset) ONLY when the
   engine path is expected to repeat — i.e. the shipped engine variant and the target preset's
-  MRC eligibility agree (MRC-shipped row → MRC-eligible target; gs-shipped row → gs-only
-  target). Whenever the path changes in EITHER direction — an MRC-shipped row crossing to
+  MRC eligibility *for this row's classification* agree (`wantsMRC`: `.scanColour` ∧ preset ≠
+  `maximumQuality`; a born-digital row is gs on every preset, so its path always repeats and it
+  always scales). Whenever the path changes in EITHER direction — an MRC-shipped row crossing to
   `maximumQuality` (never MRC-eligible), or a gs-shipped row (including a `.scanColour` row
   shipped at Maximum quality, or one where MRC lost the document gate) moving to an
   MRC-eligible preset — use the RAW gs estimate: a ratio learned on one path does not transfer
@@ -238,3 +240,5 @@ design review 2026-07-25), each reading the named files first-hand:
   never-shrink (R15), up-front serial name reservation (R11).
 ## Round 1 — 2026-07-25 — NO-SHIP (spec-reviewer, Fable 5)
 2 major (R16 one-directional carve-out, R1 noGain preset undefined), 7 minor (R15 title family, R4/R5 mixed+upgrade banner, R7 cross-ref, dangling D4 citation, unnamed prior specs, unverifiable mockup URL, false .failed parenthetical). All fixed this round. Lesson-candidates: resolve every D/R pointer; audit carve-outs both directions; define rules for outcome shapes that ship nothing; capture visual contracts in-repo.
+## Round 2 — 2026-07-25 — SHIP pending certify (spec-reviewer, Fable 5, incremental)
+Both majors verified fixed; 7 minors verified fixed; 3 new minors (R1 gloss vs operative clause, R4 sum membership, R16 per-row eligibility phrasing) fixed this round. Lesson-candidates: check a gloss against operative clauses for every state history; state aggregate membership when rows can be non-numeric; phrase joint eligibility per-row.
