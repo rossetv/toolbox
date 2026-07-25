@@ -1742,6 +1742,79 @@ final class CompressViewModelTests: XCTestCase {
                        "a message beside the row, never a failure that hides a good result")
     }
 
+    /// The mirror image of the test above, and the one that matters most: the swap FAILS while the
+    /// previous version is still perfectly present on disk. The swap's first step renames the
+    /// SHIPPED file inside the output folder and never touches the parked file, so a read-only
+    /// output folder throws with nothing missing. Assuming "the parked file raced away" there would
+    /// drop the slot — whose discard DELETES the file — and tell the user their kept version is
+    /// gone, destroying the one thing D3/R14 promise to keep over a failure they can simply retry.
+    func testAFailedSwitchKeepsAPreviousVersionThatIsStillOnDisk() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        var job = try XCTUnwrap(model.jobs.first)
+        let previousURL = try XCTUnwrap(model.versions(for: job)?.previous?.url)
+        let deliveredURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        let callsBefore = env.stub.callCount
+
+        // Deny creating entries in the OUTPUT folder — the same asymmetric ACL lever
+        // `RunnerUpStoreTests` uses — so parking the shipped file beside itself throws, while the
+        // previous version, which lives in the cache root, is untouched.
+        try denyingNewEntries(true, at: outputFolder)
+
+        await model.useVersion(.previous, for: job)
+
+        XCTAssertEqual(env.stub.callCount, callsBefore, "a failed swap must not burn an engine run")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: previousURL.path),
+                      "the parked file was never touched by the failure — it must survive it")
+        let row = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(row.previous?.url, previousURL,
+                       "the record must survive too, or the version is unreachable and then swept")
+        XCTAssertEqual(row.shipped?.bytes, 700, "nothing moved: the row still ships the Smallest result")
+        XCTAssertEqual(try fileSize(deliveredURL), 700)
+        XCTAssertEqual(model.recompressErrors[job.id],
+                       "Switch failed — kept your \(CompressPreset.smallestSize.title) version. "
+                       + "Try again.",
+                       "an honest transient failure, never a claim that the version is gone")
+
+        // Retry once the folder takes new entries again. It must go through — which is also the
+        // proof that the failure path released the re-entrancy guard (a retry that no-ops looks
+        // identical to one that failed).
+        try denyingNewEntries(false, at: outputFolder)
+        await model.useVersion(.previous, for: job)
+
+        job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.versions(for: job)?.shipped?.bytes, HeavyEnv.heavyBytes,
+                       "the retry must swap for real")
+        XCTAssertEqual(try fileSize(deliveredURL), HeavyEnv.heavyBytes)
+        XCTAssertNil(model.recompressErrors[job.id], "a successful retry clears the failure note")
+    }
+
+    /// Add or remove the ACL that lets a directory's existing entries be read and removed but no
+    /// new ones be created — the deterministic stand-in for a read-only output folder.
+    private func denyingNewEntries(_ deny: Bool, at directory: URL) throws {
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = [deny ? "+a" : "-a", "everyone deny add_file,add_subdirectory",
+                           directory.path]
+        try chmod.run()
+        chmod.waitUntilExit()
+        XCTAssertEqual(chmod.terminationStatus, 0,
+                       "the ACL must apply for the test to be meaningful")
+    }
+
     // MARK: lead derivation (R2/R6/R10/R12)
 
     /// A no-gain row renders `.unchanged` (no shipped version ⇒ no size cluster) AND arms — the

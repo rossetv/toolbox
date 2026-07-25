@@ -994,6 +994,9 @@ final class CompressViewModel: ObservableObject {
             do {
                 try await store.switchVersions(shipped: shipped.url, runnerUp: parked.url)
                 versionStore.swapShipped(with: slot, for: job.id)
+                // A retry that succeeds must not leave the previous attempt's failure note beside
+                // the row: the view renders `recompressErrors` unconditionally.
+                recompressErrors[job.id] = nil
                 publishJobs()   // no state moved, but the row's badge/capsule read from the store
                 return
             } catch let stranded as RunnerUpStore.SwitchError {
@@ -1003,7 +1006,20 @@ final class CompressViewModel: ObservableObject {
                 return
             } catch {
                 // The switch did not happen and the shipped file is unchanged (store contract: any
-                // other throw restores it) — the parked file raced away, so fall through.
+                // other throw restores it). Everything below exists for ONE cause — the parked file
+                // raced away — so take it only on evidence. The swap's first step renames the
+                // SHIPPED file inside the output folder and never touches the parked one, so a
+                // read-only output folder, an immutable flag or an unmounted share throws here with
+                // the parked file perfectly intact. Assuming it vanished would drop the version
+                // record (whose discard DELETES the file) or burn a re-run over a live runner-up —
+                // destroying the one thing D3/R14 promise to keep, over a failure the user can
+                // simply retry.
+                if FileManager.default.fileExists(atPath: parked.url.path) {
+                    recompressErrors[job.id] = "Switch failed — kept your "
+                                             + "\(shipped.preset.title) version. Try again."
+                    publishJobs()
+                    return
+                }
             }
         }
 
@@ -1030,10 +1046,10 @@ final class CompressViewModel: ObservableObject {
         publishJobs()
     }
 
-    /// R10 tail: reached either because the runner-up is gone, or because it still exists but
-    /// `switchVersions` raced and threw. Either way, re-run this one job directly through the
-    /// engine (not the batch queue) to regenerate both versions, then apply the switch the user
-    /// asked for.
+    /// R10 tail: reached only when the runner-up is genuinely gone — either absent before the swap
+    /// was attempted, or confirmed absent by `useVersion`'s re-check after `switchVersions` threw.
+    /// Re-run this one job directly through the engine (not the batch queue) to regenerate both
+    /// versions, then apply the switch the user asked for.
     private func rerunForSwitch(_ job: ToolJob, wantHeavy: Bool) {
         // The STORE, never `job.resultURL`/`job.alternateURL`: the queue's record is the first
         // run's and a recompress supersedes it without touching the queue. This tail is only ever
@@ -1074,11 +1090,13 @@ final class CompressViewModel: ObservableObject {
             let freshShipped = shipped.deletingLastPathComponent()
                 .appendingPathComponent(".toolbox-rerun-\(UUID().uuidString).pdf")
             defer { try? FileManager.default.removeItem(at: freshShipped) }
-            // The runner-up may still exist here — this tail is also reached when `switchVersions`
-            // threw with it in place. The engine writes it with a best-effort `copyItem`, which
-            // throws (and is swallowed) onto an occupied destination, so a surviving file would
-            // stay STALE beside a freshly regenerated winner and the next switch would hand the
-            // user one version under the other's label. Clear the slot so the pair matches.
+            // The runner-up was confirmed absent before this tail was entered, but that check and
+            // this re-run are not one atomic step — anything (a sync client, the user) may have put
+            // a file back at that path in between. The engine writes the runner-up with a
+            // best-effort `copyItem`, which throws (and is swallowed) onto an occupied destination,
+            // so a surviving file would stay STALE beside a freshly regenerated winner and the next
+            // switch would hand the user one version under the other's label. Clear the slot so the
+            // pair matches.
             try? FileManager.default.removeItem(at: runnerUp)
             var capturedReport: MRCDocumentReport?
             do {
