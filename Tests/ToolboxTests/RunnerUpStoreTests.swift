@@ -195,4 +195,106 @@ final class RunnerUpStoreTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
+
+    // MARK: R12 commit protocol (recompress)
+
+    /// The commit: the previously shipped file ends up in the cache slot `parking` names and the
+    /// fresh result takes its place. Every move lands, and neither the temp path nor the
+    /// beside-the-shipped-file dot-temp is left behind.
+    func testPromoteParksTheShippedFileAndLandsTheFreshOne() throws {
+        let root = try tempRoot()
+        let delivery = root.appendingPathComponent("delivery", isDirectory: true)
+        try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
+        let store = RunnerUpStore(rootOverride: root)
+
+        // The shipped file lives where the USER's output lives, not in the cache root — the whole
+        // point of the three-step shape is that the two are different places.
+        let shipped = delivery.appendingPathComponent("shipped.pdf")
+        let fresh = delivery.appendingPathComponent(".toolbox-recompress.pdf")
+        let parked = root.appendingPathComponent("shipped-previous.pdf")
+        try Data("old-version".utf8).write(to: shipped)
+        try Data("new-version".utf8).write(to: fresh)
+
+        try store.promote(fresh: fresh, to: shipped, parking: parked)
+
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("new-version".utf8))
+        XCTAssertEqual(try Data(contentsOf: parked), Data("old-version".utf8),
+                       "the version the user had must reach the cache slot it was reserved, not "
+                     + "merely survive somewhere")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fresh.path))
+        // The intermediate dot-temp is a transient, not a resting place: nothing named
+        // `.toolbox-*` may survive beside the delivered file.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: delivery.path)
+            .filter { $0.hasPrefix(".toolbox-") }
+        XCTAssertTrue(leftovers.isEmpty, "the dot-temp must not outlive the commit: \(leftovers)")
+    }
+
+    /// The third step is best-effort by design: if the parked version cannot reach its cache slot
+    /// the commit still SUCCEEDS (the user has their new file) and the old version is discarded
+    /// rather than stranded under a hidden dot-name nothing will ever look for.
+    func testPromoteSucceedsAndDiscardsWhenTheParkSlotIsUnreachable() throws {
+        let root = try tempRoot()
+        let delivery = root.appendingPathComponent("delivery", isDirectory: true)
+        try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
+        let store = RunnerUpStore(rootOverride: root)
+
+        let shipped = delivery.appendingPathComponent("shipped.pdf")
+        let fresh = delivery.appendingPathComponent(".toolbox-recompress.pdf")
+        // A park path inside a directory that does not exist: the move to the cache slot cannot
+        // succeed, deterministically.
+        let parked = root.appendingPathComponent("absent-dir/shipped-previous.pdf")
+        try Data("old-version".utf8).write(to: shipped)
+        try Data("new-version".utf8).write(to: fresh)
+
+        XCTAssertNoThrow(try store.promote(fresh: fresh, to: shipped, parking: parked))
+
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("new-version".utf8),
+                       "the promotion is what the user pressed the button for; it stands")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: delivery.path)
+            .filter { $0.hasPrefix(".toolbox-") }
+        XCTAssertTrue(leftovers.isEmpty, "a park that cannot land is discarded, never stranded")
+    }
+
+    /// R12's load-bearing guarantee: the old version survives any failure. An absent `fresh` makes
+    /// the promote move fail deterministically, after the shipped file has already been parked.
+    func testPromoteFailureRestoresTheShippedFile() throws {
+        let root = try tempRoot()
+        let delivery = root.appendingPathComponent("delivery", isDirectory: true)
+        try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
+        let store = RunnerUpStore(rootOverride: root)
+
+        let shipped = delivery.appendingPathComponent("shipped.pdf")
+        let fresh = delivery.appendingPathComponent(".toolbox-recompress.pdf")   // never written
+        let parked = root.appendingPathComponent("shipped-previous.pdf")
+        try Data("old-version".utf8).write(to: shipped)
+
+        XCTAssertThrowsError(try store.promote(fresh: fresh, to: shipped, parking: parked)) { error in
+            XCTAssertFalse(error is RunnerUpStore.SwitchError,
+                           "the restore succeeded, so the promote's own error must surface")
+        }
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("old-version".utf8),
+                       "a failed commit must put the user's file back untouched")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path),
+                       "the park slot must not keep a copy after the restore")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: delivery.path)
+            .filter { $0.hasPrefix(".toolbox-") }
+        XCTAssertTrue(leftovers.isEmpty,
+                      "the dot-temp must be emptied by the restore: \(leftovers)")
+    }
+
+    /// Parked previous versions and runner-ups share the cache root, so they must not collide: the
+    /// suffix is what keeps a row's two parked files apart under the same serial allocator.
+    func testReserveURLHonoursTheRequestedSuffix() throws {
+        let root = try tempRoot()
+        let store = RunnerUpStore(rootOverride: root)
+        let input = root.appendingPathComponent("scan.pdf")
+
+        var reserved = Set<String>()
+        let runnerUp = store.reserveURL(for: input, reserving: &reserved)
+        let previous = store.reserveURL(for: input, suffix: "previous", reserving: &reserved)
+
+        XCTAssertEqual(runnerUp.lastPathComponent, "scan-runner-up.pdf")
+        XCTAssertEqual(previous.lastPathComponent, "scan-previous.pdf")
+    }
 }

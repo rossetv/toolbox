@@ -44,10 +44,12 @@ final class RunnerUpStore {
         Self.removeAllOnDisk(root: root)
     }
 
-    /// Reserve a cache URL for a job's runner-up, via the same serial allocator as every
-    /// batch output (C4). Call in the view-model's up-front reservation loop.
-    func reserveURL(for input: URL, reserving reserved: inout Set<String>) -> URL {
-        FileNaming.output(for: input, suffix: "runner-up", folder: root, reserving: &reserved)
+    /// Reserve a cache URL for one of a job's parked versions, via the same serial allocator as
+    /// every batch output (C4). `suffix` keeps a row's runner-up and its parked previous version
+    /// (R14) apart in the shared cache root. Call in the view-model's up-front reservation loop.
+    func reserveURL(for input: URL, suffix: String = "runner-up",
+                    reserving reserved: inout Set<String>) -> URL {
+        FileNaming.output(for: input, suffix: suffix, folder: root, reserving: &reserved)
     }
 
     /// Why a switch could not be completed, in the one shape where the caller cannot simply retry.
@@ -111,6 +113,63 @@ final class RunnerUpStore {
             // content. Discard the stranded parked file rather than throw; a missing runner-up is
             // already a designed-for state (R10's re-run path).
             try? fm.removeItem(at: parked)
+        }
+    }
+
+    /// The R12 recompress commit: park the currently-shipped file, promote `fresh` into its place,
+    /// then move the parked version into the cache slot `parked` names.
+    ///
+    /// **Three steps, exactly as `switchVersions` does it, and for the same reason.** The version
+    /// the user currently has is parked into a `.toolbox-<uuid>` dot-temp **beside the shipped
+    /// file** — never straight into `parked`, which lives in the cache root. Two reasons, both
+    /// load-bearing: the cache root is swept at launch, so a crash in this window with the user's
+    /// only delivered copy sitting in it would destroy that copy; and the cache root is frequently
+    /// on a different volume from the output folder, where `moveItem` silently degrades to a
+    /// copy-then-delete and the "atomic" park is no longer atomic. The dot-temp idiom matches the
+    /// engine's, so a crash leftover is the already-accepted residual pattern.
+    ///
+    /// Failure shapes, in the order the steps run:
+    /// 1. **Park fails** — nothing has moved; an ordinary throw, shipped file untouched.
+    /// 2. **Promote fails** — the park is undone by the same documented restore `switchVersions`
+    ///    uses, then the promote's own error is rethrown. If even the restore fails,
+    ///    `SwitchError.shippedStranded` carries the dot-temp path, because the user's file is no
+    ///    longer where they left it and nothing else will ever look for it there.
+    /// 3. **Reaching the cache slot fails** — the commit has ALREADY succeeded from the user's
+    ///    point of view (their file holds the new version), so this **does not throw**: the parked
+    ///    copy is discarded instead of being stranded under a hidden dot-name. The caller therefore
+    ///    must not assume a file exists at `parked` after a successful return — see `commit` in the
+    ///    view model, and `useVersion`'s already-designed-for "that version is no longer available"
+    ///    path (a `previous` slot whose file is gone is an existing, handled state, not a new one).
+    ///
+    /// The old version therefore survives every path on which the promotion did NOT happen, which
+    /// is what lets an armed row keep its result when a recompress fails.
+    func promote(fresh: URL, to shipped: URL, parking parked: URL) throws {
+        let fm = FileManager.default
+        let temp = shipped.deletingLastPathComponent()
+            .appendingPathComponent(".toolbox-promote-\(UUID().uuidString).pdf")
+        try fm.moveItem(at: shipped, to: temp)            // 1. park beside the shipped file
+        do {
+            try fm.moveItem(at: fresh, to: shipped)       // 2. promote the fresh result
+        } catch {
+            // Restore on the documented path for each state, exactly as `switchVersions` does:
+            // `shipped` is normally absent here, so a plain `moveItem` restores it; if something
+            // recreated it in this window, `replaceItemAt` swaps that impostor out.
+            do {
+                if fm.fileExists(atPath: shipped.path) {
+                    _ = try fm.replaceItemAt(shipped, withItemAt: temp)
+                } else {
+                    try fm.moveItem(at: temp, to: shipped)
+                }
+            } catch {
+                throw SwitchError.shippedStranded(parked: temp)
+            }
+            throw error
+        }
+        do {
+            try fm.moveItem(at: temp, to: parked)         // 3. into the cache slot
+        } catch {
+            // Best effort, deliberately: see step 3 above. Discard rather than strand.
+            try? fm.removeItem(at: temp)
         }
     }
 
