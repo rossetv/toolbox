@@ -201,10 +201,7 @@ final class CompressViewModelTests: XCTestCase {
     func testSecondUseVersionTapWhileFirstIsInFlightIsANoOp() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let shippedURL = try XCTUnwrap(job.resultURL)
@@ -230,10 +227,7 @@ final class CompressViewModelTests: XCTestCase {
     func testSwitchTogglesInstantlyAndReversibly() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         let shippedURL = try XCTUnwrap(job.resultURL)
@@ -269,10 +263,7 @@ final class CompressViewModelTests: XCTestCase {
     func testPlainSwitchNeverExposesARunningRowOrDropsAllFinished() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let job = try XCTUnwrap(env.doneHeavyJob(model))
 
         let watchdog = Task { @MainActor () -> Bool in
@@ -300,10 +291,7 @@ final class CompressViewModelTests: XCTestCase {
     func testCapsuleTitleFlipsOnSwitch() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         var versions = try XCTUnwrap(model.versions(for: job))
@@ -328,10 +316,7 @@ final class CompressViewModelTests: XCTestCase {
     func testCapsuleTitleReadsOriginalWhenRunnerUpIsInput() async throws {
         let env = try HeavyEnv(before: HeavyEnv.normalBytes)
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         await model.switchVersion(for: job)
@@ -347,10 +332,7 @@ final class CompressViewModelTests: XCTestCase {
     func testSavedBytesUsesShippedVersionForHeavyJob() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         var saved = try XCTUnwrap(model.displayedSizes(for: job))
@@ -370,10 +352,7 @@ final class CompressViewModelTests: XCTestCase {
     func testDisplayedBytesTracksShippedVersion() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         var versions = try XCTUnwrap(model.versions(for: job))
@@ -397,10 +376,7 @@ final class CompressViewModelTests: XCTestCase {
     func testSwitchWithMissingRunnerUpRerunsJob() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
@@ -449,10 +425,7 @@ final class CompressViewModelTests: XCTestCase {
     func testUseVersionIsIgnoredWhileARunIsInFlight() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
@@ -490,10 +463,7 @@ final class CompressViewModelTests: XCTestCase {
     func testCompressIsRefusedWhileASwitchIsInFlight() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
@@ -538,10 +508,7 @@ final class CompressViewModelTests: XCTestCase {
     func testClearFinishedRefusedWhileASwitchIsInFlight() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
@@ -578,10 +545,7 @@ final class CompressViewModelTests: XCTestCase {
     func testSwitchFailingAfterRerunLeavesStateCanonical() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
@@ -619,10 +583,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .smallestSize
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let job1 = try XCTUnwrap(env.doneHeavyJob(model))
 
         // Arm the finished row at .balanced and let the engine come back no-gain, so the row is
@@ -673,10 +634,7 @@ final class CompressViewModelTests: XCTestCase {
     func testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         let shippedURL = try XCTUnwrap(job.resultURL)
@@ -708,10 +666,7 @@ final class CompressViewModelTests: XCTestCase {
     func testRemoveRowDiscardsRunnerUp() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
@@ -726,10 +681,7 @@ final class CompressViewModelTests: XCTestCase {
     func testClearFinishedDiscardsRunnerUps() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let runnerUpURL = try XCTUnwrap(env.doneHeavyJob(model)?.alternateURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: runnerUpURL.path))
@@ -776,10 +728,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(model.jobs.first)
         XCTAssertEqual(model.recompressState(for: job), .none,
@@ -796,10 +745,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         model.preset = .smallestSize
         XCTAssertEqual(model.armedCount, 1)
@@ -879,10 +825,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv(contentType: .scanColour)
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
 
         let job = try XCTUnwrap(model.jobs.first)
@@ -907,10 +850,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour)
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
 
         let job = try XCTUnwrap(model.jobs.first)
@@ -933,10 +873,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv(before: 1_000, contentType: .bornDigital)
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
 
         let job = try XCTUnwrap(model.jobs.first)
@@ -957,10 +894,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv(contentType: .scanColour)
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
 
         let job = try XCTUnwrap(model.jobs.first)
@@ -981,10 +915,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
@@ -1014,10 +945,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
         try FileManager.default.removeItem(at: shippedURL)  // the user deletes it in Finder
 
@@ -1046,10 +974,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         // Recompress at Smallest, parking the Balanced version.
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
@@ -1069,10 +994,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
         env.stub.throwOnCall = env.stub.callCount + 1
@@ -1101,10 +1023,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         env.stub.throwOnCall = env.stub.callCount + 1
         model.preset = .smallestSize
@@ -1149,10 +1068,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
         // A newly queued row to occupy phase 1, and the finished row armed for phase 2.
@@ -1193,10 +1109,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
         let gate = Gate()
@@ -1224,10 +1137,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let before = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
 
         env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
@@ -1251,10 +1161,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
         let elsewhere = env.storeRoot.deletingLastPathComponent()
@@ -1290,10 +1197,7 @@ final class CompressViewModelTests: XCTestCase {
         try Data().write(to: decoy)
 
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let armedRowOutput = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
         // Stand in for the promote window: the row's delivered file is momentarily not on disk —
@@ -1330,10 +1234,7 @@ final class CompressViewModelTests: XCTestCase {
         try Data().write(to: decoy)
 
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let firstJob = try XCTUnwrap(model.jobs.first)
         let runnerUpURL = try XCTUnwrap(model.versions(for: firstJob)?.runnerUp?.url)
         XCTAssertNotEqual(runnerUpURL, decoy, "the decoy must have pushed the real reservation to -1")
@@ -1359,10 +1260,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
         try FileManager.default.removeItem(at: env.input)
@@ -1386,10 +1284,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         XCTAssertEqual(model.pendingCount, 0)
         XCTAssertEqual(model.armedCount, 0)
@@ -1411,10 +1306,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         XCTAssertFalse(model.canCompress)
 
         model.preset = .smallestSize
@@ -1427,10 +1319,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         model.add([try Fixtures.bornDigitalPDF()])
         try await waitUntil(timeout: 5) { model.jobs.count == 2 }
@@ -1515,10 +1404,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         XCTAssertTrue(model.allFinished)
 
         model.preset = .smallestSize
@@ -1534,10 +1420,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
                                           shippedBytes: 700, runnerUpBytes: nil) }
@@ -1559,10 +1442,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         // A Maximum-quality re-run that comes back plain gs — no runner-up at all.
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 2_000),
@@ -1590,10 +1470,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv(contentType: .scanColour)
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
 
         model.preset = .smallestSize
@@ -1626,10 +1503,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour)
         let model = env.model
         model.preset = .smallestSize
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
 
         model.preset = .balanced
@@ -1653,10 +1527,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv(before: 1_000, contentType: .bornDigital)
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
         try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
 
         model.preset = .maximumQuality
@@ -1676,10 +1547,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
                                           shippedBytes: 700, runnerUpBytes: nil) }
@@ -1719,10 +1587,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
                                           shippedBytes: 700, runnerUpBytes: nil) }
@@ -1756,10 +1621,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
                                           shippedBytes: 700, runnerUpBytes: nil) }
@@ -1812,10 +1674,7 @@ final class CompressViewModelTests: XCTestCase {
     func testAFailedRunnerUpSwitchKeepsTheRunnerUpThatIsStillOnDisk() async throws {
         let env = try HeavyEnv()
         let model = env.model
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(model.versions(for: job)?.runnerUp?.url)
@@ -1878,10 +1737,7 @@ final class CompressViewModelTests: XCTestCase {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
-        model.add([env.input])
-        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-        model.compress()
-        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await env.runToDone()
 
         try FileManager.default.removeItem(at: env.input)
         model.preset = .smallestSize
@@ -1948,6 +1804,17 @@ final class CompressViewModelTests: XCTestCase {
         /// The single job once it has reached `.done(.compressedHeavy)`.
         func doneHeavyJob(_ model: CompressViewModel) -> ToolJob? {
             model.jobs.first { if case .done(.compressedHeavy) = $0.state { return true }; return false }
+        }
+
+        /// Runs the input through to `.done(.compressedHeavy)` — the add/wait/compress/wait
+        /// preamble nearly every test in this file starts with.
+        @discardableResult
+        func runToDone() async throws -> ToolJob {
+            model.add([input])
+            try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+            model.compress()
+            try await waitUntil(timeout: 5) { doneHeavyJob(model) != nil }
+            return try XCTUnwrap(doneHeavyJob(model))
         }
     }
 
@@ -2071,21 +1938,22 @@ final class CompressViewModelTests: XCTestCase {
         }
     }
 
-    private struct TimedOut: Error, CustomStringConvertible {
-        let seconds: TimeInterval
-        var description: String { "condition not met within \(seconds)s" }
-    }
+}
 
-    /// Polls `condition` until true or `timeout` elapses — a genuine timeout is a **test
-    /// failure** (thrown, not skipped): this guards real async completion, not an
-    /// environment precondition.
-    private func waitUntil(timeout: TimeInterval, _ condition: @escaping () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                throw TimedOut(seconds: timeout)
-            }
-            try await Task.sleep(nanoseconds: 20_000_000)
+private struct TimedOut: Error, CustomStringConvertible {
+    let seconds: TimeInterval
+    var description: String { "condition not met within \(seconds)s" }
+}
+
+/// Polls `condition` until true or `timeout` elapses — a genuine timeout is a **test
+/// failure** (thrown, not skipped): this guards real async completion, not an
+/// environment precondition. File-scope so both the test methods and `HeavyEnv` can use it.
+private func waitUntil(timeout: TimeInterval, _ condition: @escaping () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() > deadline {
+            throw TimedOut(seconds: timeout)
         }
+        try await Task.sleep(nanoseconds: 20_000_000)
     }
 }
