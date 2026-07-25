@@ -22,7 +22,18 @@ import Foundation
 @MainActor
 final class CompressViewModel: ObservableObject {
     @Published var preset: CompressPreset = .balanced {
-        didSet { if preset != oldValue { reestimatePendingJobs() } }
+        didSet {
+            guard preset != oldValue else { return }
+            // Changing preset is the user saying "never mind that one, what about this?" — a
+            // message about the previous target is now stale. Until they do, it stands, ARMED ROW
+            // OR NOT: a failed attempt leaves the row armed at the same preset, and suppressing
+            // the message there would mean an explicit button press failed silently.
+            recompressErrors = [:]
+            // Cleared BEFORE the reestimate, which is the only republish this observer needs:
+            // `reestimatePendingJobs()`'s whole body is `publishJobs()`, so a trailing call would
+            // publish the same state twice.
+            reestimatePendingJobs()
+        }
     }
     @Published var outputFolder: URL?
     @Published private(set) var jobs: [ToolJob] = []
@@ -73,6 +84,50 @@ final class CompressViewModel: ObservableObject {
     /// versions and carries the message beside them. Distinct from `switchFailures`, which puts the
     /// row into `.failed` precisely because that row can no longer back what it was claiming.
     @Published private(set) var recompressErrors: [ToolJob.ID: String] = [:]
+
+    /// One armed row's fully-allocated recompress: where it reads from, what it writes into, and
+    /// the two cache slots its result may claim. Every path here comes from the up-front serial
+    /// reservation pass — nothing is allocated once the concurrent work has started (R11).
+    private struct RecompressPlan {
+        let id: ToolJob.ID
+        let url: URL
+        let target: CompressPreset
+        /// Where the result is delivered: the row's EXISTING result path, or — for a row that
+        /// shipped nothing — a freshly reserved name from the current folder.
+        let output: URL
+        /// The engine never overwrites, so the result is written here and landed afterwards.
+        let temp: URL
+        /// The cache slot the version being replaced is parked into.
+        let parked: URL
+        let runnerUp: URL
+    }
+
+    /// Live progress for a row in the direct recompress path, overlaid onto the published job while
+    /// `job.state` stays `.done` — the row's displayed state flips only at commit time (R8).
+    private var recompressProgress: [ToolJob.ID: Double] = [:]
+    // `recompressErrors` already exists (Task 4) and is reused here unchanged: deliberately NOT a
+    // `.failed` state, because R12 requires the previous result to stay displayed and openable, so
+    // the message rides beside the row's result instead of replacing it.
+
+    /// The phase-2 task group's handle, so an in-flight recompress is cancelled too.
+    private var recompressTask: Task<Void, Never>?
+    /// Run-scoped cancellation flag, set by `cancel()` and cleared at the START of every run (R9).
+    /// Two mechanisms cover the two windows a cancel can land in:
+    /// 1. this flag + the guard before phase 2 stops the recompress phase ever STARTING after a
+    ///    cancel that landed during phase 1 — `queue.run` returns normally on cancel, so without
+    ///    the guard phase 2 begins as if nothing happened;
+    /// 2. `recompressTask.cancel()` unwinds recompresses already in flight: it cancels the phase's
+    ///    unstructured task, which propagates to its task-group children, so `Task.isCancelled` is
+    ///    true inside `recompress` and its `try Task.checkCancellation()` throws before the commit.
+    /// The flag is not merely a mirror of `Task.isCancelled`: `await task.value` on a
+    /// non-throwing `Task` does not unwind on cancellation, so the explicit guard is load-bearing
+    /// rather than decoration.
+    private var runCancelled = false
+    /// Rows of the current run that have reached a terminal point. A recompress row is `.done`
+    /// from beginning to end (R8), so its state cannot carry this. Task 10 reads it for the
+    /// progress bar and does NOT re-declare it; this is its single declaration, placed where the
+    /// first writer lives.
+    private var runCompleted: Set<ToolJob.ID> = []
 
     /// The queue's own jobs, unmodified — `jobs` above is derived from this plus the local
     /// estimate/analysing state below.
@@ -250,6 +305,14 @@ final class CompressViewModel: ObservableObject {
         // target and fail the second job's atomic rename (a purely on-disk check races under
         // concurrency). Each job then looks up its pre-reserved, guaranteed-unique destination.
         var reserved = Set<String>()
+        // Seed every row's existing result path BEFORE allocating anything. A recompress commit
+        // parks then promotes, so its file is transiently absent — a queued same-basename job must
+        // be kept off that path by the reservation, never by the file happening to exist now (R11).
+        for job in queue.jobs {
+            if let shipped = versionStore.versions(for: job.id)?.shipped {
+                reserved.insert(FileNaming.reservationKey(for: shipped.url))
+            }
+        }
         var outputs: [ToolJob.ID: URL] = [:]
         var alternates: [ToolJob.ID: URL] = [:]
         for job in queue.jobs {
@@ -266,7 +329,30 @@ final class CompressViewModel: ObservableObject {
             // batch must not hand either to a new same-basename job.)
             if isStillQueued(job) { pendingPresets[job.id] = chosen }
         }
+        let plans: [RecompressPlan] = armedJobs.map { job in
+            let shipped = versionStore.versions(for: job.id)?.shipped
+            // R11: the row's own result path, even if "Save to" changed since. A row that shipped
+            // nothing (no-gain) has none, so it takes the name the loop above ALREADY allocated for
+            // it — `jobs` is a 1:1 map of `queue.jobs`, so an armed row is always in that loop and
+            // `outputs[job.id]` is always present. Allocating a second time from the same
+            // `reserved` ledger would collide with the first pass's own entry and hand the row
+            // `<name>-compressed-1.pdf`.
+            let output = shipped?.url ?? outputs[job.id]
+                ?? FileNaming.output(for: job.url, suffix: "compressed", folder: folder,
+                                     reserving: &reserved)
+            return RecompressPlan(
+                id: job.id, url: job.url, target: chosen, output: output,
+                temp: output.deletingLastPathComponent()
+                    .appendingPathComponent(".toolbox-recompress-\(UUID().uuidString).pdf"),
+                parked: versionStore.reservePreviousURL(for: job.url, reserving: &reserved),
+                runnerUp: store.reserveURL(for: job.url, reserving: &reserved))
+        }
         runReservations = alternates
+        // Per-run state, cleared at the START of the run: the messages of the run before are stale
+        // the moment a new one begins, and the cancel flag must not outlive the run that set it.
+        recompressErrors = [:]
+        runCompleted = []
+        runCancelled = false
         isRunning = true
         Task {
             await queue.run { job, report in
@@ -299,12 +385,17 @@ final class CompressViewModel: ObservableObject {
             // The batch is over: its in-flight reservations are settled (done-heavy runner-ups now
             // live on the job's `alternateURL`), so nothing here is `cancel`'s to discard anymore.
             runReservations = [:]
+            await runRecompressPhase(plans, engine: engine)
             isRunning = false
         }
     }
 
     func cancel() {
-        queue.cancel()
+        // Set FIRST: `queue.cancel()` can let phase 1 return before the next line runs, and the
+        // phase-2 guard reads this flag.
+        runCancelled = true
+        queue.cancel()          // unwinds the queue's own task
+        recompressTask?.cancel()// unwinds recompresses already in flight
         // Discard the in-flight batch's runner-up reservations, except any the store has since
         // claimed as a committed version. A cancelled job returns to `.queued` and, by the engine's
         // atomic-write contract, leaves no partial output — so this only reclaims files a
@@ -313,6 +404,180 @@ final class CompressViewModel: ObservableObject {
             store.discard(url)
         }
         runReservations = [:]
+    }
+
+    // MARK: the direct-engine recompress (R8/R10–R13)
+
+    /// The armed rows, through the engine directly. A sliding window of the same width as a normal
+    /// batch, mirroring `ToolQueue.execute` — launch the next as each finishes, never add-all,
+    /// which would ignore the cap.
+    private func runRecompressPhase(_ plans: [RecompressPlan], engine: any Compressing) async {
+        // The gate that makes Cancel work during phase 1. `queue.cancel()` cancels the queue's own
+        // task and `queue.run` then returns NORMALLY, so without this the recompress phase would
+        // start as though the cancel had never happened — and `recompressTask` is nil for the whole
+        // of phase 1, which is why cancelling that alone cannot cover this window.
+        guard !runCancelled, !plans.isEmpty else { return }
+        let task = Task { [weak self] in
+            await withTaskGroup(of: Void.self) { group in
+                var iterator = plans.makeIterator()
+                func launchNext() {
+                    guard !Task.isCancelled, let plan = iterator.next() else { return }
+                    group.addTask { await self?.recompress(plan, engine: engine) }
+                }
+                for _ in 0..<max(1, SystemInfo.performanceCoreCount) { launchNext() }
+                while await group.next() != nil { launchNext() }
+            }
+        }
+        recompressTask = task
+        await task.value
+        recompressTask = nil
+    }
+
+    private func recompress(_ plan: RecompressPlan, engine: any Compressing) async {
+        let fm = FileManager.default
+        // A recompress always reads the ORIGINAL input (D2 — never the compressed output), so a
+        // missing original stops this row before it starts; its shipped result and versions stay
+        // exactly as they are, and the rest of the batch is unaffected (R10).
+        guard fm.fileExists(atPath: plan.url.path) else {
+            recompressErrors[plan.id] = "The original file is no longer where it was"
+            runCompleted.insert(plan.id)
+            publishJobs()
+            return
+        }
+        recompressProgress[plan.id] = 0
+        publishJobs()
+        let id = plan.id
+        let report: @Sendable (Double) -> Void = { [weak self] fraction in
+            Task { @MainActor in
+                guard let self, self.recompressProgress[id] != nil else { return }
+                self.recompressProgress[id] = fraction
+                self.publishJobs()
+            }
+        }
+        var capturedReport: MRCDocumentReport?
+        do {
+            let outcome = try await engine.compress(plan.url, preset: plan.target, to: plan.temp,
+                                                    alternateOutput: plan.runnerUp,
+                                                    mrcReport: { capturedReport = $0 },
+                                                    progress: report)
+            // The engine may return normally after its own final checkpoint (`CompressEngine`'s
+            // last `Task.checkCancellation()` precedes the rename-and-return), so a cancel landing
+            // in that window arrives here as a successful outcome — committing it would overwrite
+            // the file the user already has, which is exactly what R9 forbids.
+            try Task.checkCancellation()
+            try commit(outcome, plan: plan, report: capturedReport)
+        } catch is CancellationError {
+            // Cancelled. On the throwing path the engine's atomic-write contract left no output;
+            // on the post-checkpoint path its result exists at plan.temp (and, when the engine
+            // produced one, its alternate at plan.runnerUp) — the two lines below remove both.
+            // Nothing was committed either way,
+            // so the row keeps its previous result (R9).
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+        } catch let stranded as RunnerUpStore.SwitchError {
+            // MUST precede the generic catch. `shippedStranded` is the one failure where the
+            // shipped file is NOT kept — it survives under a hidden dot-name nothing else looks
+            // for — so "kept your X version" would be a flat lie about the user's own file.
+            // Surface the store's message (it carries the park path) and drop the row's version
+            // record, exactly as the switch path does: `reportSwitchFailure` sets
+            // `switchFailures[id]`, and `versions(for:)` returns nil while that is set, so the row
+            // stops advertising a delivered file it can no longer back (the F6 mislabel).
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+            reportSwitchFailure(plan.id, stranded.localizedDescription)
+        } catch {
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+            // An explicit button press NEVER fails silently (R12), and the version they kept is
+            // named so the message is actionable. Every error reaching here left the shipped file
+            // exactly as it was — `promote`'s contract guarantees it for every throw except
+            // `shippedStranded`, which the arm above already took.
+            let kept = versionStore.versions(for: plan.id)?.shipped?.preset ?? plan.target
+            recompressErrors[plan.id] = "Recompress failed — kept your \(kept.title) version"
+        }
+        recompressProgress[plan.id] = nil
+        runCompleted.insert(plan.id)
+        publishJobs()
+    }
+
+    /// R12/R13: land one recompress outcome. The version the user has is parked BEFORE the fresh
+    /// result is promoted, so it survives every failure path; a no-gain commits nothing and clears
+    /// nothing.
+    private func commit(_ outcome: JobOutcome, plan: RecompressPlan,
+                        report: MRCDocumentReport?) throws {
+        let fm = FileManager.default
+        // Both early returns below are unreachable by construction — a plan is only built for an
+        // ARMED row, and `recompressState`'s own `guard let row = versions(for: job)` means a row
+        // with no store entry never arms (a no-gain row DOES get an entry, with `shipped: nil`);
+        // and `CompressEngine` never returns an OCR outcome — and both clean up anyway: an early
+        // return that leaves the temp file and the runner-up
+        // reservation behind would leak them for the session, and a "can't happen" is not a
+        // reason to leak.
+        guard let row = versionStore.versions(for: plan.id) else {
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+            return
+        }
+        let shippedBytes: Int
+        let variant: EngineVariant
+        var runnerUp: FileVersion?
+        switch outcome {
+        case .compressed(_, let after):
+            shippedBytes = after
+            variant = .plain
+        case .compressedHeavy(let before, let after, let runnerUpBytes):
+            shippedBytes = after
+            variant = .mrc
+            runnerUp = FileVersion(url: plan.runnerUp, bytes: runnerUpBytes, preset: plan.target,
+                                   variant: runnerUpBytes == before ? .original : .plain)
+        case .noGain:
+            // Nothing was written, so there is nothing to commit — and nothing to clear. The
+            // shipped version, its URL and its parked versions all stay (R12); the attempt is
+            // recorded so re-selecting this preset shows the futile caption rather than re-running
+            // a known-futile job (R6).
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+            futileAttempts.insert(FutileAttempt(id: plan.id, preset: plan.target))
+            versionStore.recordAttempt(plan.target, for: plan.id)
+            return
+        case .ocrAdded, .alreadySearchable:
+            // Never produced by CompressEngine — cleaned up regardless, as above.
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+            return
+        }
+        if let previouslyShipped = row.shipped {
+            try store.promote(fresh: plan.temp, to: previouslyShipped.url, parking: plan.parked)
+            // `promote` reaches the cache slot on a best-effort third step (see its doc): a
+            // successful return does NOT guarantee a file exists at `plan.parked`. Recording the
+            // slot regardless is correct and deliberate — a `previous` slot whose file has gone is
+            // an already-designed-for state, handled by `useVersion`'s "That version is no longer
+            // available — recompress at <preset> to get it back" path. Nothing below may assume
+            // the parked file is on disk.
+            // Replacing the previous slot discards the file the old occupant held (R14) — the cache
+            // never accumulates superseded versions.
+            versionStore.setSlot(.previous,
+                                 to: FileVersion(url: plan.parked, bytes: previouslyShipped.bytes,
+                                                 preset: previouslyShipped.preset,
+                                                 variant: previouslyShipped.variant),
+                                 for: plan.id)
+            versionStore.setShipped(FileVersion(url: previouslyShipped.url, bytes: shippedBytes,
+                                                preset: plan.target, variant: variant),
+                                    for: plan.id)
+        } else {
+            // A row that shipped nothing has no version to park — the result simply takes the
+            // freshly reserved output name.
+            try fm.moveItem(at: plan.temp, to: plan.output)
+            versionStore.setShipped(FileVersion(url: plan.output, bytes: shippedBytes,
+                                                preset: plan.target, variant: variant),
+                                    for: plan.id)
+        }
+        versionStore.setSlot(.runnerUp, to: runnerUp, for: plan.id)
+        if runnerUp == nil { store.discard(plan.runnerUp) }
+        if let report { rerunReports[plan.id] = report }
+        // R13: a result larger than the version they had still ships — they chose the quality —
+        // with honest sizes. The engine guarantees it is smaller than the ORIGINAL; anything else
+        // came back `.noGain` above.
     }
 
     // MARK: per-file estimate
@@ -385,6 +650,8 @@ final class CompressViewModel: ObservableObject {
                 // its capsule and byte badge with the outcome, which is the point — they described
                 // a file that is no longer there.
                 display.state = .failed(failure)
+            } else if let fraction = recompressProgress[job.id] {
+                display.state = .running(fraction)
             } else if isSwitchRerunning.contains(job.id) {
                 // R10 re-run overlay: the queue still reports the job `.done`, but the switch is
                 // re-computing it, so the row shows progress until the re-run lands.

@@ -427,12 +427,17 @@ final class CompressViewModelTests: XCTestCase {
         model.compress()
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
 
-        // A second file joins the list alongside the finished row, at a different preset.
+        // A second file joins the list alongside the finished row. The batch runs at the finished
+        // row's OWN preset, which leaves that row disarmed (R3) — so this run is a pure queue
+        // batch and the finished row's parked runner-up is untouched by it.
         model.add([try Fixtures.bornDigitalPDF()])
         try await waitUntil(timeout: 5) { model.jobs.count == 2 }
-        model.preset = .balanced
         model.compress()
         try await waitUntil(timeout: 10) { !model.isRunning }
+
+        // NOW the user selects a different preset. Both rows arm, but nothing runs: arming changes
+        // nothing until the button (D1), so the first row still holds the pair its own batch made.
+        model.preset = .balanced
 
         // The first row's runner-up vanishes, so switching it honestly re-runs the job — which
         // must go through the engine at the preset that row was compressed at.
@@ -754,6 +759,341 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertNil(model.recompressPrediction(for: job, at: .smallestSize),
                      "no input, no prediction — R10 applies at arming time, not just at run time")
         XCTAssertTrue(model.isOriginalMissing(for: job))
+    }
+
+    // MARK: recompress commit protocol (R10–R13)
+
+    /// The happy path: the fresh result takes the row's existing output path, the version it
+    /// replaced is parked as the previous version, and every aggregate follows the new one.
+    func testRecompressCommitsAndParksThePreviousVersion() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        let row = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(row.shipped?.url, shippedURL, "a recompress writes to the row's own output")
+        XCTAssertEqual(row.shipped?.bytes, 700)
+        XCTAssertEqual(row.shipped?.preset, .smallestSize)
+        XCTAssertEqual(try fileSize(shippedURL), 700, "the delivered file holds the new version")
+        let previous = try XCTUnwrap(row.previous)
+        XCTAssertEqual(previous.bytes, HeavyEnv.heavyBytes)
+        XCTAssertEqual(previous.preset, .balanced)
+        XCTAssertEqual(try fileSize(previous.url), HeavyEnv.heavyBytes,
+                       "the version the user had is parked intact")
+        XCTAssertEqual(model.displayedSizes(for: job)?.after, 700)
+    }
+
+    /// R7: when the parked previous version was made at the selected preset, the row offers an
+    /// instant switch instead of arming a recompute of a file already in the cache.
+    ///
+    /// Written here rather than in Task 7 (where it was specified): it cannot be satisfied before
+    /// the recompress commit exists, because nothing else ever fills the `previous` slot.
+    func testPreviousVersionsPresetOffersAnInstantSwitchRatherThanArming() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        // Recompress at Smallest, parking the Balanced version.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        model.preset = .balanced
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .instantSwitch(.balanced))
+        XCTAssertEqual(model.armedCount, 0)
+    }
+
+    /// R12: an engine failure keeps the version the user had, on disk and on screen, and says so.
+    func testRecompressFailureKeepsThePreviousVersionAndReportsIt() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+
+        env.stub.throwOnCall = env.stub.callCount + 1
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes,
+                       "the user's file must be exactly as it was")
+        XCTAssertEqual(model.recompressErrors[job.id],
+                       "Recompress failed — kept your Balanced version")
+        XCTAssertEqual(model.versions(for: job)?.shipped?.preset, .balanced)
+        XCTAssertNil(model.versions(for: job)?.previous, "a failed commit parks nothing")
+        // The failure message and the armed state COEXIST: a failed recompress leaves the row's
+        // preset at Balanced while the selector still says Smallest, so the row is armed again —
+        // and the message must survive that, or the user is told nothing about what just failed.
+        // This is the pair the view's `lead(for:)` has to resolve in the error's favour.
+        XCTAssertEqual(model.recompressState(for: job), .armed(.smallestSize),
+                       "a failed attempt does not record a preset, so the row re-arms (R1)")
+    }
+
+    /// R12's message survives until the user moves on, and no longer: changing preset is the user
+    /// saying "never mind that, what about this?", and the next run clears it as stale.
+    func testARecompressErrorClearsWhenThePresetChangesOrTheNextRunStarts() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        env.stub.throwOnCall = env.stub.callCount + 1
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertNotNil(model.recompressErrors[job.id])
+
+        model.preset = .maximumQuality
+        XCTAssertNil(model.recompressErrors[job.id],
+                     "the user moved on; a message about the Smallest attempt is now stale")
+
+        // The SECOND half of this test's own name: the next run clears it too. Fail the row again
+        // (the preset change re-armed it at Maximum quality), then start a fresh run and assert the
+        // message is gone — `compress()` clears `recompressErrors` at the START of the run, so it
+        // must be absent while that run is still in flight, not merely after it settles.
+        env.stub.throwOnCall = env.stub.callCount + 1
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertNotNil(model.recompressErrors[job.id], "the Maximum-quality attempt failed too")
+
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        // The preset is deliberately LEFT at Maximum quality: a failed recompress records no
+        // preset (R1), so the row is still armed at it and a fresh run needs no preset change.
+        // Only the run's own clear can green the assertion below — the preset half this test
+        // already covered cannot.
+        model.compress()
+        try await waitUntil(timeout: 5) { model.isRunning }
+        XCTAssertNil(model.recompressErrors[job.id],
+                     "the next run clears the previous run's messages at its start")
+        await gate.open()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+    }
+
+    /// R9 + R12: cancelling during the QUEUE phase must stop the recompress phase before it
+    /// starts. `queue.run` returns normally after a cancel, so nothing about the queue's own
+    /// unwinding prevents phase 2 — only the run-scoped guard does.
+    func testCancellingDuringTheQueuePhaseNeverStartsTheRecompressPhase() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+
+        // A newly queued row to occupy phase 1, and the finished row armed for phase 2.
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        let callsBefore = env.stub.callCount
+
+        model.preset = .smallestSize
+        model.compress()
+        // Phase 1's job is in the engine, behind the gate.
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        model.cancel()
+        await gate.open()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        XCTAssertEqual(env.stub.callCount, callsBefore + 1,
+                       "the armed row must never reach the engine after a cancel in phase 1")
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes,
+                       "the armed row's delivered file is exactly as it was")
+        XCTAssertNil(model.recompressErrors[try XCTUnwrap(model.jobs.first).id],
+                     "a cancel is not a failure")
+    }
+
+    /// R9: cancelling an IN-FLIGHT recompress leaves the row's previous result and display
+    /// untouched.
+    ///
+    /// The wait is on the stub's call count, deliberately, not on `model.isRunning`: with the
+    /// run-scoped cancel guard in place, `isRunning` goes true before phase 2 begins, so a cancel
+    /// fired on that signal alone would be caught by the guard and the engine would never be
+    /// entered — the test would pass without ever exercising in-flight cancellation. Waiting for
+    /// the call means the engine is genuinely suspended at the gate when the cancel lands.
+    /// (`testCancellingDuringTheQueuePhaseNeverStartsTheRecompressPhase` covers the other case.)
+    func testCancellingARecompressKeepsThePreviousResult() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        let callsBefore = env.stub.callCount
+        model.preset = .smallestSize
+        model.compress()
+        // The armed row is inside the engine, suspended at the gate — see the note above.
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        model.cancel()
+        await gate.open()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
+        XCTAssertEqual(model.versions(for: job)?.shipped?.preset, .balanced)
+        XCTAssertNil(model.recompressErrors[job.id], "a cancel is not a failure")
+    }
+
+    /// R12: a no-gain recompress ships nothing and clears NOTHING — the shipped version, its URL
+    /// and its parked versions all survive, and the row remembers the futile preset (R6).
+    func testNoGainRecompressKeepsEveryReference() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let before = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+
+        env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
+                                          shippedBytes: nil, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        let after = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(after.shipped, before.shipped, "nothing shipped, so nothing changed")
+        XCTAssertEqual(after.runnerUp, before.runnerUp)
+        XCTAssertNil(after.previous)
+        XCTAssertEqual(try fileSize(try XCTUnwrap(after.shipped?.url)), HeavyEnv.heavyBytes)
+        XCTAssertEqual(model.recompressState(for: job), .futile(.smallestSize))
+    }
+
+    /// R11: the output path is pinned to the row's existing result even when "Save to" changed
+    /// since the first run — a recompress replaces a file, it does not deliver a second one.
+    func testRecompressWritesToTheRowsExistingResultPathAfterTheFolderChanged() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+
+        let elsewhere = env.storeRoot.deletingLastPathComponent()
+            .appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        model.outputFolder = elsewhere
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        XCTAssertEqual(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url, shippedURL)
+        XCTAssertEqual(try fileSize(shippedURL), 700)
+        XCTAssertTrue((try FileManager.default.contentsOfDirectory(atPath: elsewhere.path)).isEmpty,
+                      "a recompress must not deliver a second file into the new folder")
+    }
+
+    /// R11's reservation seeding: the commit makes the row's file transiently absent, so a queued
+    /// same-basename job must be kept off that path by the RESERVATION, not by the file happening
+    /// to exist when names are allocated. The DECOY is what makes this test discriminate: it
+    /// pushes the armed row off the first free name, so with the seeding deleted the second
+    /// batch's unfiltered allocation loop re-hands that row's freed name to the armed row and
+    /// gives the NEW job exactly the armed row's shipped path.
+    func testAQueuedJobNeverClaimsAnArmedRowsResultPath() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        // The decoy occupies `image-compressed.pdf`, so the armed row ships at
+        // `image-compressed-1.pdf` rather than the first free name.
+        let decoy = outputFolder.appendingPathComponent("image-compressed.pdf")
+        try Data().write(to: decoy)
+
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let armedRowOutput = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+
+        // Stand in for the promote window: the row's delivered file is momentarily not on disk —
+        // and the decoy goes too, so `image-compressed.pdf` is free again and NOTHING on disk
+        // stands between the new job and the armed row's path except the reservation.
+        try FileManager.default.removeItem(at: decoy)
+        try FileManager.default.removeItem(at: armedRowOutput)
+
+        model.add([try Fixtures.imagePDF()])       // same basename, different folder
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+
+        let newRow = try XCTUnwrap(model.jobs.last)
+        XCTAssertNotEqual(newRow.resultURL, armedRowOutput,
+                          "the armed row's output must be reserved before any name is allocated")
+    }
+
+    /// R10: a vanished original stops that row before it starts, says so, and leaves its shipped
+    /// result and versions intact. The rest of the batch is unaffected.
+    func testMissingOriginalReportsPerRowAndLeavesTheResultIntact() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+
+        try FileManager.default.removeItem(at: env.input)
+        let callsBefore = env.stub.callCount
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(env.stub.callCount, callsBefore, "no engine run without an input")
+        XCTAssertEqual(model.recompressErrors[job.id], "The original file is no longer where it was")
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
+        XCTAssertNotNil(model.versions(for: job)?.shipped)
     }
 
     // MARK: helpers
