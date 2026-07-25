@@ -278,8 +278,14 @@ struct CompressView: View {
     /// How the output will be named. With a single file in the queue that is its real resulting
     /// filename, which is more use than a placeholder; with several, the pattern they all follow.
     private var outputNamePreview: String {
-        // A recompress replaces the row's existing file — naming a new one would be a lie.
-        if model.armedCount > 0, model.pendingCount == 0 { return "replacing the current file" }
+        // A recompress replaces the row's existing file — naming a new one would be a lie. But a
+        // no-gain row has shipped nothing (`shipped == nil`), so an armed set that is ALL no-gain
+        // rows is about to create fresh `<name>-compressed.pdf` files, not replace anything — only
+        // claim the replace text when every armed row actually has a file to replace.
+        if model.pendingCount == 0, model.armedCount > 0,
+           model.armedJobs.allSatisfy({ model.versions(for: $0)?.shipped != nil }) {
+            return "replacing the current file"
+        }
         if model.jobs.count == 1, let job = model.jobs.first {
             let base = job.url.deletingPathExtension().lastPathComponent
             return "as \(base)-compressed.pdf"
