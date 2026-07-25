@@ -46,6 +46,23 @@ enum WindowSetup {
     private static var responderObservation: NSKeyValueObservation?
     private static weak var observedWindow: NSWindow?
 
+    /// Arms the net for whatever main-capable window becomes key — `applyMinimumSize` only runs
+    /// from `RootView.onAppear`, which SwiftUI does NOT re-fire for a Dock-reopened window (the
+    /// scene content survives the window), so without this a reopened window would never be
+    /// re-armed. Verified live: the reopened window showed the ring until this observer existed.
+    private static var armingObserver: NSObjectProtocol?
+
+    private static func installArmingObserver() {
+        guard armingObserver == nil else { return }
+        armingObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { note in
+            guard let window = note.object as? NSWindow,
+                  window.canBecomeMain, window.contentView != nil else { return }
+            installStrayFocusClear(on: window)
+        }
+    }
+
     private static func installStrayFocusClear(on window: NSWindow) {
         // Keyed to the window instance, not a one-shot: closing the window and reopening it
         // from the Dock creates a NEW NSWindow, and an observation still bound to the dead one
@@ -53,6 +70,9 @@ enum WindowSetup {
         guard observedWindow !== window else { return }
         responderObservation?.invalidate()
         observedWindow = window
+        // A fresh window auto-focuses its first control at order-front, BEFORE this watch
+        // attaches — clear that pre-arm assignment once, deferred past the current event.
+        DispatchQueue.main.async { window.makeFirstResponder(nil) }
         responderObservation = window.observe(\.firstResponder) { window, _ in
             guard let responder = window.firstResponder, responder !== window else { return }
             if NSApp.currentEvent?.type == .keyDown { return }
@@ -67,6 +87,7 @@ enum WindowSetup {
     }
 
     static func applyMinimumSize(_ minSize: NSSize) {
+        installArmingObserver()
         DispatchQueue.main.async {
             for window in NSApp.windows where window.contentView != nil && window.canBecomeMain {
                 window.minSize = minSize
