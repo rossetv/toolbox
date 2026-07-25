@@ -1932,9 +1932,6 @@ final class CompressViewModelTests: XCTestCase {
         let outcome: JobOutcome
         let shippedBytes: Int
         let runnerUpBytes: Int
-        /// When set, handed to the caller's `mrcReport` closure — exercises the retention path.
-        var reportToDeliver: MRCDocumentReport?
-        var gate: Gate?
         /// What one scripted call writes and returns, so a recompress can differ from the run that
         /// produced the row.
         struct Response {
@@ -1946,15 +1943,17 @@ final class CompressViewModelTests: XCTestCase {
         }
 
         // `compress` runs concurrently: `ToolQueue.execute` fans out up to `performanceCoreCount`
-        // jobs at once, so `callCount`, `presets`, `script` and `throwOnCall` all need genuine
-        // synchronisation rather than plain mutable state. Everything below the lock keeps the same
-        // external API (synchronous property access from @MainActor tests) but is backed by a
-        // private, lock-guarded store.
+        // jobs at once, so `callCount`, `presets`, `script`, `throwOnCall`, `reportToDeliver` and
+        // `gate` all need genuine synchronisation rather than plain mutable state. Everything below
+        // the lock keeps the same external API (synchronous property access from @MainActor tests)
+        // but is backed by a private, lock-guarded store.
         private let lock = NSLock()
         private var _callCount = 0
         private var _presets: [CompressPreset] = []
         private var _script: ((Int, CompressPreset) -> Response)?
         private var _throwOnCall: Int?
+        private var _reportToDeliver: MRCDocumentReport?
+        private var _gate: Gate?
 
         /// Number of `compress` calls made so far.
         var callCount: Int { lock.lock(); defer { lock.unlock() }; return _callCount }
@@ -1970,6 +1969,15 @@ final class CompressViewModelTests: XCTestCase {
         var throwOnCall: Int? {
             get { lock.lock(); defer { lock.unlock() }; return _throwOnCall }
             set { lock.lock(); defer { lock.unlock() }; _throwOnCall = newValue }
+        }
+        /// When set, handed to the caller's `mrcReport` closure — exercises the retention path.
+        var reportToDeliver: MRCDocumentReport? {
+            get { lock.lock(); defer { lock.unlock() }; return _reportToDeliver }
+            set { lock.lock(); defer { lock.unlock() }; _reportToDeliver = newValue }
+        }
+        var gate: Gate? {
+            get { lock.lock(); defer { lock.unlock() }; return _gate }
+            set { lock.lock(); defer { lock.unlock() }; _gate = newValue }
         }
 
         init(outcome: JobOutcome, shippedBytes: Int, runnerUpBytes: Int) {
