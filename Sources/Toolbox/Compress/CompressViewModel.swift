@@ -385,12 +385,24 @@ final class CompressViewModel: ObservableObject {
         // target and fail the second job's atomic rename (a purely on-disk check races under
         // concurrency). Each job then looks up its pre-reserved, guaranteed-unique destination.
         var reserved = Set<String>()
-        // Seed every row's existing result path BEFORE allocating anything. A recompress commit
-        // parks then promotes, so its file is transiently absent — a queued same-basename job must
-        // be kept off that path by the reservation, never by the file happening to exist now (R11).
+        // Seed every row's existing result path, and both its parked cache slots, BEFORE
+        // allocating anything. A recompress commit parks then promotes, so the shipped file is
+        // transiently absent, and `promote`'s cache-slot step is best-effort — a `previous` (or
+        // `runnerUp`) file can be transiently OR permanently absent while its row still owns that
+        // path. Either way a queued same-basename job must be kept off it by the reservation,
+        // never by the file happening to exist now (R11) — otherwise a second row's cache
+        // allocation can land on a first row's still-live parked slot and overwrite its content.
         for job in queue.jobs {
-            if let shipped = versionStore.versions(for: job.id)?.shipped {
-                reserved.insert(FileNaming.reservationKey(for: shipped.url))
+            if let versions = versionStore.versions(for: job.id) {
+                if let shipped = versions.shipped {
+                    reserved.insert(FileNaming.reservationKey(for: shipped.url))
+                }
+                if let runnerUp = versions.runnerUp {
+                    reserved.insert(FileNaming.reservationKey(for: runnerUp.url))
+                }
+                if let previous = versions.previous {
+                    reserved.insert(FileNaming.reservationKey(for: previous.url))
+                }
             }
         }
         var outputs: [ToolJob.ID: URL] = [:]

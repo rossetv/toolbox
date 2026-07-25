@@ -1310,6 +1310,45 @@ final class CompressViewModelTests: XCTestCase {
                           "the armed row's output must be reserved before any name is allocated")
     }
 
+    /// R11's reservation seeding must cover the two PARKED cache slots too, not just the shipped
+    /// path. `RunnerUpStore.promote`'s cache-slot step is best-effort (see its doc), so a live
+    /// row's runner-up/previous file can be transiently OR permanently absent while the row still
+    /// owns that URL — "a missing runner-up is already a designed-for state". The DECOY makes
+    /// this test discriminate exactly as the shipped-path test above does: it pushes row A's real
+    /// runner-up reservation to `-1`. Once the decoy and A's own file are gone, an unseeded
+    /// batch's per-row wasted reservation for A (every batch reserves a runner-up name for every
+    /// row, used or not) naturally re-lands on the freed `-0` name, leaving `-1` — A's REAL,
+    /// still-live runner-up path — completely unprotected for a same-basename job B to claim and
+    /// overwrite next.
+    func testAQueuedJobNeverClaimsAnExistingRowsLiveRunnerUpPath() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let decoy = env.storeRoot.appendingPathComponent("image-runner-up.pdf")
+        try Data().write(to: decoy)
+
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let firstJob = try XCTUnwrap(model.jobs.first)
+        let runnerUpURL = try XCTUnwrap(model.versions(for: firstJob)?.runnerUp?.url)
+        XCTAssertNotEqual(runnerUpURL, decoy, "the decoy must have pushed the real reservation to -1")
+
+        // Stand in for the file being absent while the row still owns the slot.
+        try FileManager.default.removeItem(at: decoy)
+        try FileManager.default.removeItem(at: runnerUpURL)
+
+        model.add([try Fixtures.imagePDF()])       // same basename, different folder
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        model.compress()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+
+        let secondJob = try XCTUnwrap(model.jobs.last)
+        XCTAssertNotEqual(model.versions(for: secondJob)?.runnerUp?.url, runnerUpURL,
+                          "a queued job must not claim an existing row's live runner-up path")
+    }
+
     /// R10: a vanished original stops that row before it starts, says so, and leaves its shipped
     /// result and versions intact. The rest of the batch is unaffected.
     func testMissingOriginalReportsPerRowAndLeavesTheResultIntact() async throws {
