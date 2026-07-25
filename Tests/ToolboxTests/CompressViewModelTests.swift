@@ -551,6 +551,103 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertTrue(leftovers.isEmpty, "cancel must discard the batch's runner-up reservations")
     }
 
+    // MARK: arming (R1/R3/R6/R7)
+
+    /// Selecting a different preset with finished rows showing arms them; the row's own preset
+    /// leaves it alone (R1).
+    func testSelectingADifferentPresetArmsAFinishedRow() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .none,
+                       "the row's own preset must not arm it")
+
+        model.preset = .smallestSize
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize))
+        XCTAssertEqual(model.armedCount, 1)
+    }
+
+    /// R3: re-selecting the row's preset disarms it instantly, leaving no residue.
+    func testReselectingTheRowsPresetDisarmsIt() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        model.preset = .smallestSize
+        XCTAssertEqual(model.armedCount, 1)
+        model.preset = .balanced
+        XCTAssertEqual(model.armedCount, 0)
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)), .none)
+    }
+
+    /// A `.failed` row never arms — its recourse is re-adding the file, not a re-run (R1).
+    func testFailedRowsNeverArm() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.throwOnCall = 1
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        model.preset = .smallestSize
+        let job = try XCTUnwrap(model.jobs.first)
+        guard case .failed = job.state else { return XCTFail("expected a failed row, got \(job.state)") }
+        XCTAssertEqual(model.recompressState(for: job), .none)
+        XCTAssertEqual(model.armedCount, 0)
+    }
+
+    /// A no-gain row arms at a DIFFERENT preset ("still too big" is exactly its user) but reports
+    /// its own preset as futile rather than re-arming a known-futile run (R1/R6).
+    func testNoGainRowArmsElsewhereAndIsFutileAtItsOwnPreset() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
+                                          shippedBytes: nil, runnerUpBytes: nil) }
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .futile(.balanced))
+
+        model.preset = .smallestSize
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize), "a no-gain row is the 'still too big' case — it arms")
+    }
+
+    /// Nothing arms while a run is in flight — the selector is disabled for the duration (R9), and
+    /// the state must agree with the control.
+    func testNothingArmsWhileARunIsInFlight() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        let gate = Gate()
+        env.stub.gate = gate
+        model.compress()
+        try await waitUntil(timeout: 5) { model.isRunning }
+
+        model.preset = .smallestSize
+        XCTAssertEqual(model.armedCount, 0)
+        await gate.open()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+    }
+
     // MARK: helpers
 
     private func fileSize(_ url: URL) throws -> Int {
@@ -608,6 +705,19 @@ final class CompressViewModelTests: XCTestCase {
         /// re-run reproduced.
         private(set) var presets: [CompressPreset] = []
         var gate: Gate?
+        /// What one scripted call writes and returns, so a recompress can differ from the run that
+        /// produced the row.
+        struct Response {
+            let outcome: JobOutcome
+            /// Bytes to write at the primary output, or nil to write nothing (a no-gain run).
+            let shippedBytes: Int?
+            /// Bytes to write at the alternate output, or nil to leave that slot empty.
+            let runnerUpBytes: Int?
+        }
+        /// Per-call script (1-based call index). Nil keeps the fixed outcome the initialiser took.
+        var script: ((Int, CompressPreset) -> Response)?
+        /// When set, the engine throws on this 1-based call instead of writing anything.
+        var throwOnCall: Int?
 
         init(outcome: JobOutcome, shippedBytes: Int, runnerUpBytes: Int) {
             self.outcome = outcome
@@ -620,23 +730,28 @@ final class CompressViewModelTests: XCTestCase {
                       progress: @escaping (Double) -> Void) async throws -> JobOutcome {
             callCount += 1
             presets.append(preset)
+            if throwOnCall == callCount { throw CompressError.validationFailed }
+            let response = script?(callCount, preset)
+                ?? Response(outcome: outcome, shippedBytes: shippedBytes, runnerUpBytes: runnerUpBytes)
             let fm = FileManager.default
             // Mirror the production engine's never-overwrite delivery contract (it `moveItem`s the
             // winner into place, which throws on an existing destination) — a stub that overwrites
             // via `Data.write` would mask a caller that targets an already-occupied destination.
-            guard !fm.fileExists(atPath: output.path) else {
-                throw CocoaError(.fileWriteFileExists)
+            if let bytes = response.shippedBytes {
+                guard !fm.fileExists(atPath: output.path) else {
+                    throw CocoaError(.fileWriteFileExists)
+                }
+                try Data(repeating: 0x48, count: bytes).write(to: output)
             }
-            try Data(repeating: 0x48, count: shippedBytes).write(to: output)
-            if let alternateOutput {
+            if let alternateOutput, let bytes = response.runnerUpBytes {
                 guard !fm.fileExists(atPath: alternateOutput.path) else {
                     throw CocoaError(.fileWriteFileExists)
                 }
-                try Data(repeating: 0x4E, count: runnerUpBytes).write(to: alternateOutput)
+                try Data(repeating: 0x4E, count: bytes).write(to: alternateOutput)
             }
             if let reportToDeliver { mrcReport?(reportToDeliver) }
             if let gate { await gate.wait() }
-            return outcome
+            return response.outcome
         }
     }
 

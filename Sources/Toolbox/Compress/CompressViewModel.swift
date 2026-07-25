@@ -62,6 +62,13 @@ final class CompressViewModel: ObservableObject {
     /// a version record: a reservation whose job never shipped a runner-up is discarded by `cancel`
     /// and by the run's own teardown, and everything committed is owned by `versionStore`.
     private var runReservations: [ToolJob.ID: URL] = [:]
+    /// A recompress attempt that came back with no saving. Dies with the row (Clear finished /
+    /// remove) and with the session; never persisted.
+    private struct FutileAttempt: Hashable {
+        let id: ToolJob.ID
+        let preset: CompressPreset
+    }
+    private var futileAttempts: Set<FutileAttempt> = []
     /// Per-row messages that must NOT replace the row's result — the row keeps its result and its
     /// versions and carries the message beside them. Distinct from `switchFailures`, which puts the
     /// row into `.failed` precisely because that row can no longer back what it was claiming.
@@ -161,6 +168,9 @@ final class CompressViewModel: ObservableObject {
                 versionStore.record(RowVersions(originalBytes: bytes, lastAttemptPreset: preset,
                                                 shipped: nil, runnerUp: nil, previous: nil),
                                     for: job.id)
+                // R6: a first-run no-gain at P0 records (job, P0) as futile exactly as a
+                // recompress no-gain does.
+                futileAttempts.insert(FutileAttempt(id: job.id, preset: preset))
             case .ocrAdded, .alreadySearchable:
                 continue        // never produced by CompressEngine
             }
@@ -353,6 +363,7 @@ final class CompressViewModel: ObservableObject {
         recompressErrors = recompressErrors.filter { liveIDs.contains($0.key) }
         rerunReports = rerunReports.filter { liveIDs.contains($0.key) }
         switchFailures = switchFailures.filter { liveIDs.contains($0.key) }
+        futileAttempts = futileAttempts.filter { liveIDs.contains($0.id) }
         for (id, task) in estimationTasks where !liveIDs.contains(id) {
             task.cancel()
             estimationTasks[id] = nil
@@ -384,6 +395,50 @@ final class CompressViewModel: ObservableObject {
             return display
         }
     }
+
+    // MARK: derived arming (R1/R3/R6/R7)
+
+    /// What selecting the current preset means for one finished row (R1/R6/R7). Derived on every
+    /// read from the row's versions and futile records — never stored, so re-selecting the row's
+    /// own preset disarms it with nothing to unwind (R3).
+    enum RowRecompressState: Equatable {
+        case none
+        /// This row already came back with no saving at that preset; saying so beats re-running it.
+        case futile(CompressPreset)
+        /// The parked previous version was made at that preset — switch, don't recompute.
+        case instantSwitch(CompressPreset)
+        /// Will recompress at that preset when the button is pressed.
+        case armed(CompressPreset)
+    }
+
+    func recompressState(for job: ToolJob) -> RowRecompressState {
+        // Nothing arms mid-run: the selector is disabled for the duration (R9), and an armed row
+        // whose file is being rewritten underneath it would be describing a moving target.
+        guard !isRunning else { return .none }
+        guard case .done(let outcome) = job.state else { return .none }
+        switch outcome {
+        // A `.failed` row never arms (its recourse is re-adding the file); OCR outcomes never
+        // reach this view model's rows.
+        case .ocrAdded, .alreadySearchable: return .none
+        case .compressed, .compressedHeavy, .noGain: break
+        }
+        // A row whose delivered file could not be backed any more has nothing to recompress from.
+        guard let row = versions(for: job) else { return .none }
+        let target = preset
+        // Ahead of the row-preset check on purpose: a row that came back no-gain at its own preset
+        // must show the futile caption rather than read as a plain, unremarkable finished row.
+        if futileAttempts.contains(FutileAttempt(id: job.id, preset: target)) { return .futile(target) }
+        if row.rowPreset == target { return .none }
+        if row.previous?.preset == target { return .instantSwitch(target) }
+        return .armed(target)
+    }
+
+    /// The rows one press would recompress (R5's M).
+    var armedJobs: [ToolJob] {
+        jobs.filter { if case .armed = recompressState(for: $0) { return true }; return false }
+    }
+
+    var armedCount: Int { armedJobs.count }
 
     // MARK: heavy-version switch (R8–R11)
 
