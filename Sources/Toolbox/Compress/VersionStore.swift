@@ -78,8 +78,12 @@ struct RowVersions: Equatable {
 }
 
 /// The display authority for every row's versions (R14), and the only path that discards a parked
-/// file. Replacing or dropping a slot discards the file it held at that moment — never at quit —
-/// so the session cache cannot grow with superseded versions (D6/R18).
+/// file — with one documented exception: `CompressViewModel.rerunForSwitch` clears and
+/// regenerates the runner-up FILE directly at its existing URL (never through `setSlot`, so the
+/// row's `FileVersion` record — and the URL it names — is deliberately left standing across that
+/// window, because the re-run is expected to recreate the same file the record already describes).
+/// Everywhere else, replacing or dropping a slot discards the file it held at that moment — never
+/// at quit — so the session cache cannot grow with superseded versions (D6/R18).
 /// @MainActor: owned and driven by `CompressViewModel`.
 @MainActor
 final class VersionStore {
