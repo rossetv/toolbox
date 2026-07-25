@@ -272,10 +272,7 @@ struct CompressView: View {
             // Gated on the run, like "+ Add" beside it: clearing mid-batch drops the progress
             // bar's denominator under the running batch and silently omits the files already
             // compressed from the final summary.
-            // Also gated on `switchesInFlight`: a mid-switch row still shows/queues as `.done`
-            // (ec61602), so `clearFinished()` refuses outright while one is in flight — mirror
-            // that here so the button doesn't invite a click that does nothing.
-            if hasFinishedJobs, !model.isRunning, model.switchesInFlight.isEmpty {
+            if model.canClearFinished {
                 LinkButton(title: "Clear finished") { model.clearFinished() }
             }
         }
@@ -577,19 +574,6 @@ struct CompressView: View {
         let percent = Int((1 - Double(after) / Double(before)) * 100)
         return "Saved \(byteString(before - after)) · \(percent)% smaller"
     }
-
-    /// Whole-list, NOT run-scoped, deliberately: its only consumer is "Clear finished", which
-    /// clears every finished row regardless of which batch finished it (R9).
-    private var finishedCount: Int {
-        model.jobs.filter { job in
-            switch job.state {
-            case .done, .failed: return true
-            case .queued, .analysing, .running: return false
-            }
-        }.count
-    }
-
-    private var hasFinishedJobs: Bool { finishedCount > 0 }
 
     // MARK: helpers
 

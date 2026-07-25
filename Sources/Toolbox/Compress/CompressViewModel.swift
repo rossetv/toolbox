@@ -299,6 +299,13 @@ final class CompressViewModel: ObservableObject {
         engine != nil && !isRunning && switchesInFlight.isEmpty && (hasQueuedWork || armedCount > 0)
     }
 
+    /// Whether "Clear finished" may run — the one gate `clearFinished()` and the view that offers
+    /// it must agree on (CODE_GUIDELINES.md §8.2), mirroring `canCompress`'s shape for its sibling
+    /// action.
+    var canClearFinished: Bool {
+        !isRunning && switchesInFlight.isEmpty && jobs.contains(where: isFinished)
+    }
+
     func add(_ urls: [URL]) {
         // Gated on `isRunning`: `compress()` snapshots `queue.jobs` and reserves an output name for
         // each up front, but several MainActor hops separate that snapshot from the queue actually
@@ -323,28 +330,29 @@ final class CompressViewModel: ObservableObject {
         // never offers removal on such a row, but the invariant belongs to the type that owns the
         // state, not to every caller (CODE_GUIDELINES.md §6.3).
         guard !isRunning else { return }
-        discardRunnerUp(for: job)
+        // Explicit discard needed here, unlike `clearFinished()`: `ToolQueue.remove(_:)` only
+        // actually removes a `.queued` job, so for a `.done`/`.failed` row (the case this method
+        // exists for) `queue.remove` below is a no-op on `queue.jobs` — the `pruneStaleEstimateState`
+        // sweep that `clearFinished()` can rely on never fires, so the row's parked files would
+        // never be discarded without this call.
+        versionStore.discardRow(job.id)
+        switchFailures[job.id] = nil
         queue.remove(job.id)
     }
 
     func clearFinished() {
-        // Refuse outright while a run (queued or armed) is in flight: a recompressing row is
-        // `.done` throughout (R8), so `isFinished`/`removeCompleted` cannot tell it apart from a
-        // genuinely finished row, and clearing would discard a runner-up mid-commit
-        // (CODE_GUIDELINES.md §6.3). Also refused while any switch is in flight: after ec61602 a
-        // mid-switch row still displays and queues as `.done`, so clearing would discard the
-        // parked file `useVersion`/`rerunForSwitch` is mid-copy into. One coarse guard beats
-        // threading an excluded-ids filter through `ToolQueue.removeCompleted()`, which OCR also
-        // calls and has no notion of switches (R19).
-        guard !isRunning, switchesInFlight.isEmpty else { return }
-        for job in jobs where isFinished(job) { discardRunnerUp(for: job) }
+        // `canClearFinished` is the one owner of this precondition (CODE_GUIDELINES.md §8.2): a
+        // recompressing row is `.done` throughout (R8), so `isFinished`/`removeCompleted` cannot
+        // tell it apart from a genuinely finished row, and clearing would discard a runner-up
+        // mid-commit; a mid-switch row (ec61602) similarly still displays and queues as `.done`,
+        // so clearing would discard the parked file `useVersion`/`rerunForSwitch` is mid-copy
+        // into. One coarse guard beats threading an excluded-ids filter through
+        // `ToolQueue.removeCompleted()`, which OCR also calls and has no notion of switches (R19).
+        guard canClearFinished else { return }
+        // No explicit discard loop here either — see `remove(_:)`'s comment: the same
+        // `pruneStaleEstimateState()` sweep is the row's one discard path, reached the instant
+        // `removeCompleted()` republishes the queue.
         queue.removeCompleted()
-    }
-
-    /// Discard every parked version a row holds and forget its switch bookkeeping (R15).
-    private func discardRunnerUp(for job: ToolJob) {
-        versionStore.discardRow(job.id)
-        switchFailures[job.id] = nil
     }
 
     private func isFinished(_ job: ToolJob) -> Bool {
@@ -401,16 +409,8 @@ final class CompressViewModel: ObservableObject {
         // never by the file happening to exist now (R11) — otherwise a second row's cache
         // allocation can land on a first row's still-live parked slot and overwrite its content.
         for job in queue.jobs {
-            if let versions = versionStore.versions(for: job.id) {
-                if let shipped = versions.shipped {
-                    reserved.insert(FileNaming.reservationKey(for: shipped.url))
-                }
-                if let runnerUp = versions.runnerUp {
-                    reserved.insert(FileNaming.reservationKey(for: runnerUp.url))
-                }
-                if let previous = versions.previous {
-                    reserved.insert(FileNaming.reservationKey(for: previous.url))
-                }
+            for card in versionStore.versions(for: job.id)?.cards ?? [] {
+                reserved.insert(FileNaming.reservationKey(for: card.version.url))
             }
         }
         var outputs: [ToolJob.ID: URL] = [:]
