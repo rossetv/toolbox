@@ -422,12 +422,12 @@ struct CompressView: View {
     ///
     /// Precedence, in order: a missing-original error (arming is impossible, so it overrides
     /// everything else); any recompress/switch failure message — the outcome of a button the user
-    /// pressed, so it outranks a plain finished row and survives until the user changes preset or
-    /// the next run clears it; then the armed/futile/instant-switch lead. One exception: an
-    /// instant-switch failure keeps the "Switch instantly" link as the lead instead of the error,
-    /// because that link IS the retry control — showing the failure text here would tell the user
-    /// to try again while hiding the only thing they can tap to do it. Its message goes out
-    /// through `metaAccent` instead (see below).
+    /// pressed, so it outranks the armed/futile/instant-switch lead and survives until the user
+    /// changes preset or the next run clears it; then the armed/futile/instant-switch lead itself.
+    /// An instant-switch failure still leaves a retry reachable: `versions(for:)` stays non-nil on
+    /// this path (only `switchFailures` blanks it, and this path sets `recompressErrors` instead),
+    /// so the row's capsule still opens `VersionsPopover` with a live "Use this" on the previous
+    /// card — the error here isn't the only way back in.
     private func lead(for job: ToolJob) -> FileRow.Lead? {
         let state = model.recompressState(for: job)
         // R10, at arming time: an armed row whose ORIGINAL has gone cannot be recompressed at all,
@@ -441,11 +441,8 @@ struct CompressView: View {
         // fails; the old `state == .none` guard therefore suppressed R12's message on exactly the
         // rows that had just failed, and an explicit button press would have failed silently. The
         // message stays authoritative until the user changes preset or the next run starts — both
-        // of which clear `recompressErrors` at source, so no guard is needed here. EXCEPT
-        // `.instantSwitch`: see the doc comment above — that state keeps its link as the lead.
-        if let message = model.recompressErrors[job.id] {
-            if case .instantSwitch = state {} else { return .error(message) }
-        }
+        // of which clear `recompressErrors` at source, so no guard is needed here.
+        if let message = model.recompressErrors[job.id] { return .error(message) }
         switch state {
         case .armed(let target):
             guard let predicted = model.recompressPrediction(for: job, at: target) else {
@@ -471,9 +468,7 @@ struct CompressView: View {
                 ? "will try \(target.title)"
                 : "will recompress at \(target.title)"
         case .instantSwitch(let target):
-            // A failed switch keeps the link as the lead (see `lead(for:)`), so its message rides
-            // the meta clause instead of being swallowed by an `.error` lead.
-            return model.recompressErrors[job.id] ?? "your \(target.title) version is kept"
+            return "your \(target.title) version is kept"
         case .futile, .none:
             return nil
         }
