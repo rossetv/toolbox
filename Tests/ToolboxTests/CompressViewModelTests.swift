@@ -648,6 +648,114 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.isRunning }
     }
 
+    // MARK: recompress prediction (R16)
+
+    /// A row whose engine path repeats scales the raw estimate by what the engine actually did —
+    /// the calibration that stops an MRC row's recompression being predicted as a 4× growth.
+    func testPredictionScalesByTheObservedRatioWhenThePathRepeats() async throws {
+        // `.scanColour` at `.smallestSize` is the only pair reachable from this row's `.balanced`
+        // shipped preset giving
+        // `targetWantsMRC == shippedWasMRC == true` with a non-degenerate ratio: `HeavyEnv` always
+        // ships `.compressedHeavy` (`shippedWasMRC` is always true), so the repeating-path case
+        // needs a target that is ALSO MRC-eligible — `.scanColour` + a non-Maximum preset — not
+        // `.bornDigital`, which is never MRC-eligible and so never repeats the path.
+        let env = try HeavyEnv(contentType: .scanColour)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        let analysis = try XCTUnwrap(model.analysis(for: job))
+        let balanced = try XCTUnwrap(analysis.estimates[.balanced]?.predictedBytes)
+        let smallest = try XCTUnwrap(analysis.estimates[.smallestSize]?.predictedBytes)
+        // Associated EXACTLY as the implementation associates it: `Int(_:)` truncates, so a
+        // differently-bracketed expression of the same real number can land one byte away.
+        let expected = Int((Double(HeavyEnv.heavyBytes) / Double(balanced)) * Double(smallest))
+
+        let predicted = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        XCTAssertEqual(predicted, expected,
+                       "a scanColour row shipped MRC and staying MRC-eligible at Smallest Size has "
+                       + "a path that repeats, so the observed ratio applies")
+    }
+
+    /// A `.scanColour` row that shipped MRC crossing to Maximum quality (never MRC-eligible) must
+    /// use the RAW estimate — the ratio was learned on a path that will not run.
+    func testPredictionUsesTheRawEstimateWhenTheEnginePathChanges() async throws {
+        // A large original, so the "must beat the original" guard cannot mask the calibration rule
+        // this test exists to pin.
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        let analysis = try XCTUnwrap(model.analysis(for: job))
+        let raw = try XCTUnwrap(analysis.estimates[.maximumQuality]?.predictedBytes)
+
+        XCTAssertEqual(model.recompressPrediction(for: job, at: .maximumQuality), raw,
+                       "an MRC-shipped row crossing to Maximum quality gets the raw gs estimate")
+    }
+
+    /// Any prediction at or above the original renders as "may not shrink", never a confident
+    /// number (R16) — the model says so by returning nil.
+    func testPredictionIsWithheldWhenItWouldNotBeatTheOriginal() async throws {
+        // This row takes the RAW-estimate branch, not the scaled one: the shipped version is MRC
+        // (`HeavyEnv` produces `.compressedHeavy`) while `.bornDigital` + `.maximumQuality` gives
+        // `targetWantsMRC == false`, so the paths differ and no calibration is applied. The guard
+        // then fires deterministically because the raw estimate is derived from the REAL fixture,
+        // which is far larger than the 1 kB original the stub reports — so `predicted` cannot be
+        // below `row.originalBytes` whatever the estimator predicts.
+        let env = try HeavyEnv(before: 1_000, contentType: .bornDigital)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertNil(model.recompressPrediction(for: job, at: .maximumQuality))
+    }
+
+    /// R10's ARMING half: the missing-original guard fires before a confident number is offered,
+    /// not only before the run. A row whose input has been deleted must not display a pill
+    /// promising a size the app has no way to produce.
+    func testPredictionIsWithheldWhenTheOriginalIsGone() async throws {
+        // `.scanColour`, so the POSITIVE control is genuinely confident before the deletion. The
+        // shipped version is MRC and `.scanColour` + `.smallestSize` gives `targetWantsMRC == true`,
+        // so `targetWantsMRC == shippedWasMRC` and the calibration branch runs: the prediction
+        // tracks the shipped 1.2 kB (scaled by raw/baseline), comfortably under the 9 kB original.
+        // With `.bornDigital` the paths would differ, the RAW estimate would be used, and that is
+        // derived from the multi-megabyte `imagePDF` fixture — the "must beat the original" guard
+        // would return nil before the deletion too, and the test would assert nothing.
+        let env = try HeavyEnv(contentType: .scanColour)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertNotNil(model.recompressPrediction(for: job, at: .smallestSize),
+                        "the row predicts confidently while its input is still there")
+
+        try FileManager.default.removeItem(at: env.input)
+        XCTAssertNil(model.recompressPrediction(for: job, at: .smallestSize),
+                     "no input, no prediction — R10 applies at arming time, not just at run time")
+        XCTAssertTrue(model.isOriginalMissing(for: job))
+    }
+
     // MARK: helpers
 
     private func fileSize(_ url: URL) throws -> Int {
@@ -668,13 +776,14 @@ final class CompressViewModelTests: XCTestCase {
         let input: URL
         let storeRoot: URL
 
-        init(before: Int = 9000) throws {
+        init(before: Int = 9000, contentType: PDFContentType? = nil) throws {
             let tmp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             storeRoot = tmp.appendingPathComponent("cache", isDirectory: true)
             let outputFolder = tmp.appendingPathComponent("out", isDirectory: true)
-            try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: outputFolder,
+                                                    withIntermediateDirectories: true)
 
             input = try Fixtures.imagePDF()
             stub = StubEngine(outcome: .compressedHeavy(before: before,
@@ -682,8 +791,23 @@ final class CompressViewModelTests: XCTestCase {
                                                         runnerUpBytes: HeavyEnv.normalBytes),
                               shippedBytes: HeavyEnv.heavyBytes,
                               runnerUpBytes: HeavyEnv.normalBytes)
-            model = CompressViewModel(engine: stub, store: RunnerUpStore(rootOverride: storeRoot))
+            // The ONLY change to the existing body: the estimator is injected when a caller pins
+            // the classification, and is the default otherwise, so every existing `HeavyEnv()`
+            // call site behaves exactly as before.
+            let estimator = contentType.map {
+                CompressEstimator(analyser: FixedAnalyser(contentType: $0))
+            } ?? CompressEstimator()
+            model = CompressViewModel(engine: stub, estimator: estimator,
+                                      store: RunnerUpStore(rootOverride: storeRoot))
             model.outputFolder = outputFolder
+        }
+
+        /// A `PDFAnalysing` that answers with a fixed classification, so a prediction test pins the
+        /// R16 boundary rather than whatever a fixture happens to classify as.
+        private struct FixedAnalyser: PDFAnalysing {
+            let contentType: PDFContentType
+            func pageCount(_ url: URL) throws -> Int { 1 }
+            func classify(_ url: URL) throws -> PDFContentType { contentType }
         }
 
         /// The single job once it has reached `.done(.compressedHeavy)`.

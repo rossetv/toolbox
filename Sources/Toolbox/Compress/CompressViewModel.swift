@@ -440,6 +440,88 @@ final class CompressViewModel: ObservableObject {
 
     var armedCount: Int { armedJobs.count }
 
+    // MARK: the armed row's prediction (R16)
+
+    /// The analysis behind a row's estimates — exposed so the prediction's calibration can be
+    /// asserted against the same numbers the row displays.
+    func analysis(for job: ToolJob) -> CompressEstimator.Analysis? { analyses[job.id] }
+
+    /// R10's arming half: a recompress always reads the ORIGINAL input (D2), so a row whose input
+    /// has gone cannot be recompressed at all — and must not advertise a prediction, or offer the
+    /// armed pill, as if it could. Checked on every read rather than cached, exactly like the
+    /// arming state itself: there is no file watcher, so a stored answer would go stale silently.
+    /// The view turns this into the R10 error lead; the model refuses the number.
+    ///
+    /// One `stat` per ARMED row per body evaluation — bounded by the armed count, not the queue
+    /// length, because `lead(for:)` only reaches it inside the `.armed` arm. `useVersion` already
+    /// stats on the same rows at event time, so this adds no new class of I/O. Not cached, for the
+    /// reason above; if the armed count ever grows large enough for this to matter, the answer is
+    /// a file-presence watcher, not a stale cache.
+    func isOriginalMissing(for job: ToolJob) -> Bool {
+        !FileManager.default.fileExists(atPath: job.url.path)
+    }
+
+    /// The armed row's predicted size at `target`, or nil when no confident number can be given —
+    /// the row then reads "may not shrink" (R16). The "≈" marker is the view's, and stays whatever
+    /// this returns: the figure is always approximate.
+    ///
+    /// The estimator models the gs path only, so its figure is calibrated by what the engine
+    /// actually did — but ONLY when the same path is expected to run again. `wantsMRC` is
+    /// `classification == .scanColour && preset != .maximumQuality`, so an MRC-shipped row crossing
+    /// to Maximum quality, or a gs-shipped row moving to an MRC-eligible preset, both change path
+    /// and take the raw estimate: a ratio learned on one path does not transfer to the other.
+    func recompressPrediction(for job: ToolJob, at target: CompressPreset) -> Int? {
+        // Ahead of everything: a confident number for a row that cannot run is the one thing R10
+        // names explicitly ("and before arming shows a confident estimate").
+        guard !isOriginalMissing(for: job) else { return nil }
+        guard let analysis = analyses[job.id],
+              let raw = analysis.estimates[target]?.predictedBytes,
+              let row = versions(for: job) else { return nil }
+
+        var predicted = raw
+        if let shipped = row.shipped,
+           // A shipped `.original` is the untouched input, not an engine result — there is no
+           // observed ratio in it to calibrate with.
+           shipped.variant != .original,
+           let baseline = analysis.estimates[shipped.preset]?.predictedBytes, baseline > 0 {
+            let targetWantsMRC = analysis.contentType == .scanColour && target != .maximumQuality
+            let shippedWasMRC = shipped.variant == .mrc
+            if targetWantsMRC == shippedWasMRC {
+                predicted = Int((Double(shipped.bytes) / Double(baseline)) * Double(raw))
+            }
+        }
+        // A prediction that does not beat the original is never shown as a confident number.
+        guard predicted < row.originalBytes else { return nil }
+        return predicted
+    }
+
+    /// R4's banner data: how much the armed set is predicted to save on top of what the rows
+    /// already shipped. `extraSaving` is summed over armed rows with a CONFIDENT prediction only —
+    /// a "may not shrink" row contributes nothing — and is nil when no armed row has one, so the
+    /// banner shows no detail line at all rather than a fabricated zero.
+    struct ArmedSummary: Equatable {
+        let armedCount: Int
+        let queuedCount: Int
+        let extraSaving: Int?
+    }
+
+    var armedSummary: ArmedSummary? {
+        let armed = armedJobs
+        guard !armed.isEmpty else { return nil }
+        var total = 0
+        var confident = false
+        for job in armed {
+            guard let predicted = recompressPrediction(for: job, at: preset),
+                  let row = versions(for: job) else { continue }
+            confident = true
+            total += (row.shipped?.bytes ?? row.originalBytes) - predicted
+        }
+        // `pendingCount` lands on the model in Task 10; until then the same predicate, inline.
+        return ArmedSummary(armedCount: armed.count,
+                            queuedCount: jobs.filter { isStillQueued($0) }.count,
+                            extraSaving: confident ? total : nil)
+    }
+
     // MARK: heavy-version switch (R8–R11)
 
     /// The versions available for `job`, or nil when the row has none to show. A row whose switch
