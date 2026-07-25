@@ -1669,10 +1669,6 @@ final class CompressViewModelTests: XCTestCase {
         let runnerUpBytes: Int
         /// When set, handed to the caller's `mrcReport` closure — exercises the retention path.
         var reportToDeliver: MRCDocumentReport?
-        private(set) var callCount = 0
-        /// Every preset the engine was called with, in order — so a test can assert which one a
-        /// re-run reproduced.
-        private(set) var presets: [CompressPreset] = []
         var gate: Gate?
         /// What one scripted call writes and returns, so a recompress can differ from the run that
         /// produced the row.
@@ -1683,10 +1679,33 @@ final class CompressViewModelTests: XCTestCase {
             /// Bytes to write at the alternate output, or nil to leave that slot empty.
             let runnerUpBytes: Int?
         }
+
+        // `compress` runs concurrently: `ToolQueue.execute` fans out up to `performanceCoreCount`
+        // jobs at once, so `callCount`, `presets`, `script` and `throwOnCall` all need genuine
+        // synchronisation rather than plain mutable state. Everything below the lock keeps the same
+        // external API (synchronous property access from @MainActor tests) but is backed by a
+        // private, lock-guarded store.
+        private let lock = NSLock()
+        private var _callCount = 0
+        private var _presets: [CompressPreset] = []
+        private var _script: ((Int, CompressPreset) -> Response)?
+        private var _throwOnCall: Int?
+
+        /// Number of `compress` calls made so far.
+        var callCount: Int { lock.lock(); defer { lock.unlock() }; return _callCount }
+        /// Every preset the engine was called with, in order — so a test can assert which one a
+        /// re-run reproduced.
+        var presets: [CompressPreset] { lock.lock(); defer { lock.unlock() }; return _presets }
         /// Per-call script (1-based call index). Nil keeps the fixed outcome the initialiser took.
-        var script: ((Int, CompressPreset) -> Response)?
+        var script: ((Int, CompressPreset) -> Response)? {
+            get { lock.lock(); defer { lock.unlock() }; return _script }
+            set { lock.lock(); defer { lock.unlock() }; _script = newValue }
+        }
         /// When set, the engine throws on this 1-based call instead of writing anything.
-        var throwOnCall: Int?
+        var throwOnCall: Int? {
+            get { lock.lock(); defer { lock.unlock() }; return _throwOnCall }
+            set { lock.lock(); defer { lock.unlock() }; _throwOnCall = newValue }
+        }
 
         init(outcome: JobOutcome, shippedBytes: Int, runnerUpBytes: Int) {
             self.outcome = outcome
@@ -1697,10 +1716,20 @@ final class CompressViewModelTests: XCTestCase {
         func compress(_ input: URL, preset: CompressPreset, to output: URL,
                       alternateOutput: URL?, mrcReport: ((MRCDocumentReport) -> Void)?,
                       progress: @escaping (Double) -> Void) async throws -> JobOutcome {
-            callCount += 1
-            presets.append(preset)
-            if throwOnCall == callCount { throw CompressError.validationFailed }
-            let response = script?(callCount, preset)
+            // Increment, append and decide the throw/script outcome atomically, capturing locals so
+            // no other concurrent call can observe or mutate state mid-decision.
+            let call: Int
+            let shouldThrow: Bool
+            let currentScript: ((Int, CompressPreset) -> Response)?
+            lock.lock()
+            _callCount += 1
+            _presets.append(preset)
+            call = _callCount
+            shouldThrow = (_throwOnCall == call)
+            currentScript = _script
+            lock.unlock()
+            if shouldThrow { throw CompressError.validationFailed }
+            let response = currentScript?(call, preset)
                 ?? Response(outcome: outcome, shippedBytes: shippedBytes, runnerUpBytes: runnerUpBytes)
             let fm = FileManager.default
             // Mirror the production engine's never-overwrite delivery contract (it `moveItem`s the
