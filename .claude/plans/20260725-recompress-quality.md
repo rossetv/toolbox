@@ -1286,10 +1286,17 @@ of `ToolJob`/`CompressPreset`, as the design system's contract requires.
             .fixedSize()
 ```
 
-      and `.done`/`.doneHeavy` gain `leadView` as the first child of their existing `HStack`
-      (before the struck original size). `.doneHeavy` already carries `.fixedSize()` for exactly
-      this reason; `.done` now needs it too, because the lead widens it the same way, so its
-      `HStack` gains the same modifier and the same one-line reason:
+      and `.done`/`.doneHeavy` gain `leadView`, in this explicit order: lead first, then — on
+      `.doneHeavy` only — `heavyCapsule`, then the struck original size and everything after it.
+      `.done`'s `HStack` has no capsule, so for it "lead first" and "before the struck original
+      size" are the same position; `.doneHeavy`'s `HStack` already opens with `heavyCapsule`, so
+      inserting the lead there means genuinely first — ahead of the capsule — not merely ahead of
+      the sizes. The rule the mockup draws is the accent pill (or link, or error note) leads the
+      trailing cluster and the capsule, where the row has one, follows it; screen 1's existing rule
+      is that the capsule leads the sizes. Task 12's mockup corrections (MINOR 1) draw every
+      affected row in this same lead-then-capsule order. `.doneHeavy` already carries
+      `.fixedSize()` for exactly this reason; `.done` now needs it too, because the lead widens it
+      the same way, so its `HStack` gains the same modifier and the same one-line reason:
 
 ```swift
             // A lead makes this the widest this cluster has ever been; without fixedSize, width
@@ -3037,7 +3044,23 @@ concurrency is bounded by one normal batch width *by construction* rather than b
       `.failed` job has no outcome to record — so recording there would never count a failed row
       and the run bar would stall permanently one row short of 1 on any batch with a failure.
       Terminal means `.done` OR `.failed`, which is a property of the row's state, not of its
-      outcome. Add beside the ingest call in the sink, before `publishJobs()`:
+      outcome. The sink's body — reproducing the existing sink's exact style, with the two new
+      calls inserted between the ingest call and `publishJobs()` — becomes:
+
+```swift
+            .sink { [weak self] jobs in
+                guard let self else { return }
+                self.rawJobs = jobs
+                self.pruneStaleEstimateState()
+                self.ingestCompletedJobs()
+                self.recordTerminalRunRows()
+                self.publishJobs()
+            }
+```
+
+      The following two members — the `runQueuedIDs` property and the `recordTerminalRunRows`
+      function the sink now calls — are added to the type itself, near `ingestCompletedJobs`, not
+      inside the sink closure:
 
 ```swift
     /// This run's QUEUED rows. Deliberately NOT `runIDs`, which also holds the armed rows: an
@@ -3530,6 +3553,10 @@ derives from the version store, and the armed/running/finished chrome follows th
                 : .done(originalBytes: row.originalBytes, newBytes: shipped.bytes)
 ```
 
+      Today's `case .ocrAdded, .alreadySearchable: return .succeeded("Done")` arm, nested inside
+      the outcome switch this guard replaces, goes with it: unreachable by construction —
+      CompressEngine never returns an OCR outcome — so the arm goes with the outcome switch.
+
 - [ ] Add the row's lead and accent caption, and pass them plus the capsule title into `FileRow`:
 
 ```swift
@@ -3825,13 +3852,22 @@ derives from the version store, and the armed/running/finished chrome follows th
     }
 ```
 
-- [ ] Fix the one place the mockup contradicts the spec: in
-      `.claude/specs/20260725-recompress-quality-evidence/recompress-ux-mockup.html`, the
-      missing-original row on the edge-states screen drops the row's size cluster, but R10 keeps the
-      shipped result and its versions intact. Give that row the same `was/now/pill/check` cluster
-      its neighbours have, leaving the `⚠ The original file is no longer where it was` note leading
-      it. (The spec is explicit: where prose and mockup disagree, the spec wins and the mockup gets
-      fixed.)
+- [ ] Fix the four places the mockup contradicts the spec, all in
+      `.claude/specs/20260725-recompress-quality-evidence/recompress-ux-mockup.html` (the spec is
+      explicit: where prose and mockup disagree, the spec wins and the mockup gets fixed):
+      (a) screen 2's armed rows (lines ~282 and ~287) drop the heavy capsule that R15 requires on
+      any row with ≥2 versions — restore it, leading the trailing cluster with the lead (accent
+      pill or "may not shrink" pill) and the capsule immediately after, in the lead-then-capsule
+      order MINOR 2 below establishes; (b) screen 5's instant-switch row (~438) likewise lacks its
+      capsule — restore it in the same order, lead ("Switch instantly") then capsule; (c) screen
+      5's failed-recompress row (~448) drops the struck `was` size and the saved pill that
+      `FileRow`'s `.done` arm always draws — restore `was`/pill success alongside the kept `now`
+      and `check`, leading with the error note; (d) screen 5's missing-original row (~452–453) drops
+      the row's size cluster entirely, but R10 keeps the shipped result and its versions intact —
+      give that row the same `was/now/pill/check` cluster its neighbours have, leading with the
+      `⚠ The original file is no longer where it was` note. Every row keeps its existing lead
+      (pill, link, or error note) first; the capsule — where the row has one — and the size
+      cluster follow, per MINOR 2's lead-then-capsule order.
 - [ ] Build, then run the whole view-model suite:
 
 ```sh
@@ -4139,3 +4175,13 @@ going away.
 6. A coverage table entry naming a task is a claim that the task has a step for it — grep the task before writing the row.
 ## Round 8 — 2026-07-25 — SHIP pending certify (plan-reviewer, Opus, incremental)
 All three round-7 majors and four minors verified resolved with receipts (the completeness sweep re-run including the defining file; the seeding test's negative control walked to the assertion; every gated test re-counted against the multi-waiter Gate's placement). Fixer's two scope additions accepted after first-hand checks. No new findings at any severity. Lesson-candidates: a per-consumer-file sweep must include the file that defines the type; copy a "these N controls" enumeration from the spec's own list; walk a negative control to the assertion, not just the allocation; a replaced shared double must land at the first task needing the new arity, with every earlier gated test re-counted.
+
+## Round 9 — 2026-07-25 — SHIP (plan-reviewer, Opus, full certify)
+The certify round came back clean above minor; the three round-7 majors verified resolved with receipts stood. Four minors closed this round: Task 12's mockup-correction step now enumerates all four rows the mockup drew wrong instead of claiming a single divergence; Task 5's lead-position instruction now states the `.doneHeavy` order explicitly (lead first, then the capsule, then the struck original) instead of a self-contradictory "first child … before the struck size"; Task 12's `status(for:)` rewrite now notes the deleted `.ocrAdded`/`.alreadySearchable` arm is unreachable by construction and goes with the outcome switch it was nested in; and Task 10's queue-phase-completion step now shows the sink's actual closure body with the two new calls inserted, instead of a code block that held only type-level members. The plan gate closes at SHIP.
+
+Lesson-candidates:
+1. A visual contract captured in-repo is a document under review like any other — sweep every screen, not the one row the finding pointed at.
+2. "The one place X contradicts Y" is a universal quantifier over two documents; produce it by walking both.
+3. A rewrite that replaces a switch with a guard deletes every arm the switch had — enumerate them against the requirement that names the function.
+4. A step whose prose names an insertion point must show code that is legal at that point.
+5. When an ordering instruction is written for the simple arm and reused for the composite one, name the element, not the index.
