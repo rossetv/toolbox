@@ -557,6 +557,12 @@ struct CompressView: View {
             return batchProgressText(runVerb, finished: model.runFinishedCount,
                                      total: model.runTotalCount)
         }
+        // An armed set hasn't run yet, so a finished-batch "Saved X · Y% smaller" footnote would
+        // read as a completed-work claim beside the still-to-run "Recompress" button. The mockup
+        // (recompress-ux-mockup.html, screen 2) swaps it for the originals reassurance instead.
+        if model.armedCount > 0 {
+            return "Recompresses from the originals — nothing is overwritten until it succeeds."
+        }
         return savedSummary ?? "Originals are never modified."
     }
 
