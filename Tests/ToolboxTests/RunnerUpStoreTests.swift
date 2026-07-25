@@ -201,7 +201,7 @@ final class RunnerUpStoreTests: XCTestCase {
     /// The commit: the previously shipped file ends up in the cache slot `parking` names and the
     /// fresh result takes its place. Every move lands, and neither the temp path nor the
     /// beside-the-shipped-file dot-temp is left behind.
-    func testPromoteParksTheShippedFileAndLandsTheFreshOne() throws {
+    func testPromoteParksTheShippedFileAndLandsTheFreshOne() async throws {
         let root = try tempRoot()
         let delivery = root.appendingPathComponent("delivery", isDirectory: true)
         try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
@@ -215,7 +215,7 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("old-version".utf8).write(to: shipped)
         try Data("new-version".utf8).write(to: fresh)
 
-        try store.promote(fresh: fresh, to: shipped, parking: parked)
+        try await store.promote(fresh: fresh, to: shipped, parking: parked)
 
         XCTAssertEqual(try Data(contentsOf: shipped), Data("new-version".utf8))
         XCTAssertEqual(try Data(contentsOf: parked), Data("old-version".utf8),
@@ -232,7 +232,7 @@ final class RunnerUpStoreTests: XCTestCase {
     /// The third step is best-effort by design: if the parked version cannot reach its cache slot
     /// the commit still SUCCEEDS (the user has their new file) and the old version is discarded
     /// rather than stranded under a hidden dot-name nothing will ever look for.
-    func testPromoteSucceedsAndDiscardsWhenTheParkSlotIsUnreachable() throws {
+    func testPromoteSucceedsAndDiscardsWhenTheParkSlotIsUnreachable() async throws {
         let root = try tempRoot()
         let delivery = root.appendingPathComponent("delivery", isDirectory: true)
         try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
@@ -246,7 +246,9 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("old-version".utf8).write(to: shipped)
         try Data("new-version".utf8).write(to: fresh)
 
-        XCTAssertNoThrow(try store.promote(fresh: fresh, to: shipped, parking: parked))
+        // The commit must not throw here — an unreachable park slot is a best-effort third step,
+        // so a throw out of this line is itself the failure the test is looking for.
+        try await store.promote(fresh: fresh, to: shipped, parking: parked)
 
         XCTAssertEqual(try Data(contentsOf: shipped), Data("new-version".utf8),
                        "the promotion is what the user pressed the button for; it stands")
@@ -258,7 +260,7 @@ final class RunnerUpStoreTests: XCTestCase {
 
     /// R12's load-bearing guarantee: the old version survives any failure. An absent `fresh` makes
     /// the promote move fail deterministically, after the shipped file has already been parked.
-    func testPromoteFailureRestoresTheShippedFile() throws {
+    func testPromoteFailureRestoresTheShippedFile() async throws {
         let root = try tempRoot()
         let delivery = root.appendingPathComponent("delivery", isDirectory: true)
         try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
@@ -269,7 +271,10 @@ final class RunnerUpStoreTests: XCTestCase {
         let parked = root.appendingPathComponent("shipped-previous.pdf")
         try Data("old-version".utf8).write(to: shipped)
 
-        XCTAssertThrowsError(try store.promote(fresh: fresh, to: shipped, parking: parked)) { error in
+        do {
+            try await store.promote(fresh: fresh, to: shipped, parking: parked)
+            XCTFail("an absent fresh file must fail the promotion")
+        } catch {
             XCTAssertFalse(error is RunnerUpStore.SwitchError,
                            "the restore succeeded, so the promote's own error must surface")
         }

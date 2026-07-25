@@ -73,7 +73,13 @@ final class RunnerUpStore {
     /// `promote`'s doc for why), move `incoming` into the shipped slot, and on success relocate the
     /// park into `destination`; on failure to promote, restore the park back to `shipped`.
     /// `tempPrefix` keeps each caller's dot-temp idiom distinguishable in a crash-leftover sweep.
-    private func performSwap(incoming: URL, shipped: URL, destination: URL, tempPrefix: String) throws {
+    ///
+    /// `nonisolated` and synchronous, so each caller decides which executor the moves run on: the
+    /// switch path calls it inline on the main actor (one click, one row, on an app that is idle by
+    /// `useVersion`'s `guard !isRunning`), while `promote` awaits it off the main actor because the
+    /// recompress commit runs it once per row inside phase 2's sliding window.
+    private nonisolated func performSwap(incoming: URL, shipped: URL, destination: URL,
+                                         tempPrefix: String) throws {
         let fm = FileManager.default
         let temp = shipped.deletingLastPathComponent()
             .appendingPathComponent(".toolbox-\(tempPrefix)-\(UUID().uuidString).pdf")
@@ -148,8 +154,19 @@ final class RunnerUpStore {
     ///
     /// The old version therefore survives every path on which the promotion did NOT happen, which
     /// is what lets an armed row keep its result when a recompress fails.
-    func promote(fresh: URL, to shipped: URL, parking parked: URL) throws {
-        try performSwap(incoming: fresh, shipped: shipped, destination: parked, tempPrefix: "promote")
+    ///
+    /// `async`, and off the main actor: step 3 crosses from the output folder into the cache root,
+    /// which is routinely a different volume, where `moveItem` silently degrades to a copy of the
+    /// whole PDF. Run once per row through phase 2's sliding window on the main actor, that copy
+    /// freezes the UI. The caller nevertheless AWAITS the transfer — a fire-and-forget swap would
+    /// leave the parked file's arrival racing the commit that records its slot. The work runs in a
+    /// detached task deliberately: it must not inherit cancellation, or a cancel landing mid-swap
+    /// would tear the three steps apart with the user's file in the dot-temp.
+    nonisolated func promote(fresh: URL, to shipped: URL, parking parked: URL) async throws {
+        try await Task.detached(priority: .userInitiated) { [self] in
+            try performSwap(incoming: fresh, shipped: shipped, destination: parked,
+                            tempPrefix: "promote")
+        }.value
     }
 
     func discard(_ url: URL) {

@@ -552,7 +552,7 @@ final class CompressViewModel: ObservableObject {
             // in that window arrives here as a successful outcome — committing it would overwrite
             // the file the user already has, which is exactly what R9 forbids.
             try Task.checkCancellation()
-            try commit(outcome, plan: plan, report: capturedReport)
+            try await commit(outcome, plan: plan, report: capturedReport)
         } catch is CancellationError {
             // Cancelled. On the throwing path the engine's atomic-write contract left no output;
             // on the post-checkpoint path its result exists at plan.temp (and, when the engine
@@ -590,8 +590,17 @@ final class CompressViewModel: ObservableObject {
     /// R12/R13: land one recompress outcome. The version the user has is parked BEFORE the fresh
     /// result is promoted, so it survives every failure path; a no-gain commits nothing and clears
     /// nothing.
+    ///
+    /// `async` because the file transfers below must not run on the main actor — see `promote` —
+    /// while every state mutation here stays on it, in runs uninterrupted between the awaits. Two
+    /// things can now interleave at those awaits and neither changes an outcome: another row's
+    /// commit, which touches only its own id and its own pre-reserved paths; and `cancel()`, whose
+    /// discard loop walks `runReservations` — the batch's up-front runner-up allocation — and so
+    /// never reaches the separate reservation a plan carries. R9's cancel semantics are unchanged
+    /// too: the swap runs detached and does not inherit cancellation, so one already begun runs to
+    /// completion rather than tearing, exactly as a blocked main actor used to guarantee.
     private func commit(_ outcome: JobOutcome, plan: RecompressPlan,
-                        report: MRCDocumentReport?) throws {
+                        report: MRCDocumentReport?) async throws {
         let fm = FileManager.default
         // Both early returns below are unreachable by construction — a plan is only built for an
         // ARMED row, and `recompressState`'s own `guard let row = versions(for: job)` means a row
@@ -634,7 +643,8 @@ final class CompressViewModel: ObservableObject {
             return
         }
         if let previouslyShipped = row.shipped, fm.fileExists(atPath: previouslyShipped.url.path) {
-            try store.promote(fresh: plan.temp, to: previouslyShipped.url, parking: plan.parked)
+            try await store.promote(fresh: plan.temp, to: previouslyShipped.url,
+                                    parking: plan.parked)
             // `promote` reaches the cache slot on a best-effort third step (see its doc): a
             // successful return does NOT guarantee a file exists at `plan.parked`. Recording the
             // slot regardless is correct and deliberate — a `previous` slot whose file has gone is
@@ -658,7 +668,13 @@ final class CompressViewModel: ObservableObject {
             // nothing to park either way. `plan.output` is the row's existing result path when one
             // exists (R11), so the fresh result simply lands there directly — the recompress
             // succeeded and there is no lie to tell (R12).
-            try fm.moveItem(at: plan.temp, to: plan.output)
+            // Off the main actor for the same reason `promote` is, though this one is a rename by
+            // construction — `plan.temp` is allocated in `plan.output`'s own directory, so it never
+            // crosses a volume and never degrades to a copy.
+            let (temp, output) = (plan.temp, plan.output)
+            try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.moveItem(at: temp, to: output)
+            }.value
             versionStore.setShipped(FileVersion(url: plan.output, bytes: shippedBytes,
                                                 preset: plan.target, variant: variant),
                                     for: plan.id)
