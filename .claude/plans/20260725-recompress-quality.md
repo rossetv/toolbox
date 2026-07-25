@@ -4137,3 +4137,5 @@ going away.
 4. A cleanup performed on one arm of a switch and omitted on its siblings is a finding even when the siblings are unreachable.
 5. Spelling convention for code identifiers is decided by the nearest sibling in the same file, not by the prose rule.
 6. A coverage table entry naming a task is a claim that the task has a step for it — grep the task before writing the row.
+## Round 8 — 2026-07-25 — SHIP pending certify (plan-reviewer, Opus, incremental)
+All three round-7 majors and four minors verified resolved with receipts (the completeness sweep re-run including the defining file; the seeding test's negative control walked to the assertion; every gated test re-counted against the multi-waiter Gate's placement). Fixer's two scope additions accepted after first-hand checks. No new findings at any severity. Lesson-candidates: a per-consumer-file sweep must include the file that defines the type; copy a "these N controls" enumeration from the spec's own list; walk a negative control to the assertion, not just the allocation; a replaced shared double must land at the first task needing the new arity, with every earlier gated test re-counted.
