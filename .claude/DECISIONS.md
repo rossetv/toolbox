@@ -398,7 +398,7 @@ description*; the background resolution only affects non-masked content (seals, 
 blur is entirely the foreground image resolution.
 
 **Fix (kept the 3-layer composite — an imagemask stencil was rejected because a single flat ink
-colour tints black body text with the page's blue-notary-polluted mean):**
+colour tints black body text whenever a page's ink mean is polluted by a saturated coloured seal):**
 - `MRCPageEncoder.encode` re-emits the coarse, smooth foreground at `MRCSegmenter.foregroundLayerScale`
   = ⅔ of the mask resolution (measured knee: crisp text, JPEG still in budget; native is sharper
   but exceeds the reference tool's output size).

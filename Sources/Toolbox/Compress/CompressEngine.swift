@@ -113,10 +113,10 @@ struct CompressEngine {
         let wantsBilevel = classification == .scanBilevel
         let gsProgressCeiling = (wantsMRC || wantsBilevel) ? 0.45 : 1.0
 
-        // Rung 2 can process several pages — driving progress up — before declining on a LATER
-        // page and falling through to Rung 1, which then starts its own progress back near 0.
-        // The caller's progress bar must never regress, so every progress call in this function
-        // goes through a monotonic (never-decreasing) filter rather than the raw callback.
+        // gs runs first (0…0.45) and the Rung-2/Rung-3 leg maps into 0.45…0.95, so a decline that
+        // falls back to the gs delivery must never let a late progress callback move the bar
+        // backwards. Every progress call in this function therefore goes through a monotonic
+        // (never-decreasing) filter rather than the raw callback.
         var progressHighWaterMark = 0.0
         func reportProgress(_ value: Double) {
             guard value > progressHighWaterMark else { return }
