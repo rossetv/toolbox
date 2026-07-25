@@ -130,6 +130,12 @@ struct PDFService {
         let swap = rotation == 90 || rotation == 270
         let displayedWidth = swap ? bounds.height : bounds.width
         let displayedHeight = swap ? bounds.width : bounds.height
+        // `Int(_:)` traps on a non-finite Double, so a NaN/infinite media box would take the whole
+        // app down rather than fail one file (§4.5). The sibling `OCREngine.rasterSize` guards the
+        // same input; this is that guard, at the other consumer.
+        guard displayedWidth.isFinite, displayedHeight.isFinite else {
+            throw PDFServiceError.renderFailed
+        }
         let scale = maxDimension / max(displayedWidth, displayedHeight, 1)
         let width = max(1, Int((displayedWidth * scale).rounded()))
         let height = max(1, Int((displayedHeight * scale).rounded()))
@@ -152,9 +158,13 @@ struct PDFService {
 
     // MARK: helpers
 
+    /// At most `sample` page indices, evenly spaced, including the first and last page whenever
+    /// `sample` allows both (a one-page sample is the first page). Never returns more than asked
+    /// for: callers size buffers and render budgets from the count.
     static func sampleIndices(count: Int, sample: Int) -> [Int] {
         guard count > 0, sample > 0 else { return [] }
         if sample >= count { return Array(0..<count) }
+        guard sample >= 2 else { return [0] }   // the seed pair below is already two indices
         var set: Set<Int> = [0, count - 1]
         let step = max(1, count / sample)
         var i = 0

@@ -17,10 +17,12 @@ enum OpenState: Equatable {
 
 enum OpenGuardError: Error, LocalizedError {
     case fileNotFound
+    case noPages
 
     var errorDescription: String? {
         switch self {
         case .fileNotFound: return "The file could not be found."
+        case .noPages: return "The PDF contains no pages."
         }
     }
 }
@@ -41,6 +43,12 @@ enum OpenGuard {
         if doc.isEncrypted && doc.isLocked {
             return .encrypted
         }
+        // A pageless document is nothing either engine can work on, and passing it through as
+        // `.ok(pageCount: 0)` would surface far downstream as "the compressed PDF failed
+        // validation" — a lie about which file is at fault. Measured on this machine, PDFKit
+        // refuses every pageless page tree we could author (so `.corrupt` normally fires first);
+        // this says the honest thing should a future PDFKit admit one.
+        guard doc.pageCount > 0 else { throw OpenGuardError.noPages }
         return .ok(pageCount: doc.pageCount)
     }
 }

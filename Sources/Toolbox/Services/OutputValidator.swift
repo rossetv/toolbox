@@ -35,6 +35,7 @@ struct OutputValidator {
         func check(_ indices: [Int]) throws -> (compared: Int, ok: Bool) {
             var compared = 0
             for i in indices {
+                try Task.checkCancellation()
                 guard let outPage = outputDoc.page(at: i),
                       let inPage = inputDoc.page(at: i) else { return (compared, false) }
                 // Per-page render/release. Detect content-loss corruption by comparing ink to the
@@ -44,9 +45,18 @@ struct OutputValidator {
                 // carried real content and the output kept less than `minRetainedInk` of it, the
                 // output lost its content → corrupt.
                 let inInk = try Self.inkRatio(service.render(inPage, maxDimension: 800))
-                guard inInk >= Self.contentFloor else { continue }   // nothing here to lose
-                compared += 1
                 let outInk = try Self.inkRatio(service.render(outPage, maxDimension: 800))
+                // An input page with no ink to lose gets no RELATIVE test — every ratio against a
+                // near-zero denominator is noise — but it still gets the absolute one. Skipping the
+                // page outright is how an inverted page hid: the corruption the ceiling exists for
+                // is most visible on exactly the pages the floor excludes. Not counted as
+                // `compared`: surviving a flood check is not evidence the page carried content, so
+                // it must not suppress the widened pass below.
+                guard inInk >= Self.contentFloor else {
+                    if outInk > Self.floodedInkCeiling { return (compared, false) }
+                    continue
+                }
+                compared += 1
                 if outInk < inInk * Self.minRetainedInk { return (compared, false) }
                 // Bounded upwards too. A one-sided floor passes the worst corruption there is: an
                 // inverted or ink-flooded page measures near 1.0 and sails through, so any future
@@ -66,11 +76,17 @@ struct OutputValidator {
         // Every sampled INPUT page rendered below the content floor: `.sampleIndices` always
         // includes just the first and last page, so a document whose only real content sits
         // strictly between them can reach here with no content signal at all — "opens + same
-        // page count" is not proof of anything. Widen to the whole document before passing: a
-        // document that is genuinely blank throughout (no comparable page anywhere) still passes,
-        // but real content hiding outside the narrow sample gets its chance to be checked.
-        guard indices.count < outputDoc.pageCount else { return true }   // already checked everything
-        let (_, wideOk) = try check(Array(0..<outputDoc.pageCount))
+        // page count" is not proof of anything. Widen before passing: a document that is genuinely
+        // blank throughout (no comparable page anywhere) still passes, but real content hiding
+        // outside the narrow sample gets its chance to be checked. The widened pass is an evenly
+        // spread sample of at most `maxWidenedPages`, NOT the whole document: every page costs two
+        // renders, so widening to a 2000-page scan is minutes of uninterruptible work for a check
+        // that only needs to find one comparable page.
+        try Task.checkCancellation()
+        let wideIndices = PDFService.sampleIndices(count: outputDoc.pageCount,
+                                                   sample: min(outputDoc.pageCount, Self.maxWidenedPages))
+        guard wideIndices.count > indices.count else { return true }   // nothing new to check
+        let (_, wideOk) = try check(wideIndices)
         return wideOk
     }
 
@@ -86,6 +102,16 @@ struct OutputValidator {
     /// legitimately thickens strokes — while still an order of magnitude below an inversion, which
     /// turns a sparse page's ink ratio from roughly 0.02 to roughly 0.98.
     private static let maxRetainedInk = 3.0
+    /// The ceiling for a page the relative test cannot judge (input ink below `contentFloor`).
+    /// Absolute, because there is no meaningful denominator: measured, such a page's legitimate
+    /// output is 0.0 (blank) to 0.001 (a folio number reads 0.0003), while the flood this catches
+    /// — an inversion or a bitstream regression — reads 0.98 to 1.00. Half the page is nowhere
+    /// near either population, so it cannot false-reject and cannot miss a flood.
+    private static let floodedInkCeiling = 0.5
+    /// Page cap on the widened pass. Every widened page costs two 800 px renders, so the whole
+    /// document is not an option on the thousand-page scans this tool exists for; a spread sample
+    /// this size is ample to find one comparable page in a document that has any.
+    private static let maxWidenedPages = 64
 
     /// Fraction of sampled pixels that carry ink (are not near-white).
     ///

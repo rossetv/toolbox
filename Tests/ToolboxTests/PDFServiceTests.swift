@@ -84,6 +84,38 @@ final class PDFServiceTests: XCTestCase {
         }
     }
 
+    /// `render` sizes its canvas with `Int(_:)`, which **traps** on a non-finite Double — so
+    /// without the finiteness guard this test does not fail, it takes the test process down with
+    /// it (verified: the unguarded conversion crashes on a NaN media box). PDFKit was not observed
+    /// to vend one — CoreGraphics clamps an over-large `/MediaBox` to ~1e76 and rejects the
+    /// exponent/NaN syntax that would produce inf — so the geometry comes from a test double, and
+    /// this proves the §4.5 guard holds, not that the input path reaches it.
+    func testRenderRefusesNonFiniteGeometryInsteadOfTrapping() {
+        XCTAssertThrowsError(try service.render(NonFinitePage(), maxDimension: 800))
+    }
+
+    private final class NonFinitePage: PDFPage {
+        override func bounds(for box: PDFDisplayBox) -> CGRect {
+            CGRect(x: 0, y: 0, width: CGFloat.nan, height: CGFloat.nan)
+        }
+    }
+
+    /// The helper's contract is "at most `sample` indices"; it used to return two for `sample: 1`
+    /// because the seed pair (first and last page) was inserted before the count was consulted,
+    /// so `renderSample(_:pages: 1)` rendered two pages.
+    func testSampleIndicesNeverReturnsMoreThanAsked() {
+        for count in 1...12 {
+            for sample in 1...12 {
+                let indices = PDFService.sampleIndices(count: count, sample: sample)
+                XCTAssertLessThanOrEqual(indices.count, min(sample, count),
+                                         "count \(count), sample \(sample) → \(indices)")
+                XCTAssertEqual(indices, indices.sorted())
+                XCTAssertEqual(Set(indices).count, indices.count, "indices must be distinct")
+            }
+        }
+        XCTAssertEqual(PDFService.sampleIndices(count: 10, sample: 1), [0])
+    }
+
     func testOpenGuardEncrypted() throws {
         let url = try Fixtures.encryptedPDF()
         XCTAssertEqual(try OpenGuard.inspect(url), .encrypted)
@@ -97,5 +129,15 @@ final class PDFServiceTests: XCTestCase {
     func testOpenGuardOK() throws {
         let url = try Fixtures.bornDigitalPDF(pages: 2)
         XCTAssertEqual(try OpenGuard.inspect(url), .ok(pageCount: 2))
+    }
+
+    /// A pageless document must never be admitted as `.ok(pageCount: 0)`: nothing downstream can
+    /// work on it, and it would surface much later as "the compressed PDF failed validation" —
+    /// a lie about which file is at fault. PDFKit refuses to open this page tree at all, so the
+    /// answer today is `.corrupt`; `OpenGuardError.noPages` is the answer if it ever stops
+    /// refusing. Either is honest; `.ok(pageCount: 0)` is not.
+    func testOpenGuardNeverAdmitsAPagelessDocument() throws {
+        let url = try Fixtures.emptyPagesPDF()
+        XCTAssertNotEqual(try? OpenGuard.inspect(url), .ok(pageCount: 0))
     }
 }
