@@ -1,0 +1,468 @@
+<title>Recompress UX — Toolbox mockup</title>
+<style>
+  /* ============ Toolbox design tokens (Theme.swift, verbatim) ============ */
+  :root {
+    --bg: #f5f5f7;            /* Theme.Colors.background (light) */
+    --surface: #ffffff;       /* Theme.Colors.surface (light) */
+    --text: #1d1d1f;
+    --text2: rgba(0,0,0,0.8);
+    --text3: rgba(0,0,0,0.48);
+    --accent: #0071e3;
+    --link: #0066cc;
+    --success: #34c759;
+    --badge: #ff3b30;
+    --danger: #d70015;
+    --stroke: rgba(0,0,0,0.168);      /* textTertiary 0.48 × 0.35 */
+    --track: rgba(29,29,31,0.12);
+    --page-bg: #e9e9ee;
+    --note: rgba(0,0,0,0.55);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #000000; --surface: #272729;
+      --text: #ffffff; --text2: rgba(255,255,255,0.8); --text3: rgba(255,255,255,0.48);
+      --link: #2997ff; --stroke: rgba(255,255,255,0.168); --track: rgba(255,255,255,0.12);
+      --page-bg: #121214; --note: rgba(255,255,255,0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #000000; --surface: #272729;
+    --text: #ffffff; --text2: rgba(255,255,255,0.8); --text3: rgba(255,255,255,0.48);
+    --link: #2997ff; --stroke: rgba(255,255,255,0.168); --track: rgba(255,255,255,0.12);
+    --page-bg: #121214; --note: rgba(255,255,255,0.6);
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f5f7; --surface: #ffffff;
+    --text: #1d1d1f; --text2: rgba(0,0,0,0.8); --text3: rgba(0,0,0,0.48);
+    --link: #0066cc; --stroke: rgba(0,0,0,0.168); --track: rgba(29,29,31,0.12);
+    --page-bg: #e9e9ee; --note: rgba(0,0,0,0.55);
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    background: var(--page-bg); color: var(--text);
+    letter-spacing: -0.2px;
+    padding: 48px 24px 96px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 56px; }
+
+  header.intro h1 { font-size: 28px; font-weight: 600; letter-spacing: 0.196px; line-height: 1.14; text-wrap: balance; }
+  header.intro p { font-size: 14px; letter-spacing: -0.224px; color: var(--note); margin-top: 8px; max-width: 62ch; line-height: 1.45; }
+
+  /* ============ step scaffolding ============ */
+  .step { display: flex; flex-direction: column; gap: 14px; }
+  .step-head { display: flex; align-items: baseline; gap: 12px; }
+  .step-num {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.4px; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 980px; padding: 2px 10px; white-space: nowrap;
+  }
+  .step-head h2 { font-size: 21px; font-weight: 600; letter-spacing: 0.231px; }
+  .step > p.blurb { font-size: 14px; letter-spacing: -0.224px; color: var(--note); max-width: 68ch; line-height: 1.45; }
+  .changed { font-size: 12px; letter-spacing: -0.12px; color: var(--note); display: flex; flex-direction: column; gap: 3px; padding-left: 2px; }
+  .changed b { color: var(--text); font-weight: 600; }
+  .changed li::marker { color: var(--accent); }
+  .changed ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
+
+  /* ============ the mock window (detail pane only) ============ */
+  .pane {
+    background: var(--surface); border-radius: 12px;
+    box-shadow: rgba(0,0,0,0.22) 3px 5px 30px 0;
+    overflow: hidden; position: relative;
+  }
+  .pane-inner { padding: 24px; display: flex; flex-direction: column; gap: 24px; }
+
+  /* success / armed banner */
+  .banner { display: flex; align-items: center; gap: 16px; padding: 16px; border-radius: 12px; }
+  .banner.success { background: color-mix(in srgb, var(--success) 12%, transparent); }
+  .banner.armed   { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .banner .glyph {
+    width: 48px; height: 48px; border-radius: 12px; flex: none;
+    display: grid; place-items: center; color: #fff; font-size: 22px; font-weight: 600;
+  }
+  .banner.success .glyph { background: var(--success); }
+  .banner.armed   .glyph { background: var(--accent); }
+  .banner h3 { font-size: 21px; font-weight: 700; letter-spacing: 0.231px; }
+  .banner p  { font-size: 14px; letter-spacing: -0.224px; color: var(--text2); margin-top: 2px; }
+
+  .summary-row { display: flex; align-items: center; gap: 16px; font-size: 14px; font-weight: 600; letter-spacing: -0.224px; }
+  .summary-row .links { margin-left: auto; display: flex; gap: 16px; }
+  .link { color: var(--link); font-size: 14px; letter-spacing: -0.224px; font-weight: 400; cursor: pointer; text-decoration: none; }
+
+  /* ============ file rows (FileRow, verbatim geometry) ============ */
+  .rows { display: flex; flex-direction: column; gap: 8px; }
+  .row {
+    display: flex; align-items: center; gap: 13px;
+    padding: 12px 14px; border-radius: 10px; background: var(--bg);
+  }
+  .thumb {
+    width: 30px; height: 39px; flex: none; border-radius: 4.5px; overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 0.5px 0.8px rgba(0,0,0,0.28), 0 1.5px 3px rgba(0,0,0,0.14);
+    border: 0.5px solid rgba(0,0,0,0.16);
+  }
+  .thumb .page { flex: 1; background: #fff; padding: 4px 3px; display: flex; flex-direction: column; gap: 2px; }
+  .thumb .page i { display: block; height: 1.5px; background: #c9c9ce; border-radius: 1px; }
+  .thumb .page i:nth-child(1) { width: 70%; background: #a9a9b0; }
+  .thumb .page i:nth-child(3) { width: 85%; }
+  .thumb .page i:nth-child(4) { width: 60%; }
+  .thumb .band { height: 8px; background: var(--badge); color: #fff; font-size: 5px; font-weight: 800; letter-spacing: 0.35px; display: grid; place-items: center; }
+  .fmeta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .fname { font-size: 17px; font-weight: 600; letter-spacing: -0.374px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fsub  { font-size: 12px; letter-spacing: -0.12px; color: var(--text3); }
+  .fsub .armnote { color: var(--accent); font-weight: 600; }
+  .fsub .keptnote { color: var(--text2); font-weight: 600; }
+  .trail { margin-left: auto; display: flex; align-items: center; gap: 11px; white-space: nowrap; }
+  .was { font-size: 12px; letter-spacing: -0.12px; color: var(--text3); text-decoration: line-through; }
+  .now { font-size: 17px; font-weight: 600; letter-spacing: -0.374px; }
+  .pill {
+    font-size: 12px; font-weight: 600; letter-spacing: -0.12px;
+    padding: 2px 8px; border-radius: 980px;
+  }
+  .pill.success { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
+  .pill.accent  { color: var(--accent);  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .pill.neutral { color: var(--text3);   background: color-mix(in srgb, var(--text3) 12%, transparent); }
+  .check { color: var(--success); font-size: 15px; }
+  .muted-check { color: var(--text2); font-size: 15px; }
+  .err { color: var(--danger); font-size: 12px; font-weight: 600; letter-spacing: -0.12px; display: flex; align-items: center; gap: 5px; }
+
+  .capsule {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; font-weight: 600; letter-spacing: -0.12px; color: var(--text2);
+    background: var(--surface); border-radius: 980px; padding: 2px 8px; cursor: pointer;
+  }
+  .capsule .chev { font-size: 8px; transform: translateY(0.5px); }
+  .capsule.open { color: var(--link); }
+
+  .rowprog { width: 110px; height: 6px; border-radius: 980px; background: var(--track); overflow: hidden; }
+  .rowprog i { display: block; height: 100%; background: var(--accent); border-radius: 980px; }
+
+  /* ============ preset selector (SegmentedPreset, verbatim) ============ */
+  .quality-label { font-size: 12px; font-weight: 600; letter-spacing: 0.6px; text-transform: uppercase; color: var(--text3); }
+  .presets { display: flex; gap: 8px; }
+  .preset {
+    flex: 1; padding: 12px; border-radius: 11px; background: var(--surface);
+    border: 1px solid var(--stroke); display: flex; flex-direction: column; gap: 4px; cursor: pointer;
+  }
+  .preset.sel { border: 1.5px solid var(--accent); padding: 11.5px; }
+  .preset b { font-size: 17px; font-weight: 600; letter-spacing: -0.374px; }
+  .preset span { font-size: 12px; letter-spacing: -0.12px; color: var(--text2); }
+  .preset small { font-size: 10px; letter-spacing: -0.08px; color: var(--text3); }
+  .presets.dim { opacity: 0.5; pointer-events: none; }
+
+  /* running bar */
+  .runbar { display: flex; align-items: center; gap: 16px; }
+  .runbar .bar { flex: 1; height: 6px; border-radius: 980px; background: var(--track); overflow: hidden; }
+  .runbar .bar i { display: block; height: 100%; width: 55%; background: var(--accent); border-radius: 980px; }
+  .runbar span { font-size: 14px; letter-spacing: -0.224px; color: var(--text2); }
+
+  /* footer */
+  .footer {
+    display: flex; align-items: center; gap: 16px;
+    padding: 16px 24px; border-top: 1px solid var(--stroke); background: var(--surface);
+  }
+  .footnote { font-size: 14px; letter-spacing: -0.224px; color: var(--text3); }
+  .footer .spacer { flex: 1; }
+  .btn {
+    font-size: 14px; font-weight: 500; letter-spacing: -0.224px; color: #fff;
+    background: var(--accent); border: none; border-radius: 8px; padding: 8px 15px; cursor: pointer;
+  }
+  .btn:focus-visible, .preset:focus-visible, .capsule:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ============ versions popover ============ */
+  .pop-anchor { position: relative; }
+  .popover {
+    position: absolute; top: calc(100% + 10px); right: -14px; z-index: 5; width: 470px;
+    background: var(--surface); border-radius: 12px; padding: 16px;
+    box-shadow: rgba(0,0,0,0.28) 0 8px 40px 0; border: 0.5px solid var(--stroke);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .popover::before {
+    content: ""; position: absolute; top: -6px; right: 48px; width: 12px; height: 12px;
+    background: var(--surface); transform: rotate(45deg);
+    border-left: 0.5px solid var(--stroke); border-top: 0.5px solid var(--stroke);
+  }
+  .popover h4 { font-size: 17px; font-weight: 600; letter-spacing: -0.374px; }
+  .popover .desc { font-size: 14px; letter-spacing: -0.224px; color: var(--text2); line-height: 1.4; }
+  .vcards { display: flex; gap: 12px; }
+  .vcard {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px;
+    padding: 10px; border-radius: 8px;
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
+    border: 1.5px solid transparent;
+  }
+  .vcard.cur { border-color: var(--accent); }
+  .vcard .thumb { width: 72px; height: 94px; }
+  .vcard .thumb .band { height: 19px; font-size: 7px; }
+  .vcard .thumb .page { padding: 8px 6px; gap: 4px; }
+  .vcard .thumb .page i { height: 2.5px; }
+  .vcard b { font-size: 12px; font-weight: 600; letter-spacing: -0.12px; text-align: center; }
+  .vcard .size { font-size: 12px; letter-spacing: -0.12px; color: var(--text2); display: flex; gap: 5px; align-items: center; }
+  .vcard .state { font-size: 12px; letter-spacing: -0.12px; color: var(--link); min-height: 16px; }
+  .pop-actions { display: flex; justify-content: flex-end; }
+
+  @media (max-width: 640px) {
+    .presets { flex-direction: column; }
+    .popover { width: min(470px, 92vw); right: auto; left: 50%; transform: translateX(-50%); }
+    .trail { flex-wrap: wrap; justify-content: flex-end; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .rowprog i, .runbar .bar i { transition: width 0.18s linear; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="intro">
+    <h1>Recompress — the user journey, screen by screen</h1>
+    <p>Built from the app's real components and tokens (FileRow, SegmentedPreset, StatPill, SuccessBanner, the versions popover — Theme.swift values verbatim). Scenario: three PDFs compressed at Balanced; one is still too big, so the user tries Smallest size.</p>
+  </header>
+
+  <!-- ================= STEP 1 ================= -->
+  <section class="step">
+    <div class="step-head"><span class="step-num">1</span><h2>Batch finished at Balanced — exactly today's UI</h2></div>
+    <p class="blurb">Nothing changes on this screen. The quality selector is sitting below the rows — today it's dead; from step 2 it becomes the recovery path.</p>
+    <div class="pane">
+      <div class="pane-inner">
+        <div class="banner success">
+          <div class="glyph">✓</div>
+          <div><h3>Saved 21.2 MB</h3><p>3 PDFs · 26.9 MB → 5.7 MB · 79% smaller</p></div>
+        </div>
+        <div class="summary-row">3 files · 26.9 MB <span class="links"><span class="link">+ Add</span><span class="link">Clear finished</span></span></div>
+        <div class="rows">
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Scanned-Contract.pdf</span><span class="fsub">18.7 MB · 32 pages</span></div>
+            <div class="trail"><span class="capsule">Heavy compression <span class="chev">⌄</span></span><span class="was">18.7 MB</span><span class="now">4.1 MB</span><span class="pill success">−78%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Product-Brochure.pdf</span><span class="fsub">5.4 MB · 12 pages</span></div>
+            <div class="trail"><span class="was">5.4 MB</span><span class="now">1.4 MB</span><span class="pill success">−74%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Meeting-Notes.pdf</span><span class="fsub">184 KB · 3 pages</span></div>
+            <div class="trail"><span class="muted-check">✓</span><span class="fsub">Already optimised</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="quality-label" style="margin-bottom:8px">Quality</div>
+          <div class="presets">
+            <div class="preset" tabindex="0"><b>Maximum quality</b><span>Light touch, keeps fine detail.</span><small>~225 DPI images</small></div>
+            <div class="preset sel" tabindex="0"><b>Balanced</b><span>Great size, near-original look.</span><small>~150 DPI images</small></div>
+            <div class="preset" tabindex="0"><b>Smallest size</b><span>Maximum shrink for email &amp; upload.</span><small>~96 DPI images</small></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer">
+        <span class="footnote">Saved 21.2 MB · 79% smaller</span>
+        <span class="spacer"></span>
+        <span class="link">Reveal in Finder ›</span>
+        <button class="btn">Compress More</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STEP 2 ================= -->
+  <section class="step">
+    <div class="step-head"><span class="step-num">2</span><h2>User clicks “Smallest size” — rows arm, nothing runs yet</h2></div>
+    <p class="blurb">The armed style keeps every row's done cluster intact — sizes, pill, checkmark stay put, so nothing reads as lost. Each armed row gains an accent delta pill with the calibrated prediction and a caption naming what will happen. Fully reversible: click Balanced again and this screen returns to step 1.</p>
+    <div class="pane">
+      <div class="pane-inner">
+        <div class="banner armed">
+          <div class="glyph">↻</div>
+          <div><h3>Will recompress 3 PDFs at Smallest size</h3><p>≈ saves another 3.0 MB on top of the 21.2 MB already saved</p></div>
+        </div>
+        <div class="summary-row">3 files · 26.9 MB <span class="links"><span class="link">+ Add</span><span class="link">Clear finished</span></span></div>
+        <div class="rows">
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Scanned-Contract.pdf</span><span class="fsub">18.7 MB · 32 pages · <span class="armnote">will recompress at Smallest size</span></span></div>
+            <div class="trail"><span class="pill accent">→ ≈1.9 MB</span><span class="was">18.7 MB</span><span class="now">4.1 MB</span><span class="pill success">−78%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Product-Brochure.pdf</span><span class="fsub">5.4 MB · 12 pages · <span class="armnote">will recompress at Smallest size</span></span></div>
+            <div class="trail"><span class="pill accent">→ ≈0.9 MB</span><span class="was">5.4 MB</span><span class="now">1.4 MB</span><span class="pill success">−74%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Meeting-Notes.pdf</span><span class="fsub">184 KB · 3 pages · <span class="armnote">will try Smallest size</span></span></div>
+            <div class="trail"><span class="pill accent">→ may not shrink</span><span class="muted-check">✓</span><span class="fsub">Already optimised</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="quality-label" style="margin-bottom:8px">Quality</div>
+          <div class="presets">
+            <div class="preset" tabindex="0"><b>Maximum quality</b><span>Light touch, keeps fine detail.</span><small>~225 DPI images</small></div>
+            <div class="preset" tabindex="0"><b>Balanced</b><span>Great size, near-original look.</span><small>~150 DPI images</small></div>
+            <div class="preset sel" tabindex="0"><b>Smallest size</b><span>Maximum shrink for email &amp; upload.</span><small>~96 DPI images</small></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer">
+        <span class="footnote">Recompresses from the originals — nothing is overwritten until it succeeds.</span>
+        <span class="spacer"></span>
+        <button class="btn">Recompress 3 PDFs</button>
+      </div>
+    </div>
+    <div class="changed"><b>What changed vs step 1</b>
+      <ul>
+        <li>Banner flips green → accent: “Will recompress …” with the predicted extra saving — visible even when rows are scrolled off.</li>
+        <li>Armed rows: accent “→ ≈size” pill leads the trailing cluster; caption under the filename says what will happen.</li>
+        <li>“Already optimised” arms too (it's the “still too big” user) — but says “may not shrink” instead of a confident number.</li>
+        <li>Footer button becomes accent “Recompress 3 PDFs”; footnote reassures about the originals.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ================= STEP 3 ================= -->
+  <section class="step">
+    <div class="step-head"><span class="step-num">3</span><h2>Recompressing — same batch grammar as a first run</h2></div>
+    <p class="blurb">Bounded concurrency, live per-file progress, Cancel. A cancelled or failed row keeps its previous result untouched — the row below has already finished and swapped to its new size.</p>
+    <div class="pane">
+      <div class="pane-inner">
+        <div class="runbar"><div class="bar"><i></i></div><span>Recompressing 2 of 3…</span><span class="link">Cancel</span></div>
+        <div class="summary-row">3 files · 26.9 MB</div>
+        <div class="rows">
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Scanned-Contract.pdf</span><span class="fsub">18.7 MB · 32 pages</span></div>
+            <div class="trail"><div class="rowprog"><i style="width:62%"></i></div></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Product-Brochure.pdf</span><span class="fsub">5.4 MB · 12 pages</span></div>
+            <div class="trail"><span class="capsule">Versions <span class="chev">⌄</span></span><span class="was">5.4 MB</span><span class="now">0.9 MB</span><span class="pill success">−83%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Meeting-Notes.pdf</span><span class="fsub">184 KB · 3 pages</span></div>
+            <div class="trail"><span class="pill neutral">Queued</span><span class="muted-check">✓</span><span class="fsub">Already optimised</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="quality-label" style="margin-bottom:8px">Quality</div>
+          <div class="presets dim">
+            <div class="preset"><b>Maximum quality</b><span>Light touch, keeps fine detail.</span><small>~225 DPI images</small></div>
+            <div class="preset"><b>Balanced</b><span>Great size, near-original look.</span><small>~150 DPI images</small></div>
+            <div class="preset sel"><b>Smallest size</b><span>Maximum shrink for email &amp; upload.</span><small>~96 DPI images</small></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer">
+        <span class="footnote">Recompressing 2 of 3…</span>
+        <span class="spacer"></span>
+        <button class="btn" style="opacity:0.5">Recompress 1 PDF</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STEP 4 ================= -->
+  <section class="step">
+    <div class="step-head"><span class="step-num">4</span><h2>Done — the capsule is now a versions switcher</h2></div>
+    <p class="blurb">The capsule reads “Versions” and opens the familiar popover, grown to three cards: the current version, this run's engine alternative, and the previous Balanced version. Preview any card in Quick Look; one click brings the old version back. Versions live until the app closes or the row is cleared — the cache never grows past the session.</p>
+    <div class="pane" style="padding-bottom: 210px">
+      <div class="pane-inner">
+        <div class="banner success">
+          <div class="glyph">✓</div>
+          <div><h3>Saved 24.2 MB</h3><p>3 PDFs · 26.9 MB → 2.7 MB · 90% smaller</p></div>
+        </div>
+        <div class="rows">
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Scanned-Contract.pdf</span><span class="fsub">18.7 MB · 32 pages</span></div>
+            <div class="trail pop-anchor">
+              <span class="capsule open">Versions <span class="chev">⌄</span></span><span class="was">18.7 MB</span><span class="now">1.6 MB</span><span class="pill success">−91%</span><span class="check">✓</span>
+              <div class="popover">
+                <div>
+                  <h4>Versions</h4>
+                  <p class="desc">Three versions of this PDF are ready. Compare them and pick — switching is instant and safe until the app closes.</p>
+                </div>
+                <div class="vcards">
+                  <div class="vcard cur">
+                    <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+                    <b>Smallest · Heavy</b>
+                    <span class="size">1.6 MB <span class="pill success">−91%</span></span>
+                    <span class="state">Current</span>
+                  </div>
+                  <div class="vcard">
+                    <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+                    <b>Smallest · Normal</b>
+                    <span class="size">2.8 MB <span class="pill success">−85%</span></span>
+                    <span class="state link">Use this</span>
+                  </div>
+                  <div class="vcard">
+                    <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+                    <b>Balanced (previous)</b>
+                    <span class="size">4.1 MB <span class="pill success">−78%</span></span>
+                    <span class="state link">Use this</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Product-Brochure.pdf</span><span class="fsub">5.4 MB · 12 pages</span></div>
+            <div class="trail"><span class="capsule">Versions <span class="chev">⌄</span></span><span class="was">5.4 MB</span><span class="now">0.9 MB</span><span class="pill success">−83%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Meeting-Notes.pdf</span><span class="fsub">184 KB · 3 pages</span></div>
+            <div class="trail"><span class="muted-check">✓</span><span class="fsub">No further saving — kept as is</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="changed"><b>Popover details</b>
+      <ul>
+        <li>Card labels carry the preset: “Smallest · Heavy”, “Smallest · Normal”, “Balanced (previous)” — the old Heavy/Normal vocabulary can't stretch to three.</li>
+        <li>Thumbnails preview in Quick Look, exactly like today's heavy popover.</li>
+        <li>Popover widens 340 → 470 pt for the third card. Two-version rows keep today's 340 pt layout.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ================= STEP 5 ================= -->
+  <section class="step">
+    <div class="step-head"><span class="step-num">5</span><h2>The honest edges — no silent failures, no wasted runs</h2></div>
+    <p class="blurb">Four states the spec pins down, shown on one screen: the instant-switch hint (top), a recompress that couldn't beat the original, a failed run, and a missing original. In every case the row keeps — and says it keeps — the version the user already has.</p>
+    <div class="pane">
+      <div class="pane-inner">
+        <div class="rows">
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Scanned-Contract.pdf</span><span class="fsub">18.7 MB · 32 pages · <span class="keptnote">your Balanced version is kept</span></span></div>
+            <div class="trail"><span class="link">Switch instantly</span><span class="was">18.7 MB</span><span class="now">1.6 MB</span><span class="pill success">−91%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Dense-Diagrams.pdf</span><span class="fsub">2.1 MB · 8 pages</span></div>
+            <div class="trail"><span class="pill neutral">No saving at Maximum quality</span><span class="was">2.1 MB</span><span class="now">0.7 MB</span><span class="pill success">−67%</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Product-Brochure.pdf</span><span class="fsub">5.4 MB · 12 pages</span></div>
+            <div class="trail"><span class="err">⚠ Recompress failed — kept your Balanced version</span><span class="now">1.4 MB</span><span class="check">✓</span></div>
+          </div>
+          <div class="row">
+            <div class="thumb"><div class="page"><i></i><i></i><i></i><i></i></div><div class="band">PDF</div></div>
+            <div class="fmeta"><span class="fname">Moved-Elsewhere.pdf</span><span class="fsub">— · original not found</span></div>
+            <div class="trail"><span class="err">⚠ The original file is no longer where it was</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="changed"><b>Reading the rows</b>
+      <ul>
+        <li><b>Row 1 — instant switch:</b> the selected preset matches the kept previous version, so no re-run is offered; one click restores it from the cache.</li>
+        <li><b>Row 2 — bigger than the original:</b> “ship what was asked” stops at the original's size; the previous version stays and the row says why.</li>
+        <li><b>Row 3 — failed run:</b> an explicit button press never fails silently; the delivered file is untouched and still shown.</li>
+        <li><b>Row 4 — missing original:</b> checked before running, reported per row, the rest of the batch unaffected.</li>
+      </ul>
+    </div>
+  </section>
+
+</div>

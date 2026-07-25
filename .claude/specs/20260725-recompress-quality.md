@@ -37,14 +37,17 @@ is a re-run — this spec makes the already-visible selector the recovery path.
   cancel maps to `.queued` (destroying the done state), failure to `.failed`; `setState` drops
   `.running` ticks on `.done` jobs. The direct-engine path (below) is the only route that
   preserves a delivered result through a re-run.
-- *Keep versions across quits (named files, e.g. `-compressed-balanced.pdf`)* — contradicts D4's
-  single-output naming and D6's no-persistent-cache; rejected.
+- *Keep versions across quits (named files, e.g. `-compressed-balanced.pdf`)* — contradicts the
+  v1 spec's §5.4 output-naming rule (one `<name>-compressed.pdf`, never overwrite) and D6's
+  no-persistent-cache; rejected.
 
 ## UI reference
 
 Approved mockup (built from Theme.swift tokens and real component geometry, light + dark):
 <https://claude.ai/code/artifact/fd39f6b6-3716-4288-88b8-ef8f482802e7>. Five screens: finished
-baseline, armed state, running, versions popover, edge states. The mockup is the visual
+baseline, armed state, running, versions popover, edge states. The mockup source is captured
+in-repo at `.claude/specs/20260725-recompress-quality-evidence/recompress-ux-mockup.html`
+(open in any browser) so future sessions don't depend on the artifact URL. It is the visual
 contract for R1–R8 below; where prose and mockup disagree, this spec wins and the mockup gets
 fixed.
 
@@ -52,11 +55,15 @@ fixed.
 
 ### Arming (the preview state)
 
-- **R1 — Who arms.** With no run in flight, selecting preset P arms every job whose *shipped
-  version's* preset ≠ P and which can recompress: `.done(.compressed)`, `.done(.compressedHeavy)`,
-  and `.done(.noGain)` rows arm; `.failed` rows never arm (they re-run via the normal path);
-  `.queued`/`.analysing` rows are untouched (they will simply run at P). A job whose shipped
-  preset = P is not armed. Arming is pure view-model state — `job.state` does not change.
+- **R1 — Who arms.** With no run in flight, selecting preset P arms every job whose *row
+  preset* ≠ P and which can recompress: `.done(.compressed)`, `.done(.compressedHeavy)`, and
+  `.done(.noGain)` rows arm; `.failed` rows never arm (their recourse is re-adding the file);
+  `.queued`/`.analysing` rows are untouched (they will simply run at P). **A row's preset** is
+  the preset of its most recent attempt: the shipped version's recorded preset where one exists
+  (R14), else the recorded attempt preset for rows that shipped nothing (noGain). A first-run
+  noGain at P0 records (job, P0) as futile exactly as a recompress noGain does (R6), so
+  re-selecting P0 shows the futile caption, never a re-arm. A job whose row preset = P is not
+  armed. Arming is pure view-model state — `job.state` does not change.
 - **R2 — Armed row appearance** (mockup screen 2). The row keeps its full done cluster
   (struck original, current size, saved pill, checkmark) and gains: a leading accent pill
   `→ ≈<predicted>` (or `→ may not shrink`, R16), and an accent caption appended to the meta
@@ -66,11 +73,14 @@ fixed.
   instantly; when no row is armed the UI is exactly the step-1 finished state. No state survives
   disarming except the futile-attempt record (R6).
 - **R4 — Banner and footer in the armed state.** While ≥1 row is armed: the success banner is
-  replaced by an accent armed banner — "Will recompress N PDF(s) at <preset title>" with the
-  summed predicted extra saving (omit the sum if every armed row is "may not shrink") — and the
-  footer's primary button reads "Recompress N PDFs". Both fixed regions carry the story because
-  armed rows may be scrolled off. "Reveal in Finder" / "Compress More" (the `allFinished`
-  affordances) are hidden while armed or running.
+  replaced by an accent armed banner — "Will recompress N PDF(s) at <preset title>" — and the
+  footer's primary button reads "Recompress N PDFs". The banner's detail line depends on the
+  summed prediction: positive extra saving → "≈ saves another <bytes>"; zero-or-negative (the
+  quality-upgrade direction) → "files may grow for the extra quality"; every armed row "may not
+  shrink" → no detail line. In the mixed state (R5) the banner headline is "Will compress K and
+  recompress M PDFs" with the same detail rules over the armed rows only. Both fixed regions
+  carry the story because armed rows may be scrolled off. "Reveal in Finder" / "Compress More"
+  (the `allFinished` affordances) are hidden while armed or running.
 - **R5 — Mixed queued + armed.** Newly added files and armed rows form ONE run behind ONE
   button: title "Compress N PDFs" when only queued rows exist, "Recompress N PDFs" when only
   armed rows exist, "Compress K · Recompress M" when both. One press runs both sets in the same
@@ -80,7 +90,7 @@ fixed.
   saving at <preset title>" instead of re-arming a known-futile run. The record dies with the
   row (Clear finished / remove) or the session.
 - **R7 — Instant switch.** If the selected preset P matches the *parked previous version's*
-  preset (R11), the row does not arm a re-run: caption "your <preset title> version is kept",
+  preset (R14), the row does not arm a re-run: caption "your <preset title> version is kept",
   trailing link "Switch instantly" performs the version switch (R14) directly. No recompute of
   a file already in the cache.
 
@@ -135,20 +145,27 @@ fixed.
   ≥2 versions, regardless of outcome shape — including a Maximum-quality re-run that came back
   plain gs (today's capsule draws only on `.doneHeavy`). Title: "Heavy compression" when the
   only parked version is the current run's runner-up (today's vocabulary preserved),
-  "Versions" once a previous version exists. The popover generalises the existing card UI:
+  "Versions" once a previous version exists — and while only the runner-up is parked the
+  existing dynamic title family survives unchanged ("Heavy compression" / "Normal compression"
+  / "Original" per `HeavyVersions.capsuleTitle`), so a switched row keeps its honest label. The
+  popover generalises the existing card UI:
   2 cards at today's 340 pt, 3 cards at 470 pt; card labels carry preset + variant
   ("Smallest · Heavy", "Smallest · Normal", "Balanced (previous)"); each card previews in
   Quick Look and non-current cards carry "Use this". Switching any card in ships that version
   via the store (park/promote per R12's safety); all aggregates re-derive (R17). The Quick Look
   frozen-items collection may only grow or be overwritten, never shrink while the panel is
   alive (standing lesson).
-- **R16 — Estimate honesty.** The armed pill's prediction: for transitions where the engine
-  path is unchanged (balanced ↔ smallestSize on an MRC-shipped row, or any gs-shipped row),
-  scale the estimator's per-preset figure by the row's observed ratio (actual result ÷ estimate
-  at the shipped preset). Crossing the MRC boundary (to `maximumQuality`, where
-  `wantsMRC` is false), use the RAW gs estimate — a ratio learned from MRC does not transfer.
-  Any prediction ≥ the original renders as "may not shrink" (never a confident number), and the
-  "≈" marker stays throughout.
+- **R16 — Estimate honesty.** The armed pill's prediction: scale the estimator's per-preset
+  figure by the row's observed ratio (actual result ÷ estimate at the row preset) ONLY when the
+  engine path is expected to repeat — i.e. the shipped engine variant and the target preset's
+  MRC eligibility agree (MRC-shipped row → MRC-eligible target; gs-shipped row → gs-only
+  target). Whenever the path changes in EITHER direction — an MRC-shipped row crossing to
+  `maximumQuality` (never MRC-eligible), or a gs-shipped row (including a `.scanColour` row
+  shipped at Maximum quality, or one where MRC lost the document gate) moving to an
+  MRC-eligible preset — use the RAW gs estimate: a ratio learned on one path does not transfer
+  to the other. The store's per-version engine variant (R14) plus the row's classification make
+  the direction decidable. Any prediction ≥ the original renders as "may not shrink" (never a
+  confident number), and the "≈" marker stays throughout.
 
 ### Consistency and boundaries
 
@@ -201,10 +218,10 @@ design review 2026-07-25), each reading the named files first-hand:
 
 ## Risks
 
-- **Estimate calibration (R16) assumes the engine repeats its path** at the new preset (same
-  classification → same MRC eligibility). Holds by construction for the boundary carve-out;
-  within MRC presets a pathological document could still deviate — accepted, the pill is
-  explicitly approximate ("≈").
+- **Estimate calibration (R16) scales only when the engine path is expected to repeat**, with
+  path-change in either direction routed to the raw estimate. Residual risk: a document whose
+  MRC eligibility flips between two MRC-eligible presets via the D7 document gate can still
+  deviate from the scaled figure — accepted, the pill is explicitly approximate ("≈").
 - **One combined run driving two mechanisms (R5)** — queued rows via `ToolQueue`, armed rows
   via the direct path — risks 2× concurrency if run simultaneously. Resolution is the plan's
   to choose (serialise sets, or share one bound); the spec constrains only the observable:
@@ -212,8 +229,12 @@ design review 2026-07-25), each reading the named files first-hand:
 
 ## Prior-spec references
 
-- Compress spec R6/R7/R9–R11/R15 (runner-up store, switch flow, Quick Look freeze,
-  no-persisted-state exception) — extended here, not contradicted.
+- `.claude/specs/20260723-mrc-rung3.md` R6/R7/R9–R11/R15 (runner-up store, switch flow,
+  Quick Look freeze, no-persisted-state exception) — extended here, not contradicted.
+- `.claude/specs/20260722-pdf-toolbox-v1.md` §5.4 (output naming, never-overwrite delivery)
+  and the never-emit-larger rule R13 mirrors — unchanged in scope.
 - `.claude/memory/review-lessons.md` — standing checks applied: shared layer before parallel
   fork (plan stage), aggregator sweep (R17), stub write semantics (R20), Quick Look
   never-shrink (R15), up-front serial name reservation (R11).
+## Round 1 — 2026-07-25 — NO-SHIP (spec-reviewer, Fable 5)
+2 major (R16 one-directional carve-out, R1 noGain preset undefined), 7 minor (R15 title family, R4/R5 mixed+upgrade banner, R7 cross-ref, dangling D4 citation, unnamed prior specs, unverifiable mockup URL, false .failed parenthetical). All fixed this round. Lesson-candidates: resolve every D/R pointer; audit carve-outs both directions; define rules for outcome shapes that ship nothing; capture visual contracts in-repo.
