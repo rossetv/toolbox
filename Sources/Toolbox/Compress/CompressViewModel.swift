@@ -875,11 +875,14 @@ final class CompressViewModel: ObservableObject {
     /// arming state itself: there is no file watcher, so a stored answer would go stale silently.
     /// The view turns this into the R10 error lead; the model refuses the number.
     ///
-    /// One `stat` per ARMED row per body evaluation — bounded by the armed count, not the queue
-    /// length, because `lead(for:)` only reaches it inside the `.armed` arm. `useVersion` already
-    /// stats on the same rows at event time, so this adds no new class of I/O. Not cached, for the
-    /// reason above; if the armed count ever grows large enough for this to matter, the answer is
-    /// a file-presence watcher, not a stale cache.
+    /// At least THREE `stat`s per armed row per body evaluation, not one: `lead(for:)` calls this
+    /// directly in its `.armed` arm, then calls `recompressPrediction(for:at:)`, whose first line
+    /// calls this again; `armedSummary` (read from body via `model.armedSummary`) calls
+    /// `recompressPrediction` once per armed row too, hitting the same guard a third time. Still
+    /// bounded by the armed count, not the queue length — every call site is reached only for an
+    /// armed row. Not cached, because there is no file watcher to invalidate a stored answer; if
+    /// the armed count ever grows large enough for the repeated stats to matter, the fix is a
+    /// file-presence watcher, not a stale cache.
     func isOriginalMissing(for job: ToolJob) -> Bool {
         !FileManager.default.fileExists(atPath: job.url.path)
     }
