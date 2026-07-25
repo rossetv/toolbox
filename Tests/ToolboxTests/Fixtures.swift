@@ -301,10 +301,11 @@ enum Fixtures {
         ctx.setFillColor(gray: 1, alpha: 1)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.setFillColor(gray: 0, alpha: 1)
+        var rng = RNG()
         for line in 0..<45 {
             for word in 0..<28 {
                 ctx.fill(CGRect(x: 120 + Double(word) * 54, y: 2000 - Double(line) * 44,
-                                width: Double.random(in: 18...44), height: 12))
+                                width: 18 + rng.next() * 26, height: 12))
             }
         }
         let image = ctx.makeImage()!
@@ -537,6 +538,15 @@ enum Fixtures {
         ctx.endPDFPage()
         ctx.closePDF()
         return url.canonical
+    }
+
+    /// A structurally well-formed PDF whose page tree holds no pages (`/Count 0 /Kids []`) — the
+    /// pageless input `OpenGuard` must never admit as `.ok(pageCount: 0)`. Hand-authored because
+    /// no Apple API will emit a document without pages.
+    static func emptyPagesPDF() throws -> URL {
+        try rawPDF([rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+                    rawObject(2, "<< /Type /Pages /Kids [ ] /Count 0 >>")],
+                   root: 1, name: "empty-pages.pdf")
     }
 
     /// A truncated/garbage file that is not a readable PDF (`PDFDocument(url:)` returns nil).

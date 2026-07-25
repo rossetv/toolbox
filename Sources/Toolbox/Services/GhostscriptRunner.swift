@@ -117,7 +117,11 @@ struct GhostscriptRunner {
     /// - Parameters:
     ///   - readPaths: extra readable paths (typically the input PDF).
     ///   - writePaths: writable paths (typically the output directory).
-    ///   - onProgress: called with the latest gs page number as pages are emitted (best-effort).
+    ///   - onProgress: called with each gs page number as gs emits it — once per marker, strictly
+    ///     increasing, **on the runner's background thread**, never the caller's (the ticks arrive
+    ///     while the calling task is still suspended, so the callback must tolerate that thread).
+    ///     Best-effort in a concrete sense: only gs's *PDF* interpreter emits `Page N` markers
+    ///     (measured — a PostScript input emits none), so a run can legitimately report nothing.
     func run(arguments: [String],
              readPaths: [URL],
              writePaths: [URL],
@@ -146,7 +150,8 @@ struct GhostscriptRunner {
     /// that a hostile input cannot make the app retain megabytes of either.
     private static let outputTailLimit = 4096
 
-    /// Drain `handle` to EOF, keeping at most `limit` trailing bytes.
+    /// Drain `handle` to EOF, keeping at most `limit` trailing bytes and — when `onPage` is given —
+    /// reporting gs's `Page N` markers *as they arrive*.
     ///
     /// The pipe must always be drained to EOF or a chatty child blocks on a full pipe buffer — but
     /// nothing says the bytes must be *kept*. Both of gs's streams are attacker-influenced (a
@@ -154,15 +159,54 @@ struct GhostscriptRunner {
     /// messages on either stdout or stderr — measured: a bogus `-sDEVICE` puts its whole diagnosis
     /// on stdout with nothing on stderr) and both end up retained in the job list and rendered in
     /// the UI, so only the tail of each is kept: a failing gs puts its fatal diagnostic last.
-    static func drainTail(_ handle: FileHandle, limit: Int) -> Data {
+    ///
+    /// Progress therefore *has* to be parsed here rather than from the returned tail: gs
+    /// line-flushes `Page N` to the pipe as each page is emitted (measured), while the tail keeps
+    /// only the last `limit` bytes — so a run whose chatter outgrows the tail has already lost its
+    /// early markers by the time it exits. Markers are reported monotonically (a repeated or
+    /// out-of-order number is dropped), so a caller's progress bar can never move backwards.
+    static func drainTail(_ handle: FileHandle, limit: Int, onPage: ((Int) -> Void)? = nil) -> Data {
         var tail = Data()
+        var line = Data()                                               // bytes since the last newline
+        var lastPage = 0
+        func report(_ candidate: Data) {
+            guard let page = Self.pageMarker(candidate), page > lastPage else { return }
+            lastPage = page
+            onPage?(page)
+        }
         while true {
             let chunk = handle.availableData
             if chunk.isEmpty { break }                                  // EOF
             tail.append(chunk)
             if tail.count > limit { tail.removeFirst(tail.count - limit) }
+            guard onPage != nil else { continue }
+            for byte in chunk {
+                if byte == 0x0A || byte == 0x0D {                       // LF or CR ends a line
+                    report(line)
+                    line.removeAll(keepingCapacity: true)
+                } else if line.count < Self.maxProgressLineBytes {
+                    line.append(byte)
+                }
+            }
         }
+        if onPage != nil { report(line) }                               // an unterminated last line
         return tail
+    }
+
+    /// A `Page N` marker is the only line the progress parse reads, so no more of a line than that
+    /// is ever buffered — a hostile input that provokes megabyte-long gs diagnostics with no newline
+    /// cannot make the parser retain them, and clamping the *end* of an over-long line leaves the
+    /// prefix (the only load-bearing part) intact.
+    private static let maxProgressLineBytes = 64
+    private static let pageMarkerPrefix = Array("Page ".utf8)
+
+    /// gs's per-page marker (`Page 12`) → its page number; nil for every other line.
+    private static func pageMarker(_ line: Data) -> Int? {
+        guard line.starts(with: pageMarkerPrefix) else { return nil }
+        // Non-failable decode: the bytes are attacker-influenced, and a nil here would silently
+        // drop a legitimate marker (§4.6).
+        let number = String(decoding: line.dropFirst(pageMarkerPrefix.count), as: UTF8.self)
+        return Int(number.trimmingCharacters(in: .whitespaces))
     }
 
     /// SIGTERM, then SIGKILL if the child is still alive `grace` seconds later. Both the
@@ -171,9 +215,17 @@ struct GhostscriptRunner {
     /// waiting thread forever — the continuation never resumes, the queue slot is never freed and
     /// the scratch directory is never cleaned.
     ///
-    /// The escalation needs no bookkeeping: it is a no-op once the child has exited, and holding
-    /// `process` until it fires is what makes the pid safe to signal (a reaped pid could be
-    /// recycled, and killing a stranger's process is the one outcome worth engineering against).
+    /// The escalation needs no bookkeeping: `terminate()` is documented as a no-op on a child that
+    /// has already finished, and the `SIGKILL` is gated on `isRunning`.
+    ///
+    /// That gate is check-then-act, not a guarantee, and the comment that used to claim otherwise
+    /// was wrong: retaining the `Process` object is not a mechanism — Foundation reaps the child on
+    /// its own dispatch source, independently of the object's lifetime — so the child can exit and
+    /// be reaped between `isRunning` and `kill(2)`, and the pid could in principle be recycled
+    /// inside that window. The window is accepted rather than closed: it opens only for a child
+    /// still alive `grace` seconds after SIGTERM, and dropping the `SIGKILL` is not on the table —
+    /// it is the only thing that stops a gs which ignores SIGTERM from parking the waiting thread
+    /// forever (pinned by `testTerminateEscalatesToSIGKILL`).
     static func terminateEscalating(_ process: Process, grace: TimeInterval = 5) {
         process.terminate()
         DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
@@ -213,19 +265,6 @@ struct GhostscriptRunner {
         process.standardOutput = outPipe
         process.standardError = errPipe
 
-        // Drain both pipes to EOF on background threads — the deadlock-free pattern. (Do NOT
-        // mix a readabilityHandler with readDataToEndOfFile: the handler's dispatch source
-        // consumes EOF and the later read then blocks forever.) Large gs output can exceed the
-        // 64 KB pipe buffer, so draining must run concurrently with the process, not after.
-        var outData = Data()
-        var errData = Data()
-        let ioGroup = DispatchGroup()
-        let ioQueue = DispatchQueue(label: "com.toolbox.gs.io", attributes: .concurrent)
-        ioGroup.enter()
-        ioQueue.async { outData = Self.drainTail(outPipe.fileHandleForReading, limit: Self.outputTailLimit); ioGroup.leave() }
-        ioGroup.enter()
-        ioQueue.async { errData = Self.drainTail(errPipe.fileHandleForReading, limit: Self.outputTailLimit); ioGroup.leave() }
-
         do {
             try process.run()
         } catch {
@@ -236,9 +275,11 @@ struct GhostscriptRunner {
         control.adopt(process)
 
         // Wall-clock cap without a busy-wait: a watchdog terminates a runaway/hung gs; otherwise
-        // `waitUntilExit` blocks this (global-queue) thread until gs exits. When the watchdog
-        // fires it records the fact under a lock so the timeout can be surfaced as a *dedicated*
-        // error (the UI shows "timed out", not a bare non-zero exit) and the batch continues.
+        // this (global-queue) thread blocks until gs exits. When the watchdog fires it records the
+        // fact under a lock so the timeout can be surfaced as a *dedicated* error (the UI shows
+        // "timed out", not a bare non-zero exit) and the batch continues. It is armed BEFORE the
+        // drain below and must stay that way: the drain parks in `availableData` until gs closes
+        // its stdout, so on a silent hang the watchdog is the only thing that ever ends the wait.
         let timeoutLock = NSLock()
         var didTimeout = false
         let watchdog = DispatchWorkItem {
@@ -248,6 +289,26 @@ struct GhostscriptRunner {
             }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + wallClockTimeout, execute: watchdog)
+
+        // Both pipes are drained to EOF concurrently with the child — the deadlock-free pattern;
+        // large gs output can exceed the 64 KB pipe buffer, so draining after the wait would hang.
+        // (Do NOT mix a readabilityHandler with readDataToEndOfFile: the handler's dispatch source
+        // consumes EOF and the later read then blocks forever.) Only *one* of the two needs a
+        // thread of its own, though: stderr goes to the shared global queue — never a freshly
+        // created private concurrent queue, each of which costs its own thread resources — while
+        // stdout is drained on this thread, so a gs job parks two threads rather than three. That
+        // also keeps progress single-threaded: the ticks are delivered on the very thread that goes
+        // on to resume the caller's continuation. Both drains start only after a successful launch,
+        // so a `launchFailed` throw abandons neither.
+        var errData = Data()
+        let ioGroup = DispatchGroup()
+        ioGroup.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            errData = Self.drainTail(errPipe.fileHandleForReading, limit: Self.outputTailLimit)
+            ioGroup.leave()
+        }
+        let outData = Self.drainTail(outPipe.fileHandleForReading, limit: Self.outputTailLimit,
+                                     onPage: onProgress)
         process.waitUntilExit()
         watchdog.cancel()
         ioGroup.wait()
@@ -264,24 +325,14 @@ struct GhostscriptRunner {
             throw GhostscriptError.timedOut(seconds: wallClockTimeout)
         }
 
-        let stdout = String(data: outData, encoding: .utf8) ?? ""
-        // Best-effort progress: report the highest "Page N" gs emitted (coarse but real;
-        // per spec [m10] indeterminate is acceptable when no marker is parseable).
-        if let onProgress {
-            var lastPage = 0
-            for line in stdout.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-                if line.hasPrefix("Page "),
-                   let n = Int(line.dropFirst(5).trimmingCharacters(in: .whitespaces)), n > lastPage {
-                    lastPage = n
-                }
-            }
-            if lastPage > 0 { onProgress(lastPage) }
-        }
-
+        // Decoded with UTF-8 *repair*, never `String(data:encoding:)`: that initialiser is failable
+        // and returns nil on the first ill-formed byte, so a tail cut mid-sequence — or a fragment
+        // of the untrusted input that gs echoed into its diagnostic — would replace the job's whole
+        // failure reason with an empty string, on exactly the path that most needs it (§4.6).
         return ProcessResult(
             exitCode: process.terminationStatus,
-            stdout: stdout,
-            stderr: String(data: errData, encoding: .utf8) ?? "")
+            stdout: String(decoding: outData, as: UTF8.self),
+            stderr: String(decoding: errData, as: UTF8.self))
     }
 }
 
