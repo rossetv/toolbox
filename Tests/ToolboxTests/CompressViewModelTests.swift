@@ -531,6 +531,44 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { env.stub.callCount > callsAfterSwitch }
     }
 
+    /// A mid-switch row still shows/queues as `.done` (ec61602), so `clearFinished()` must refuse
+    /// outright while a switch is in flight — otherwise it would discard the parked file the swap
+    /// is mid-copy into.
+    func testClearFinishedRefusedWhileASwitchIsInFlight() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let runnerUpURL = try XCTUnwrap(job.alternateURL)
+        // Vanish the runner-up so the switch falls through to `rerunForSwitch` and hits the
+        // engine, and freeze that re-run mid-flight so `isSwitchRerunning` stays populated.
+        try FileManager.default.removeItem(at: runnerUpURL)
+        let gate = Gate()
+        env.stub.gate = gate
+        let callsBefore = env.stub.callCount
+
+        async let switching: Void = model.switchVersion(for: job)
+        try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
+        XCTAssertTrue(model.isSwitchRerunning.contains(job.id))
+
+        model.clearFinished()
+        XCTAssertEqual(model.jobs.count, 1, "the row survives while its switch is in flight")
+        XCTAssertNotNil(model.versions(for: job)?.shipped,
+                         "the parked file must not be discarded mid-swap")
+
+        await gate.open()
+        _ = await switching
+        try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
+
+        // Now that the switch has landed, clearFinished() must work again.
+        model.clearFinished()
+        XCTAssertTrue(model.jobs.isEmpty)
+    }
+
     /// If the runner-up vanished, the switch re-runs the job, but the *final* swap back into the
     /// switched state can still fail (store contract: a throw means `shipped` is unchanged). That
     /// must not be recorded as a switch — the row must stay canonical (heavy still shipped).

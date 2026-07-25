@@ -266,7 +266,10 @@ struct CompressView: View {
             // Gated on the run, like "+ Add" beside it: clearing mid-batch drops the progress
             // bar's denominator under the running batch and silently omits the files already
             // compressed from the final summary.
-            if hasFinishedJobs, !model.isRunning {
+            // Also gated on `isSwitchRerunning`: a mid-switch row still shows/queues as `.done`
+            // (ec61602), so `clearFinished()` refuses outright while one is in flight — mirror
+            // that here so the button doesn't invite a click that does nothing.
+            if hasFinishedJobs, !model.isRunning, model.isSwitchRerunning.isEmpty {
                 LinkButton(title: "Clear finished") { model.clearFinished() }
             }
         }

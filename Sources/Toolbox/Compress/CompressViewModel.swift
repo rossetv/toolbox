@@ -322,6 +322,13 @@ final class CompressViewModel: ObservableObject {
     }
 
     func clearFinished() {
+        // Refuse outright while any switch is in flight: after ec61602 a mid-switch row still
+        // displays and queues as `.done`, so `isFinished`/`removeCompleted` cannot tell it apart
+        // from a genuinely finished row. Clearing would discard the parked file
+        // `useVersion`/`rerunForSwitch` is mid-copy into. One coarse guard beats threading an
+        // excluded-ids filter through `ToolQueue.removeCompleted()`, which OCR also calls and has
+        // no notion of switches (R19).
+        guard isSwitchRerunning.isEmpty else { return }
         for job in jobs where isFinished(job) { discardRunnerUp(for: job) }
         queue.removeCompleted()
     }
