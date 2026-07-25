@@ -249,6 +249,63 @@ final class ToolQueueTests: XCTestCase {
         }
     }
 
+    /// m1 — `add` while a batch is live must be a no-op, matching `run`'s own re-entrancy guard:
+    /// a job appended after `execute`'s `queuedIDs` snapshot is taken would never be picked up by
+    /// this batch and would sit `.queued` forever with no UI signal.
+    func testAddWhileRunningIsRefused() async {
+        let queue = ToolQueue()
+        queue.add(urls(1, "add-while-running"))
+
+        let started = XCTestExpectation(description: "a job started running")
+        let watcher = queue.$jobs.sink { jobs in
+            if jobs.contains(where: { if case .running = $0.state { return true } else { return false } }) {
+                started.fulfill()
+            }
+        }
+
+        let handle = Task {
+            await queue.run({ _, _ in
+                while !Task.isCancelled { await Task.yield() }
+                throw CancellationError()
+            }, maxConcurrent: 1)
+        }
+
+        await fulfillment(of: [started], timeout: 5)
+        queue.add(urls(1, "should-be-refused"))
+        XCTAssertEqual(queue.jobs.count, 1, "an add while the batch is live must not enqueue anything")
+
+        queue.cancel()
+        await handle.value
+        watcher.cancel()
+    }
+
+    /// T9 — the empty-batch path through `execute` (`queuedIDs.isEmpty`, `launchNext()` no-ops
+    /// `maxConcurrent` times, `withTaskGroup` with zero children) was never exercised.
+    func testRunOnEmptyQueueCompletesImmediately() async {
+        let queue = ToolQueue()
+        await queue.run({ _, _ in JobResult(.compressed(before: 10, after: 5)) }, maxConcurrent: 2)
+        XCTAssertTrue(queue.jobs.isEmpty)
+    }
+
+    /// T9 — a duplicate URL queued twice must be tracked as two independent jobs (distinct `id`s),
+    /// each reaching its own terminal state.
+    func testDuplicateURLsAreTrackedAsIndependentJobs() async {
+        let queue = ToolQueue()
+        let url = URL(fileURLWithPath: "/tmp/toolbox-dup.pdf")
+        queue.add([url, url])
+
+        XCTAssertEqual(queue.jobs.count, 2)
+        XCTAssertNotEqual(queue.jobs[0].id, queue.jobs[1].id)
+
+        await queue.run({ _, _ in JobResult(.compressed(before: 10, after: 5)) }, maxConcurrent: 2)
+
+        XCTAssertEqual(queue.jobs.count, 2)
+        for job in queue.jobs {
+            XCTAssertEqual(job.url, url)
+            XCTAssertEqual(job.state, .done(.compressed(before: 10, after: 5)))
+        }
+    }
+
     /// A body returning an alternateURL must land it on the job, next to resultURL —
     /// the Rung-3 runner-up channel.
     func testAlternateURLFromJobResultLandsOnJob() async throws {

@@ -41,7 +41,12 @@ enum FileNaming {
     /// `moveItem`.
     static func output(for input: URL, suffix: String, folder: URL?, reserving reserved: inout Set<String>) -> URL {
         let directory = folder ?? input.deletingLastPathComponent()
-        let ext = input.pathExtension.isEmpty ? "pdf" : input.pathExtension
+        // Clamp the extension itself first: `ext` is attacker-controlled (`input.pathExtension`,
+        // and APFS permits any extension length as long as the whole name is ≤ 255 bytes), so an
+        // absurdly long extension must not be allowed to eat the entire budget before `base` gets
+        // a look-in — see `truncatedBase`'s doc comment.
+        let rawExt = input.pathExtension.isEmpty ? "pdf" : input.pathExtension
+        let ext = truncatedToByteBudget(rawExt, maxBytes: maxExtensionBytes)
         let base = truncatedBase(input.deletingPathExtension().lastPathComponent, suffix: suffix, ext: ext)
 
         var candidate = directory.appendingPathComponent("\(base)-\(suffix).\(ext)")
@@ -59,20 +64,41 @@ enum FileNaming {
     /// to fail `FileManager.moveItem` with `ENAMETOOLONG` — every time, since retrying never
     /// shortens it. Truncate `base` up front, preserving the suffix/extension and leaving headroom
     /// for the dedupe counter, so the name that comes out the other end is always writable.
+    ///
+    /// `ext` must already be clamped by the caller (`maxExtensionBytes`) — an unclamped, absurdly
+    /// long extension could exhaust the whole 255-byte budget on its own, leaving no room for
+    /// `base` at all (`budget <= 0`); with `ext` bounded that can no longer happen, but the guard
+    /// below still degrades to an empty base rather than returning `base` untruncated.
     private static func truncatedBase(_ base: String, suffix: String, ext: String) -> String {
         let maxFilenameBytes = 255
         let reservedForCounter = "-\(suffix)-9999.\(ext)".utf8.count
         let budget = maxFilenameBytes - reservedForCounter
-        guard budget > 0, base.utf8.count > budget else { return base }
-        var truncated = base
-        while truncated.utf8.count > budget {
-            truncated.removeLast()   // whole grapheme clusters — never splits a multi-byte character
+        guard budget > 0 else { return "" }
+        guard base.utf8.count > budget else { return base }
+        return truncatedToByteBudget(base, maxBytes: budget)
+    }
+
+    /// The longest extension we'll honour verbatim. Real extensions are a handful of characters
+    /// ("pdf", "tar.gz" fragments); this exists solely to stop a hostile/absurd `pathExtension`
+    /// from eating the byte budget `truncatedBase` needs for the basename (see m2 in review).
+    private static let maxExtensionBytes = 20
+
+    /// Truncates `string` to at most `maxBytes` UTF-8 bytes, always on a whole grapheme cluster
+    /// boundary (never splits a multi-byte character).
+    private static func truncatedToByteBudget(_ string: String, maxBytes: Int) -> String {
+        guard maxBytes > 0 else { return "" }
+        var truncated = string
+        while truncated.utf8.count > maxBytes {
+            truncated.removeLast()
         }
         return truncated
     }
 
     /// Case- and normalisation-insensitive key matching APFS/HFS+'s own filename comparison.
+    /// Canonicalised first (§5.1: identity is compared on canonical paths) so a symlinked
+    /// directory (e.g. `~/Docs` → `~/Documents`) can't let two inputs "reserve" what is really
+    /// the same on-disk name under two different-looking keys.
     private static func reservationKey(for url: URL) -> String {
-        url.path.precomposedStringWithCanonicalMapping.lowercased()
+        url.canonical.path.precomposedStringWithCanonicalMapping.lowercased()
     }
 }

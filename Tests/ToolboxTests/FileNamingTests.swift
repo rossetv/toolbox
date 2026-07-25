@@ -109,4 +109,44 @@ final class FileNamingTests: XCTestCase {
         XCTAssertFalse(output.lastPathComponent.contains("\u{FFFD}"),
                         "truncation must not split a multi-byte character")
     }
+
+    /// m3 regression: `folder: nil` puts each output beside its input, so a directory reached via
+    /// a symlink (`~/Docs` → `~/Documents` in the review's example) must still collide with the
+    /// real directory on reservation — the key must be canonicalised, not compared as a raw
+    /// string path (§5.1). Without canonicalisation the two batch entries "reserve" the same
+    /// on-disk name under two different-looking keys and the second job's `moveItem` fails at the
+    /// end of the run.
+    func testBatchReservationIsCanonicalisedAcrossSymlinkedDirectories() throws {
+        let real = try uniqueDir()
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        let link = real.deletingLastPathComponent().appendingPathComponent("link-\(UUID().uuidString)")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        defer { try? FileManager.default.removeItem(at: link) }
+
+        let inputReal = real.appendingPathComponent("image.pdf")
+        let inputViaLink = link.appendingPathComponent("image.pdf")   // same file, different path string
+
+        var reserved = Set<String>()
+        let outA = FileNaming.output(for: inputReal, suffix: "compressed", folder: nil, reserving: &reserved)
+        let outB = FileNaming.output(for: inputViaLink, suffix: "compressed", folder: nil, reserving: &reserved)
+
+        XCTAssertNotEqual(outA.path, outB.path, "a symlink alias must not defeat the reservation")
+        XCTAssertEqual(outA.lastPathComponent, "image-compressed.pdf")
+        XCTAssertEqual(outB.lastPathComponent, "image-compressed-1.pdf")
+    }
+
+    /// m2 regression: a hostile/absurd EXTENSION alone must not be able to exhaust the whole
+    /// 255-byte budget and defeat truncation — before the fix, `budget <= 0` made `truncatedBase`
+    /// return `base` untouched, so the assembled name (well over 255 bytes) reliably failed
+    /// `FileManager.moveItem` with `ENAMETOOLONG`.
+    func testLongExtensionIsClampedSoTheNameStillFitsTheFilesystemLimit() throws {
+        let dir = try uniqueDir()
+        let longExt = String(repeating: "x", count: 240)
+        let input = dir.appendingPathComponent("s.\(longExt)")
+
+        let output = FileNaming.output(for: input, suffix: "compressed", folder: nil)
+
+        XCTAssertLessThanOrEqual(output.lastPathComponent.utf8.count, 255,
+                                  "an absurd extension must not defeat the 255-byte promise")
+    }
 }

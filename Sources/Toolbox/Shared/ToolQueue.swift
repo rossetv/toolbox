@@ -44,7 +44,13 @@ final class ToolQueue: ObservableObject {
 
     private var runTask: Task<Void, Never>?
 
+    /// A no-op while a batch is in flight: `execute`'s `queuedIDs` snapshot is taken once at
+    /// `run`'s start, so a job appended mid-batch would never be picked up — it would sit
+    /// `.queued` forever with no UI signal. Both view models also gate on `isRunning`, but the
+    /// invariant belongs here, in the type that owns the state (§6.3, same shape as `run`'s own
+    /// `runTask == nil` guard).
     func add(_ urls: [URL]) {
+        guard runTask == nil else { return }
         jobs.append(contentsOf: urls.map(ToolJob.init(url:)))
     }
 
