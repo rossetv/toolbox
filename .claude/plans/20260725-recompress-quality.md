@@ -35,7 +35,10 @@ every failure.
 - **No new dependencies** — system frameworks only.
 - **AGPL SPDX header** on every new file, copied verbatim from an existing source file.
 - **British English** in all prose (comments, docs, commit messages). Code identifiers follow the
-  existing convention (`colour`, `normalised` are already the house spelling here).
+  NEAREST SIBLING in the same file, not the prose rule: `Components.swift` already spells it
+  `StatPill.Tone.color` (and `Theme.Shadow.color`), while `MRCSegmenter.swift` has a local
+  `colour` and `CompressPreset.swift` a `colourDPI` — each file is consistent with itself, and a
+  new member matches whatever its file already does.
 - **Output naming per v1 §5.4** — `FileNaming.output` never overwrites; every delivery is an atomic
   move onto a guaranteed-absent path.
 - **Session-only cache** — parked versions live under `RunnerUpStore`'s root: swept at launch,
@@ -65,7 +68,7 @@ serial, because `CompressViewModel.swift` and `CompressView.swift` are consumed 
 
 | Phase | Track | Tasks | Exact file set |
 |-------|-------|-------|----------------|
-| 1 — foundation | **serial** | 1–4 | `Compress/VersionStore.swift`, `Compress/RunnerUpStore.swift`, `Compress/CompressEstimator.swift`, `Compress/CompressViewModel.swift`, `Shared/FileNaming.swift`, `Compress/HeavyCompressionPopover.swift` (type + body swap, pre-rename), `Compress/CompressView.swift` (accessor rename only), `Tests/ToolboxTests/{VersionStoreTests,RunnerUpStoreTests,EstimatorTests,CompressViewModelTests}.swift` |
+| 1 — foundation | **serial** | 1–4 | `Compress/VersionStore.swift`, `Compress/RunnerUpStore.swift`, `Compress/CompressEstimator.swift`, `Compress/CompressViewModel.swift`, `Shared/FileNaming.swift`, `Compress/HeavyCompressionPopover.swift` (type + body swap, pre-rename), `Compress/CompressView.swift` (accessor rename plus the one `status(for:)` byte read), `Tests/ToolboxTests/{VersionStoreTests,RunnerUpStoreTests,EstimatorTests,CompressViewModelTests}.swift` |
 | 2 — fork | **Track P** (presentation) | 5–6 | `Compress/VersionsPopover.swift` (renamed from `HeavyCompressionPopover.swift`), `DesignSystem/Components.swift`, **and** the one `HeavyCompressionPopover` call site in `Compress/CompressView.swift` |
 | 2 — fork | **Track E** (engine/model) | 7–10 | `Compress/CompressViewModel.swift`, `Tests/ToolboxTests/CompressViewModelTests.swift` — **never** `CompressView.swift` |
 | 3 — integration | **serial** | 11–13 | `Compress/CompressViewModel.swift` (Task 11), `Compress/CompressView.swift` (Task 12), `Tests/ToolboxTests/CompressViewModelTests.swift` (Tasks 11 and 12), the mockup HTML (Task 12), then the gates |
@@ -840,7 +843,7 @@ existing display path onto the store, with **no behaviour change**. The existing
 **Files**
 - Modify: `Sources/Toolbox/Compress/CompressViewModel.swift`
 - Modify: `Sources/Toolbox/Compress/HeavyCompressionPopover.swift`
-- Modify: `Sources/Toolbox/Compress/CompressView.swift` (accessor rename only)
+- Modify: `Sources/Toolbox/Compress/CompressView.swift` (accessor rename plus the one `status(for:)` byte read)
 - Test: `Tests/ToolboxTests/CompressViewModelTests.swift`
 
 **Interfaces**
@@ -1177,7 +1180,11 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
       - `CompressView`: `model.heavyVersions(for: job)` → `model.versions(for: job)`,
         `versions.capsuleTitle` unchanged, `onPreview`'s pair read from
         `versions.cards.map(\.version.url)`, and `originalBytes(for:)` reading
-        `model.versions(for: job)?.originalBytes ?? 0`.
+        `model.versions(for: job)?.originalBytes ?? 0`,
+        and `status(for:)`'s `.compressedHeavy` arm's `newBytes: versions.displayedBytes` →
+        `newBytes: versions.shipped?.bytes ?? after` — the `guard let versions` is already in
+        scope; this is the interim behaviour-preserving form, replaced wholesale by Task 12's
+        store-driven `.done` arm.
 - [ ] Build to prove the whole app still compiles:
 
 ```sh
@@ -1326,7 +1333,7 @@ struct SuccessBanner: View {
     enum Tone {
         case success, accent
 
-        var colour: Color {
+        var color: Color {
             switch self {
             case .success: return Theme.Colors.success
             case .accent: return Theme.Colors.accent
@@ -1348,7 +1355,7 @@ struct SuccessBanner: View {
     var tone: Tone = .success
 ```
 
-      with the body's `Theme.Colors.success` occurrences replaced by `tone.colour`,
+      with the body's `Theme.Colors.success` occurrences replaced by `tone.color`,
       `Image(systemName: "checkmark")` by `Image(systemName: tone.symbol)`, and the detail line
       wrapped in `if let detail { … }`. The existing `SuccessBanner(headline:detail:)` call site in
       `CompressView` still compiles — a `String` promotes to `String?`.
@@ -2298,10 +2305,19 @@ route destroys the delivered state this feature exists to protect.
 
     /// R11's reservation seeding: the commit makes the row's file transiently absent, so a queued
     /// same-basename job must be kept off that path by the RESERVATION, not by the file happening
-    /// to exist when names are allocated.
+    /// to exist when names are allocated. The DECOY is what makes this test discriminate: it
+    /// pushes the armed row off the first free name, so with the seeding deleted the second
+    /// batch's unfiltered allocation loop re-hands that row's freed name to the armed row and
+    /// gives the NEW job exactly the armed row's shipped path.
     func testAQueuedJobNeverClaimsAnArmedRowsResultPath() async throws {
         let env = try HeavyEnv()
         let model = env.model
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        // The decoy occupies `image-compressed.pdf`, so the armed row ships at
+        // `image-compressed-1.pdf` rather than the first free name.
+        let decoy = outputFolder.appendingPathComponent("image-compressed.pdf")
+        try Data().write(to: decoy)
+
         model.preset = .balanced
         model.add([env.input])
         try await waitUntil(timeout: 5) { model.jobs.count == 1 }
@@ -2309,7 +2325,10 @@ route destroys the delivered state this feature exists to protect.
         try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
         let armedRowOutput = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
 
-        // Stand in for the promote window: the row's delivered file is momentarily not on disk.
+        // Stand in for the promote window: the row's delivered file is momentarily not on disk —
+        // and the decoy goes too, so `image-compressed.pdf` is free again and NOTHING on disk
+        // stands between the new job and the armed row's path except the reservation.
+        try FileManager.default.removeItem(at: decoy)
         try FileManager.default.removeItem(at: armedRowOutput)
 
         model.add([try Fixtures.imagePDF()])       // same basename, different folder
@@ -2559,7 +2578,18 @@ route destroys the delivered state this feature exists to protect.
     private func commit(_ outcome: JobOutcome, plan: RecompressPlan,
                         report: MRCDocumentReport?) throws {
         let fm = FileManager.default
-        guard let row = versionStore.versions(for: plan.id) else { return }
+        // Both early returns below are unreachable by construction — a plan is only built for an
+        // ARMED row, and `recompressState`'s own `guard let row = versions(for: job)` means a row
+        // with no store entry never arms (a no-gain row DOES get an entry, with `shipped: nil`);
+        // and `CompressEngine` never returns an OCR outcome — and both clean up anyway: an early
+        // return that leaves the temp file and the runner-up
+        // reservation behind would leak them for the session, and a "can't happen" is not a
+        // reason to leak.
+        guard let row = versionStore.versions(for: plan.id) else {
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+            return
+        }
         let shippedBytes: Int
         let variant: EngineVariant
         var runnerUp: FileVersion?
@@ -2583,7 +2613,10 @@ route destroys the delivered state this feature exists to protect.
             versionStore.recordAttempt(plan.target, for: plan.id)
             return
         case .ocrAdded, .alreadySearchable:
-            return          // never produced by CompressEngine
+            // Never produced by CompressEngine — cleaned up regardless, as above.
+            try? fm.removeItem(at: plan.temp)
+            store.discard(plan.runnerUp)
+            return
         }
         if let previouslyShipped = row.shipped {
             try store.promote(fresh: plan.temp, to: previouslyShipped.url, parking: plan.parked)
@@ -2630,13 +2663,15 @@ route destroys the delivered state this feature exists to protect.
     @Published var preset: CompressPreset = .balanced {
         didSet {
             guard preset != oldValue else { return }
-            reestimatePendingJobs()
             // Changing preset is the user saying "never mind that one, what about this?" — a
             // message about the previous target is now stale. Until they do, it stands, ARMED ROW
             // OR NOT: a failed attempt leaves the row armed at the same preset, and suppressing
             // the message there would mean an explicit button press failed silently.
             recompressErrors = [:]
-            publishJobs()
+            // Cleared BEFORE the reestimate, which is the only republish this observer needs:
+            // `reestimatePendingJobs()`'s whole body is `publishJobs()`, so a trailing call would
+            // publish the same state twice.
+            reestimatePendingJobs()
         }
     }
 ```
@@ -2697,6 +2732,40 @@ concurrency is bounded by one normal batch width *by construction* rather than b
 
 **Steps**
 
+- [ ] FIRST, before any test below is written or run: make the shared `Gate` test double
+      multi-waiter. Every gated test written so far suspends exactly ONE engine call behind the
+      latch, so a single stored continuation has been sufficient; `testRunProgressIsScopedToTheRunsOwnRows`
+      below is the first to put TWO jobs behind it at once (phase 2 launches up to
+      `performanceCoreCount` children), and the second waiter would overwrite and orphan the
+      first — the test would hang rather than fail, and this task's own mandated `tests` gate
+      would be unreachable. Replace the existing `private actor Gate` in
+      `Tests/ToolboxTests/CompressViewModelTests.swift` with:
+
+```swift
+    /// A latch, not a handoff: phase 2 runs up to `performanceCoreCount` recompresses at once, so
+    /// two engine calls can be suspended here simultaneously. A single stored continuation would
+    /// let the second waiter overwrite (and orphan) the first.
+    private actor Gate {
+        private var opened = false
+        private var continuations: [CheckedContinuation<Void, Never>] = []
+
+        func wait() async {
+            if opened { return }
+            await withCheckedContinuation { continuations.append($0) }
+        }
+
+        func open() {
+            opened = true
+            for continuation in continuations { continuation.resume() }
+            continuations = []
+        }
+    }
+```
+
+      This touches a test HELPER, not an assertion, so Task 4's binding constraint — adjust only
+      the accessor, never the expected value — is not in tension: no existing test's behaviour
+      changes, because every one of them is a single waiter and the single-waiter path through
+      this actor is identical.
 - [ ] Write the failing tests:
 
 ```swift
@@ -3672,7 +3741,9 @@ derives from the version store, and the armed/running/finished chrome follows th
       reads it in `status(for:)`'s `.done` arm), `canRemove` (`.queued` only —
       an armed row is finished and stays non-removable, per D5's deferral), and the `.animation`
       values on the root view, which gain `value: model.armedCount` so arming animates like the
-      other state changes. **Plus one model-side confirmation, because it is the last reader of a
+      other state changes. Also: the five disable/refuse sites (preset selector, + Add, Clear
+      finished, `outputFolderRow`, the drop guard) already key on `model.isRunning`, which now
+      spans both phases — unchanged, deliberately (R9). **Plus one model-side confirmation, because it is the last reader of a
       superseded URL:** `rerunForSwitch` must take its shipped and runner-up URLs from
       `versionStore.versions(for:)` and NOT from `job.resultURL`/`job.alternateURL` (fixed in Task
       4) — after a recompress the queue's record is the first run's, and it is nil outright on a
@@ -4024,3 +4095,45 @@ against `ToolQueue.process`'s stricter FIFO comment, keeping the mechanism.
 6. Replacing a piece of bookkeeping means inheriting its lifecycle guards.
 ## Round 6 — 2026-07-25 — SHIP pending certify (plan-reviewer, Opus, incremental)
 The round-5 major and all nine minors verified resolved against the repo (audit table's 18-call count re-grepped; every survivor-table attribution checked line by line; all three armedSummary branch premises re-derived; the previous-swap test traced through swapShipped and commit). Three new minors, fixed this round: two rows added to the survivor table for hits the fix's own new code introduces (rerunForSwitch's deliberate "never these" comment; the new queued-vs-armed path test), the originalBytes(for:) traceability claim now states re-derived-in-Task-4-then-deleted-in-Task-12 in both places, and the "stronger discriminator" comparative names both states. Lesson-candidates: a "complete list produced by grep" must be re-grepped against the document's own new code; when a later task deletes what an earlier task re-derived, say so in both places; a comparative claim is an assertion about two states — name both or use the absolute form; a semantics change to one shared read prompts a grep for every other shared read the change-set redefines (allFinished checked — clean).
+
+## Round 7 — 2026-07-25 — NO-SHIP (plan-reviewer, Opus, full certify)
+
+The full certify found three MAJORS that four incremental rounds could not see, all of them
+consequences of a change being checked only where the round's diff pointed. Task 4's
+`HeavyVersions` → `RowVersions` mapping table was scoped to the test file and to the popover, and
+missed `CompressView.status(for:)`'s one inline `versions.displayedBytes` read in the
+`.compressedHeavy` arm — a member `RowVersions` does not have, so Task 4's own build step could not
+pass; the arm now maps to `versions.shipped?.bytes ?? after` as an interim behaviour-preserving
+form, superseded wholesale by Task 12's store-driven `.done` arm. The `Gate` test double shared by
+every gated test is a single-continuation latch, and Task 10's new
+`testRunProgressIsScopedToTheRunsOwnRows` is the first test in the suite to suspend TWO engine
+calls behind it at once (phase 2 launches up to `performanceCoreCount` children), so the second
+waiter would overwrite and orphan the first and the test would hang rather than fail, making the
+mandated `tests` gate unreachable; Task 10 now opens with a step making the latch multi-waiter,
+which touches a helper rather than an assertion and so does not collide with Task 4's binding
+constraint. And `testAQueuedJobNeverClaimsAnArmedRowsResultPath` — the plan's only regression test
+for R11's reservation seeding — passed identically with the seeding deleted, because in its
+scenario the unfiltered queued allocation loop re-reserves the armed row's name anyway; it is
+rewritten around a decoy file planted at `outputFolder/image-compressed.pdf` before the first
+batch, so the armed row ships at `image-compressed-1.pdf`, and with both the decoy and the row's
+file removed the second batch hands the new job exactly that path unless the seeding stops it.
+Four minors, all fixed this round: `commit()`'s guard-let-row and `.ocrAdded`/`.alreadySearchable`
+returns now clean up `plan.temp` and the runner-up reservation as the `.noGain` arm already did,
+with a note that both are unreachable by construction and cleaned anyway; `SuccessBanner.Tone`'s
+accessor is renamed `colour` → `color` to match its file's siblings (`StatPill.Tone.color`,
+`Theme.Shadow.color`), the doc-comment prose staying British, and the global constraint that
+produced the mistake is restated as the nearest-sibling rule; the coverage table's R9 row credited
+Task 12 with "disable rules" it had no step for, so Task 12's R17 confirm bullet now names the five
+disable/refuse sites that key on `model.isRunning` and records them as deliberately unchanged; and
+the `preset` observer no longer republishes twice, `recompressErrors = [:]` moving above
+`reestimatePendingJobs()` (whose whole body is `publishJobs()`) and the trailing `publishJobs()`
+going away.
+
+**Lesson-candidates** (the reviewer's, one line each):
+
+1. A member-mapping table scoped to one file is not a sweep: enumerate the deleted type's readers per consumer file and grep each.
+2. A shared test double is part of the concurrency contract — the first test to exercise a code path at width > 1 must re-derive the double's own arity.
+3. A regression test for a reservation must be built on a state where the reservation is the only thing preventing the collision.
+4. A cleanup performed on one arm of a switch and omitted on its siblings is a finding even when the siblings are unreachable.
+5. Spelling convention for code identifiers is decided by the nearest sibling in the same file, not by the prose rule.
+6. A coverage table entry naming a task is a claim that the task has a step for it — grep the task before writing the row.
