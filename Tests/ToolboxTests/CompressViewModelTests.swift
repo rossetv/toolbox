@@ -1199,6 +1199,28 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 10) { !model.isRunning }
     }
 
+    /// `recordTerminalRunRows` exists so a `.failed` queued row still counts toward the bar: a
+    /// failure carries no outcome, so the outcome-driven path never sees it and the run would
+    /// stall for ever one row short. Asserted mid-run, because the counters are cleared the
+    /// moment the batch ends.
+    func testAFailedQueuedRowStillCountsTowardTheProgressBar() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.throwOnCall = 1
+        model.add([env.input, try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        model.compress()
+
+        try await waitUntil(timeout: 10) { model.runFinishedCount == 1 }
+        XCTAssertEqual(model.runTotalCount, 2)
+        XCTAssertGreaterThanOrEqual(model.runProgress, 0.5, "the failed row counts, it does not stall")
+
+        await gate.open()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+    }
+
     // MARK: armed-state aggregates and cache lifecycle (R4/R17/R18)
 
     /// R4 hides the success banner and the "Reveal in Finder" / "Compress More" affordances while
