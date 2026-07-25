@@ -30,7 +30,29 @@ enum WindowSetup {
 
     private static let autosaveName = "ToolboxMainWindow"
 
+    /// Keeps the main window from ever showing an unrequested keyboard focus ring. AppKit
+    /// re-assigns first responder to the first focusable control every time the window becomes
+    /// key again — closing a sheet or popover, reactivating the app — so a one-off
+    /// `makeFirstResponder(nil)` at launch is not enough: the stray blue ring around the
+    /// sidebar header kept resurrecting through exactly these paths. Clearing on every
+    /// key-window transition is safe for keyboard users: Tab is only ever pressed after the
+    /// window is key, so focus set by keyboard navigation survives untouched.
+    private static var keyWindowObserver: NSObjectProtocol?
+
+    private static func installStrayFocusClear() {
+        guard keyWindowObserver == nil else { return }
+        keyWindowObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { note in
+            guard let window = note.object as? NSWindow,
+                  window.frameAutosaveName == autosaveName else { return }
+            // Deferred: AppKit assigns the auto first responder after the notification fires.
+            DispatchQueue.main.async { window.makeFirstResponder(nil) }
+        }
+    }
+
     static func applyMinimumSize(_ minSize: NSSize) {
+        installStrayFocusClear()
         DispatchQueue.main.async {
             for window in NSApp.windows where window.contentView != nil && window.canBecomeMain {
                 window.minSize = minSize

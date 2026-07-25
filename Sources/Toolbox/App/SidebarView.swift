@@ -19,24 +19,12 @@ struct SidebarView: View {
     @Binding var selection: Tool?
     @Binding var isCollapsed: Bool
 
-    // Bound to each tool row below and deliberately cleared right after a mouse click (see the
-    // ForEach) so a click never leaves a row showing a stale focus ring next to the real
-    // selection. Tab/arrow-key navigation is untouched by that reset — it drives this same state
-    // from the other direction and still shows the system focus ring.
-    @FocusState private var focusedTool: Tool?
-    // Same pattern, applied to the collapse-toggle header row: on macOS 26 a mouse click leaves
-    // it first responder, which draws a focus ring around the whole "Toolbox" title/logo area.
-    // Clearing it right after the click removes that stray ring while leaving Tab navigation's
-    // ring untouched, per DESIGN.md.
-    @FocusState private var isHeaderFocused: Bool
     @State private var isShowingAbout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { isCollapsed.toggle() }
-                // See isHeaderFocused's declaration: drop the stray post-click focus ring.
-                isHeaderFocused = false
             } label: {
                 HStack(spacing: 9) {
                     if isCollapsed {
@@ -57,7 +45,7 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .focused($isHeaderFocused)
+            .clearsClickFocus()
             .pointingHandCursor()
             .help(isCollapsed ? "Show sidebar" : "Hide sidebar")
             .padding(.horizontal, isCollapsed ? 17 : 16)
@@ -74,17 +62,11 @@ struct SidebarView: View {
             ForEach(Tool.allCases) { tool in
                 Button {
                     selection = tool
-                    // A click both selects and focuses this row by default, which is what left
-                    // the previous fix's blue focus ring on the previously-chosen tool: focus
-                    // and selection could disagree. Clearing focus here means a mouse click is
-                    // shown solely by the row's own "selected" fill; Tab/arrow-key navigation
-                    // sets `focusedTool` from the other direction and still shows the ring.
-                    focusedTool = nil
                 } label: {
                     row(for: tool)
                 }
                 .buttonStyle(.plain)
-                .focused($focusedTool, equals: tool)
+                .clearsClickFocus()
                 .pointingHandCursor()
             }
 
@@ -107,6 +89,7 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .clearsClickFocus()
             .pointingHandCursor()
             .help("About Toolbox")
             .padding(.horizontal, isCollapsed ? 17 : 16)

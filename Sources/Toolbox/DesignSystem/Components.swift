@@ -42,6 +42,7 @@ struct PrimaryButton: View {
                 .padding(.horizontal, 22)
         }
         .buttonStyle(.plain)
+        .clearsClickFocus()
         .background(
             LinearGradient(
                 colors: [Color(hex: 0x0A84FF), Theme.Colors.accent],
@@ -93,6 +94,7 @@ struct LinkButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .clearsClickFocus()
         .pointingHandCursor()
     }
 }
@@ -474,6 +476,9 @@ struct FileRow: View {
             }
         case .doneHeavy(let originalBytes, let newBytes):
             HStack(spacing: 11) {
+                // Capsule leads the cluster so the size/percent columns sit exactly where every
+                // plain `.done` row puts them — trailing, aligned across the whole list.
+                heavyCapsule
                 Text(byteString(originalBytes)).themeFont(.micro)
                     .foregroundStyle(Theme.Colors.textTertiary).strikethrough()
                 Text(byteString(newBytes)).themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
@@ -482,7 +487,6 @@ struct FileRow: View {
                 if newBytes < originalBytes {
                     StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
                 }
-                heavyCapsule
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
             }
             // The capsule makes this the widest trailing cluster; without fixedSize, width
@@ -528,6 +532,7 @@ struct FileRow: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .clearsClickFocus()
         .pointingHandCursor()
         .onHover { isHoveringCapsule = $0 }
         .popover(isPresented: heavyPopoverPresented ?? .constant(false), arrowEdge: .bottom) {
@@ -546,6 +551,7 @@ struct FileRow: View {
                 .background(Circle().fill(Theme.Colors.surface))
         }
         .buttonStyle(.plain)
+        .clearsClickFocus()
     }
 
     private func byteString(_ bytes: Int) -> String {
@@ -813,12 +819,40 @@ private var toolChromeGallery: some View {
 }
 
 extension View {
+    /// Keep a mouse click from leaving this control keyboard-focused — the recurring "stray blue
+    /// square" defect. On modern macOS a click on any focusable SwiftUI control (plain-style
+    /// buttons included) makes it first responder, and the system then draws a keyboard focus
+    /// ring around it even though the user never touched the keyboard. Tab/arrow-key navigation
+    /// is untouched: it assigns focus without a click, so its ring still shows, per DESIGN.md.
+    ///
+    /// House rule (see .claude/memory): EVERY `.buttonStyle(.plain)` control gets this modifier
+    /// unless it deliberately keeps click focus. Pair with `WindowSetup`'s key-window
+    /// first-responder clear, which handles the rings AppKit assigns without any click.
+    func clearsClickFocus() -> some View {
+        modifier(ClearsClickFocusModifier())
+    }
+
     /// Show the hand ("this is clickable") cursor while the pointer is inside.
     ///
     /// SwiftUI leaves the arrow in place for a tappable card, so a control built from a card
     /// rather than a `Button` gives the user no hover affordance at all.
     func pointingHandCursor() -> some View {
         modifier(PointingHandCursorModifier())
+    }
+}
+
+/// Backs `clearsClickFocus()`. The clear is deferred one runloop turn: the tap gesture can fire
+/// before AppKit assigns first responder, and a synchronous clear would then be overwritten by
+/// the very focus change it exists to prevent.
+private struct ClearsClickFocusModifier: ViewModifier {
+    @FocusState private var isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focused($isFocused)
+            .simultaneousGesture(TapGesture().onEnded {
+                DispatchQueue.main.async { isFocused = false }
+            })
     }
 }
 

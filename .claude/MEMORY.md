@@ -20,4 +20,5 @@ Hard byte ceiling: ≤4,000 B — shares its SessionStart block with decision ti
 
 - [AGPL distribution posture](memory/20260722-agpl-distribution-posture.md) — private dev, public at release, MAS foreclosed permanently, never write about the user's personal test PDFs.
 - [Review lessons](memory/review-lessons.md) — standing checks from this repo's review rounds: sandbox profiles must be proven by running the binary, never walk a CGImage buffer flat, build the shared layer before the parallel fork, prefer an invariant fail-loud net to patching a parser under time pressure.
+- [Stray focus rings](memory/20260725-stray-focus-ring-invariant.md) — every `.buttonStyle(.plain)` control gets `.clearsClickFocus()`; main window clears first responder on every key transition; never patch rings per-control again.
 - [Public-release audit](memory/20260724-public-release-audit.md) — 2026-07-24 audit clean; all remaining identity disclosures (attribution, handle, author address, one historical corporate-email blob) explicitly accepted — don't re-flag.

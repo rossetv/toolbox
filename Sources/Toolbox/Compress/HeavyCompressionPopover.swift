@@ -15,12 +15,6 @@ struct HeavyCompressionPopover: View {
     let onSwitch: () -> Void
     let onPreview: (URL) -> Void
 
-    // Cleared right after a version card is clicked so a mouse click never leaves the thumbnail
-    // button showing a stray focus ring (macOS 26; same pattern as SidebarView's tool rows/header).
-    // Tab navigation still drives this state from the other direction and still shows the ring —
-    // Preview stays fully keyboard-accessible, per DESIGN.md.
-    @FocusState private var focusedVersionURL: URL?
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
@@ -41,6 +35,7 @@ struct HeavyCompressionPopover: View {
                                                : "Switch to heavy",
                        action: onSwitch)
                     .buttonStyle(.plain)
+                    .clearsClickFocus()
                     .font(Theme.Typography.caption.font).fontWeight(.medium)
                     .foregroundStyle(.white)
                     .padding(.vertical, 7).padding(.horizontal, 14)
@@ -64,10 +59,8 @@ struct HeavyCompressionPopover: View {
         VStack(spacing: 6) {
             Button {
                 onPreview(url)
-                focusedVersionURL = nil
             } label: { PDFThumbnail(url: url, width: 72) }
-                .buttonStyle(.plain).pointingHandCursor()
-                .focused($focusedVersionURL, equals: url)
+                .buttonStyle(.plain).clearsClickFocus().pointingHandCursor()
                 .help("Preview this version")
             Text(title).themeFont(.microBold).foregroundStyle(Theme.Colors.text)
             HStack(spacing: 5) {
