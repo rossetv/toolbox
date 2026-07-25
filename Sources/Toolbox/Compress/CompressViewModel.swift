@@ -780,6 +780,11 @@ final class CompressViewModel: ObservableObject {
         rerunReports = rerunReports.filter { liveIDs.contains($0.key) }
         switchFailures = switchFailures.filter { liveIDs.contains($0.key) }
         futileAttempts = futileAttempts.filter { liveIDs.contains($0.id) }
+        // `switchesInFlight` gates `compress()`/`canCompress`/`clearFinished()` (a416a19/0edc769):
+        // an id orphaned here — e.g. a row cleared mid-switch — would leave those refused for the
+        // rest of the session even after the re-run's own tail has nothing left to clear it with.
+        switchesInFlight = switchesInFlight.filter { liveIDs.contains($0) }
+        rerunProgress = rerunProgress.filter { liveIDs.contains($0.key) }
         for (id, task) in estimationTasks where !liveIDs.contains(id) {
             task.cancel()
             estimationTasks[id] = nil
