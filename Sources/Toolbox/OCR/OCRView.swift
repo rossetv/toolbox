@@ -47,6 +47,10 @@ struct OCRView: View {
         // the PDF content type rejected every drop before this closure could run — the drop zone
         // looked live and did nothing. `add` still filters to local PDFs.
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+            // Refuse mid-run rather than swallow: `model.add` ignores files while a batch is in
+            // flight, so accepting the drop would play the "accepted" animation over a queue
+            // nothing joined. Returning false gives the user Finder's reject animation instead.
+            guard !model.isRunning else { return false }
             loadDroppedURLs(providers)
             return true
         }
@@ -80,6 +84,7 @@ struct OCRView: View {
                                 meta: meta(for: job),
                                 fileURL: job.url,
                                 status: status(for: job),
+                                onRemove: canRemove(job) ? { model.remove(job) } : nil,
                                 onOpen: { NSWorkspace.shared.open(job.resultURL ?? job.url) })
                     }
                 }
@@ -96,6 +101,12 @@ struct OCRView: View {
         }
     }
 
+    /// Only a still-queued file can leave the batch, and only between runs (matches Compress).
+    private func canRemove(_ job: ToolJob) -> Bool {
+        if case .queued = job.state { return !model.isRunning }
+        return false
+    }
+
     private var summaryRow: some View {
         HStack(spacing: Theme.Spacing.medium) {
             Text(queueSummary).themeFont(.captionBold).foregroundStyle(Theme.Colors.text)
@@ -103,7 +114,9 @@ struct OCRView: View {
             if !model.isRunning {
                 LinkButton(title: "+ Add") { model.add(FilePicker.choosePDFs()) }
             }
-            if hasFinishedJobs {
+            // Gated on the run, like "+ Add" beside it: clearing mid-batch drops the progress
+            // line's denominator under the running batch.
+            if hasFinishedJobs, !model.isRunning {
                 LinkButton(title: "Clear finished") { model.clearFinished() }
             }
         }
@@ -145,9 +158,11 @@ struct OCRView: View {
         .background(Theme.Colors.surface)
     }
 
+    /// Dark while a batch runs: the drop is refused then, so an accent ring would promise a
+    /// queue join that cannot happen.
     @ViewBuilder
     private var dropHighlight: some View {
-        if isTargeted, !model.jobs.isEmpty {
+        if isTargeted, !model.jobs.isEmpty, !model.isRunning {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .strokeBorder(Theme.Colors.accent, lineWidth: 2)
                 .padding(2)
@@ -234,8 +249,7 @@ struct OCRView: View {
 
     private var footerNote: String {
         if model.isRunning {
-            let current = min(finishedCount + 1, model.jobs.count)
-            return "Reading \(current) of \(model.jobs.count)…"
+            return batchProgressText("Reading", finished: finishedCount, total: model.jobs.count)
         }
         let searchable = model.jobs.filter { job in
             if case .done(.ocrAdded) = job.state { return true } else { return false }

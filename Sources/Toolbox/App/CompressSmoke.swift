@@ -23,7 +23,12 @@ enum CompressSmoke {
             exitCode = await run()
             semaphore.signal()
         }
-        semaphore.wait()
+        // Bounded: a hung smoke must fail the gate, not park it forever. Twice the gs
+        // wall-clock timeout leaves the engine's own 300 s watchdog room to fire first.
+        if semaphore.wait(timeout: .now() + 600) == .timedOut {
+            FileHandle.standardError.write(Data("SMOKE TIMEOUT\n".utf8))
+            exit(1)
+        }
         exit(exitCode)
     }
 

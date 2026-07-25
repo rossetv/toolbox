@@ -34,9 +34,13 @@ enum WindowSetup {
     /// re-assigns first responder to the first focusable control every time the window becomes
     /// key again — closing a sheet or popover, reactivating the app — so a one-off
     /// `makeFirstResponder(nil)` at launch is not enough: the stray blue ring around the
-    /// sidebar header kept resurrecting through exactly these paths. Clearing on every
-    /// key-window transition is safe for keyboard users: Tab is only ever pressed after the
-    /// window is key, so focus set by keyboard navigation survives untouched.
+    /// sidebar header kept resurrecting through exactly these paths.
+    ///
+    /// The cost, taken deliberately: the clear does not distinguish AppKit's auto-assignment
+    /// from the user's own. Focus position therefore resets to nothing whenever the window
+    /// re-keys — ⌘-Tab away and back, dismiss a sheet or a popover — and the next Tab restarts
+    /// from the top of the window. Rings themselves are untouched: every control still shows
+    /// its focus ring while the user Tabs through, per DESIGN.md §6.
     private static var keyWindowObserver: NSObjectProtocol?
 
     private static func installStrayFocusClear() {
@@ -63,6 +67,9 @@ enum WindowSetup {
                 if window.frameAutosaveName != autosaveName {
                     let key = "NSWindow Frame \(autosaveName)"
                     let hasSavedFrame = UserDefaults.standard.string(forKey: key) != nil
+                    // The result (false when another window already owns the name) is ignored:
+                    // the app declares a single `Window` scene, so there is never a second one
+                    // to lose the race — and the focus observer below filters on this same name.
                     window.setFrameAutosaveName(autosaveName)
                     if !hasSavedFrame {
                         var initial = window.frame

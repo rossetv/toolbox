@@ -43,14 +43,15 @@ struct PrimaryButton: View {
         }
         .buttonStyle(.plain)
         .clearsClickFocus()
+        // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §4's "Primary
+        // Blue (CTA)" is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) — the one
+        // system shadow is the card's. The gradient (with its raw #0A84FF literal) and the
+        // accent-tinted glow this replaces were an unrecorded divergence: DECISIONS.md holds no
+        // entry for either.
         .background(
-            LinearGradient(
-                colors: [Color(hex: 0x0A84FF), Theme.Colors.accent],
-                startPoint: .top, endPoint: .bottom
-            ),
+            Theme.Colors.accent,
             in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
         )
-        .shadow(color: Theme.Colors.accent.opacity(isEnabled ? 0.35 : 0), radius: 4, x: 0, y: 2)
         .opacity(isEnabled ? (isHovering ? 0.9 : 1) : 0.4)
         .onHover { isHovering = $0 }
         .disabled(!isEnabled)
@@ -296,8 +297,10 @@ struct SegmentedPresetOption: Identifiable, Hashable {
     let hint: String
 }
 
-/// The 3-way quality preset selector. Selection reads as an inset accent ring (DESIGN.md: no
-/// borders on cards, so selection is communicated by an accent stroke + tint, not a frame).
+/// The 3-way quality preset selector. Every card carries a hairline stroke — accent on the
+/// selected card, faint neutral on the rest — a recorded divergence from DESIGN.md §7's
+/// no-borders rule (see DECISIONS.md 2026-07-25): without the neutral stroke the unselected
+/// cards dissolve into the pane in dark mode.
 struct SegmentedPreset: View {
     let options: [SegmentedPresetOption]
     @Binding var selection: String
@@ -435,7 +438,9 @@ struct FileRow: View {
     }
 
     private var fileBadge: some View {
-        PDFThumbnail(url: fileURL)
+        // Decorative here: the row already announces the filename, so an unlabelled image
+        // beside it only adds noise to VoiceOver.
+        PDFThumbnail(url: fileURL).accessibilityHidden(true)
     }
 
     @ViewBuilder
@@ -476,16 +481,22 @@ struct FileRow: View {
             }
         case .doneHeavy(let originalBytes, let newBytes):
             HStack(spacing: 11) {
-                // Capsule leads the cluster so the size/percent columns sit exactly where every
-                // plain `.done` row puts them — trailing, aligned across the whole list.
+                // Capsule leads the cluster so the sizes and the pill appear in the same order,
+                // the same distance from the trailing edge, as on a plain `.done` row. There is
+                // no column mechanism: widths still follow the byte strings, so this is
+                // consistent ordering, not a fixed grid.
                 heavyCapsule
                 Text(byteString(originalBytes)).themeFont(.micro)
                     .foregroundStyle(Theme.Colors.textTertiary).strikethrough()
                 Text(byteString(newBytes)).themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
                 // A heavy row can legitimately show no saving (switched to the parked original,
-                // R6/R7) — a "−0%" success pill there is nonsense, so it is dropped.
+                // R6/R7) — a "−0%" success pill there is nonsense. Hidden rather than removed:
+                // dropping it shifted the size figures into the slot every neighbouring row
+                // draws its pill in.
                 if newBytes < originalBytes {
                     StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
+                } else {
+                    StatPill(text: "\u{2212}0%", tone: .success).hidden()
                 }
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
             }
@@ -552,6 +563,7 @@ struct FileRow: View {
         }
         .buttonStyle(.plain)
         .clearsClickFocus()
+        .accessibilityLabel("Remove \(name) from the queue")
     }
 
     private func byteString(_ bytes: Int) -> String {
@@ -662,10 +674,21 @@ struct PDFThumbnail: View {
         preview = nil
         guard let url else { return }
         let pixels = CGSize(width: width * 3, height: height * 3)   // 3x, so it stays crisp on Retina
-        let rendered = await Task.detached(priority: .utility) { () -> NSImage? in
-            guard let page = PDFDocument(url: url)?.page(at: 0) else { return nil }
+        let render = Task.detached(priority: .utility) { () -> NSImage? in
+            // Checked twice, because `PDFDocument(url:)` reads and parses the whole file: a row
+            // scrolled past before its turn comes up must not pay for the parse at all.
+            guard !Task.isCancelled, let page = PDFDocument(url: url)?.page(at: 0) else { return nil }
+            guard !Task.isCancelled else { return nil }
             return page.thumbnail(of: pixels, for: .mediaBox)
-        }.value
+        }
+        // A detached task does NOT inherit cancellation, so `.task(id:)`'s teardown has to be
+        // forwarded by hand — without this the parse and render always run to completion and
+        // only the result is thrown away.
+        let rendered = await withTaskCancellationHandler {
+            await render.value
+        } onCancel: {
+            render.cancel()
+        }
         guard !Task.isCancelled else { return }
         preview = rendered
     }
@@ -844,6 +867,12 @@ extension View {
 /// Backs `clearsClickFocus()`. The clear is deferred one runloop turn: the tap gesture can fire
 /// before AppKit assigns first responder, and a synchronous clear would then be overwritten by
 /// the very focus change it exists to prevent.
+///
+/// Known gap: `TapGesture` ends only on a press and release *inside* the control, while AppKit
+/// takes first responder on mouse-DOWN — so pressing a control, dragging off it and releasing
+/// leaves the ring behind. A zero-distance `DragGesture` would catch that, but this modifier is
+/// attached to every plain-style control in the app, and a drag recogniser on all of them has
+/// far more blast radius (scrolling, the queue list) than the case it closes.
 private struct ClearsClickFocusModifier: ViewModifier {
     @FocusState private var isFocused: Bool
 
@@ -926,6 +955,15 @@ struct LinearProgress: View {
         }
         .frame(height: 6)
     }
+}
+
+/// The counted label that accompanies `LinearProgress` — "Compressing 3 of 5…", "Reading 2 of 4…".
+///
+/// The clamp is the point: the last file in a batch reaches `.done` a MainActor hop before the
+/// tool clears its running flag, and an unclamped `finished + 1` reads "Compressing 4 of 3…" in
+/// that window. Shared by both tools so the two places that show this line cannot disagree.
+func batchProgressText(_ verb: String, finished: Int, total: Int) -> String {
+    "\(verb) \(min(finished + 1, total)) of \(total)…"
 }
 
 /// Makes a row open its file on click, and shows the hand cursor, only when an action exists.

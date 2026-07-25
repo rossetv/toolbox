@@ -35,7 +35,11 @@ final class OCRViewModel: ObservableObject {
 
     var canRun: Bool { !isRunning && hasQueuedWork }
 
-    var pageCandidateCount: Int { jobs.count }
+    /// Only jobs the next run will actually process — counting finished rows too made the
+    /// button promise "OCR 37 PDFs" when 8 were queued.
+    var pageCandidateCount: Int {
+        jobs.filter { if case .queued = $0.state { return true } else { return false } }.count
+    }
 
     func add(_ urls: [URL]) {
         // Gated on `isRunning`: `run()` snapshots `queue.jobs` and reserves an output name for each
@@ -46,6 +50,12 @@ final class OCRViewModel: ObservableObject {
         // `isFileURL` is required, not decorative: a drag can deliver a remote URL (http, ftp),
         // which would otherwise be handed to the engine as if it were a local path.
         queue.add(urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "pdf" })
+    }
+
+    /// Drop a queued file from the batch. Without it the only ways to undo a mistaken drop were
+    /// to run the file or quit the app (Compress has had `remove` since the start).
+    func remove(_ job: ToolJob) {
+        queue.remove(job.id)
     }
 
     func clearFinished() {

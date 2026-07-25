@@ -92,6 +92,7 @@ struct SidebarView: View {
             .clearsClickFocus()
             .pointingHandCursor()
             .help("About Toolbox")
+            .accessibilityLabel("About Toolbox")
             .padding(.horizontal, isCollapsed ? 17 : 16)
             .padding(.bottom, 14)
         }
@@ -117,9 +118,14 @@ struct SidebarView: View {
             RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                 .fill(isSelected ? Theme.Colors.text.opacity(0.10) : Color.clear)
         )
-        .padding(.horizontal, 8)
+        // 7 collapsed, not 8: the 22pt tile plus 10pt of inner padding leaves the row 2pt wider
+        // than the 56pt rail otherwise — the selection capsule overhangs it and every tool glyph
+        // sits 1pt right of the header and About glyphs above and below it.
+        .padding(.horizontal, isCollapsed ? 7 : 8)
         .contentShape(Rectangle())
-        .help(isCollapsed ? tool.title : "")
+        // The row is a bare glyph when collapsed, so the tool's name has to come from somewhere.
+        .help(tool.title)
+        .accessibilityLabel(tool.title)
     }
 }
 

@@ -31,7 +31,10 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .frame(minWidth: sidebarCollapsed ? 660 : 820, minHeight: 560)
+        // A constant, not a narrower hint while collapsed: the binding constraint is the
+        // `NSWindow.minSize` set below, which is applied once and never revisited, so a 660
+        // content hint could never actually let the window shrink to it.
+        .frame(minWidth: 820, minHeight: 560)
         .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 820, height: 560)) }
         .task { await updateChecker.check() }
     }
@@ -76,7 +79,10 @@ private struct UpdateBanner: View {
                     .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .focusEffectDisabled()
+            // Not `.focusEffectDisabled()`: the banner lives in the main window, whose
+            // `WindowSetup` key-window clear already removes the auto-assigned ring that
+            // justified it — and hiding the ring outright blinds keyboard users (DESIGN.md §6).
+            .clearsClickFocus()
             .pointingHandCursor()
             .help("Open the release page")
         }

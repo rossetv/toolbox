@@ -48,6 +48,10 @@ struct CompressView: View {
         // the PDF content type rejected every drop before this closure could run — the drop zone
         // looked live and did nothing. `add` still filters to local PDFs.
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+            // Refuse mid-run rather than swallow: `model.add` ignores files while a batch is in
+            // flight, so accepting the drop would play the "accepted" animation over a queue
+            // nothing joined. Returning false gives the user Finder's reject animation instead.
+            guard !model.isRunning else { return false }
             loadDroppedURLs(providers)
             return true
         }
@@ -146,7 +150,7 @@ struct CompressView: View {
     private var runningBar: some View {
         HStack(spacing: Theme.Spacing.medium) {
             LinearProgress(fraction: overallProgress)
-            Text("Compressing \(finishedCount + 1) of \(model.jobs.count)…")
+            Text(batchProgressText("Compressing", finished: finishedCount, total: model.jobs.count))
                 .themeFont(.caption)
                 .foregroundStyle(Theme.Colors.textSecondary)
                 .fixedSize()
@@ -182,11 +186,15 @@ struct CompressView: View {
 
     private var savedDetail: String {
         var before = 0, after = 0
+        var n = 0
         for job in model.jobs {
-            if let (b, a) = model.displayedSizes(for: job) { before += b; after += a }
+            // Only files with a real size delta: `displayedSizes` is nil for "already
+            // optimised", for OCR outcomes and for every failure, and counting those against
+            // totals they contributed nothing to claimed a whole batch had shrunk when one
+            // file did.
+            if let (b, a) = model.displayedSizes(for: job) { before += b; after += a; n += 1 }
         }
         let pct = before > 0 ? Int(((Double(before - after) / Double(before)) * 100).rounded()) : 0
-        let n = model.jobs.count
         return "\(n) PDF\(n == 1 ? "" : "s") · \(byteString(before)) → \(byteString(after)) · \(pct)% smaller"
     }
 
@@ -197,7 +205,10 @@ struct CompressView: View {
             if !model.isRunning {
                 LinkButton(title: "+ Add") { model.add(FilePicker.choosePDFs()) }
             }
-            if hasFinishedJobs {
+            // Gated on the run, like "+ Add" beside it: clearing mid-batch drops the progress
+            // bar's denominator under the running batch and silently omits the files already
+            // compressed from the final summary.
+            if hasFinishedJobs, !model.isRunning {
                 LinkButton(title: "Clear finished") { model.clearFinished() }
             }
         }
@@ -275,10 +286,11 @@ struct CompressView: View {
     }
 
     /// A drop target is obvious in the empty state (the `DropZone` highlights itself); once the
-    /// queue replaces it, this ring is the only thing telling you the pane still accepts files.
+    /// queue replaces it, this ring is the only thing telling you the pane still accepts files —
+    /// so it stays dark while a batch runs, when the drop is refused.
     @ViewBuilder
     private var dropHighlight: some View {
-        if isTargeted, !model.jobs.isEmpty {
+        if isTargeted, !model.jobs.isEmpty, !model.isRunning {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .strokeBorder(Theme.Colors.accent, lineWidth: 2)
                 .padding(2)
@@ -406,8 +418,7 @@ struct CompressView: View {
 
     private var footerNote: String {
         if model.isRunning {
-            let current = min(finishedCount + 1, model.jobs.count)
-            return "Compressing \(current) of \(model.jobs.count)…"
+            return batchProgressText("Compressing", finished: finishedCount, total: model.jobs.count)
         }
         return savedSummary ?? "Originals are never modified."
     }

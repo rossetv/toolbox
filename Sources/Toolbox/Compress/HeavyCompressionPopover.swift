@@ -62,6 +62,7 @@ struct HeavyCompressionPopover: View {
             } label: { PDFThumbnail(url: url, width: 72) }
                 .buttonStyle(.plain).clearsClickFocus().pointingHandCursor()
                 .help("Preview this version")
+                .accessibilityLabel("Preview the \(title) version")
             Text(title).themeFont(.microBold).foregroundStyle(Theme.Colors.text)
             HStack(spacing: 5) {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))

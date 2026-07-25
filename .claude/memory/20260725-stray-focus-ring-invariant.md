@@ -18,8 +18,12 @@ one fixed remedy — apply the remedy at build time, never a one-off patch:
    `WindowSetup.installStrayFocusClear()` (`App/WindowConfigurator.swift`): clear first
    responder on every `didBecomeKeyNotification` of the main window.
 
-Both remedies keep Tab/arrow-key navigation rings intact (keyboard sets focus after the
-click/key-transition events), per DESIGN.md's accessibility requirement.
+Remedy 1 leaves keyboard navigation alone entirely (it only reacts to a click). Remedy 2
+costs a known trade-off, accepted deliberately: it clears ALL focus on every key
+transition, the user's own Tab focus included, so focus position resets to nothing after
+⌘-Tab away and back or after a sheet/popover closes, and Tab restarts from the top of the
+window. Focus RINGS still show throughout keyboard navigation, per DESIGN.md's
+accessibility requirement — it is the position that is lost, not the indicator.
 `.focusEffectDisabled()` is the reserved third tool, only for windows outside the main
 window's net where auto-focus draws a permanent ring (the About sheet, the update
 banner) — it hides the ring from keyboard users too, so never reach for it first.
