@@ -193,6 +193,38 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(job.mrcReport, expectedReport)
     }
 
+    /// A second tap before the first switch lands must be a no-op, not a second concurrent swap on
+    /// the same paths. `useVersion` sets its re-entrancy guard (`isSwitchRerunning`) synchronously,
+    /// before `store.switchVersions`'s first suspension point, so the two MainActor tasks below can
+    /// race for real without needing an artificial delay: the first runs its synchronous prefix to
+    /// completion (setting the guard) before yielding, so the second observes the guard already set.
+    func testSecondUseVersionTapWhileFirstIsInFlightIsANoOp() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let shippedURL = try XCTUnwrap(job.resultURL)
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
+
+        async let first: Void = model.switchVersion(for: job)
+        async let second: Void = model.switchVersion(for: job)
+        _ = await (first, second)
+
+        let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
+        let versions = try XCTUnwrap(model.versions(for: switchedJob))
+        XCTAssertFalse(versions.shipped?.variant == .mrc,
+                       "two concurrent taps must still land on exactly one switch, not cancel back out")
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.normalBytes,
+                       "the shipped file must hold exactly one version's content, not a mangled swap")
+        if case .failed = switchedJob.state {
+            XCTFail("a raced second tap must never surface a false failure")
+        }
+    }
+
     /// The switch swaps the files in place and flips which version is shipped; a second switch
     /// restores the original state. The byte counts stay intrinsic to each version (R10).
     func testSwitchTogglesInstantlyAndReversibly() async throws {

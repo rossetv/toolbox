@@ -930,9 +930,27 @@ final class CompressViewModel: ObservableObject {
         // second engine run against the same path phase 2's commit is about to drive through
         // `promote` — unserialised, last write wins.
         guard !isRunning else { return }
+        // Re-entrancy guard: a second tap (either slot, or the popover's "Use this") before the
+        // first switch lands would otherwise interleave two swaps on the same paths off-main-actor.
+        // Reuses `isSwitchRerunning` — the set already drives the row's busy overlay in
+        // `publishJobs()` — rather than adding a second set for the same "this row is mid-switch"
+        // fact. Must be checked and set in this synchronous prefix, before the first `await` below.
+        guard !isSwitchRerunning.contains(job.id) else { return }
         guard let row = versions(for: job),
               let shipped = row.shipped,
               let parked = slot == .runnerUp ? row.runnerUp : row.previous else { return }
+
+        isSwitchRerunning.insert(job.id)
+        publishJobs()
+        // Cleared before every return except the hand-off to `rerunForSwitch`, which owns clearing
+        // it itself once its (possibly still in-flight) work actually finishes.
+        var handedOffToRerun = false
+        defer {
+            if !handedOffToRerun {
+                isSwitchRerunning.remove(job.id)
+                publishJobs()
+            }
+        }
 
         // Everything below assumes the delivered file is still where this row says it is. If the
         // user deleted or moved it outside the app (there is no file watcher), the re-run tail
@@ -973,6 +991,7 @@ final class CompressViewModel: ObservableObject {
             publishJobs()
             return
         }
+        handedOffToRerun = true
         rerunForSwitch(job, wantHeavy: parked.variant == .mrc)
     }
 
@@ -996,7 +1015,14 @@ final class CompressViewModel: ObservableObject {
         guard let engine,
               let row = versionStore.versions(for: job.id),
               let shipped = row.shipped?.url,
-              let runnerUp = row.runnerUp?.url else { return }
+              let runnerUp = row.runnerUp?.url else {
+            // `useVersion` already inserted this id into `isSwitchRerunning` before handing off
+            // here (its re-entrancy guard) — if we bail before taking over, we must be the ones
+            // to clear it, or the row stays busy forever.
+            isSwitchRerunning.remove(job.id)
+            publishJobs()
+            return
+        }
         let chosen = row.rowPreset
         isSwitchRerunning.insert(job.id)
         rerunProgress[job.id] = 0
