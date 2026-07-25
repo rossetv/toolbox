@@ -21,13 +21,14 @@ struct CompressView: View {
     @State private var isTargeted = false
     @State private var heavyPopoverJobID: ToolJob.ID?
     @State private var quickLookURL: URL?
-    /// The pair Quick Look flips between with the ⇄ arrows (R11), frozen at the moment a preview
-    /// opens. NEVER cleared, only overwritten by the next preview: deriving this from
-    /// `heavyPopoverJobID` collapsed the collection 2→0 whenever the (transient) popover dismissed
-    /// while the panel was alive, and `QLPreviewPanelController` traps on that KVO reload
-    /// (`currentPreviewItemIndex`) — the field crash. Clearing when `quickLookURL` goes nil would
-    /// reopen the same trap in the panel's animated-teardown window, so the stale pair is simply
-    /// kept; it is two URLs.
+    /// The versions Quick Look flips between with the ⇄ arrows (R11), frozen at the moment a
+    /// preview opens — two or three of them, per the row (R15). NEVER cleared, and only ever
+    /// replaced through `freezeQuickLookItems`, which forbids the collection from shrinking:
+    /// deriving this from `heavyPopoverJobID` collapsed it 2→0 whenever the (transient) popover
+    /// dismissed while the panel was alive, and `QLPreviewPanelController` traps on that KVO
+    /// reload (`currentPreviewItemIndex`) — the field crash. Clearing when `quickLookURL` goes nil
+    /// would reopen the same trap in the panel's animated-teardown window, so the stale set is
+    /// simply kept; it is at most three URLs.
     @State private var frozenQuickLookItems: [URL] = []
 
     var body: some View {
@@ -47,6 +48,9 @@ struct CompressView: View {
         .background(Theme.Colors.surface)
         .animation(.easeInOut(duration: 0.2), value: model.isRunning)
         .animation(.easeInOut(duration: 0.2), value: model.allFinished)
+        // Arming swaps the banner and every row's lead in one go — animated like the other state
+        // changes, or the armed chrome would snap in while the finished chrome faded out.
+        .animation(.easeInOut(duration: 0.2), value: model.armedCount)
         // `.fileURL`, not `.pdf`: a drag from Finder advertises `public.file-url`, so matching on
         // the PDF content type rejected every drop before this closure could run — the drop zone
         // looked live and did nothing. `add` still filters to local PDFs.
@@ -83,6 +87,11 @@ struct CompressView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.large) {
                 if model.isRunning {
                     runningBar
+                } else if let summary = model.armedSummary {
+                    SuccessBanner(headline: armedHeadline(summary),
+                                  detail: armedDetail(summary),
+                                  tone: .accent)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 } else if model.allFinished {
                     SuccessBanner(headline: savedHeadline, detail: savedDetail)
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -99,11 +108,17 @@ struct CompressView: View {
                                 onHeavyTap: { heavyPopoverJobID = job.id },
                                 heavyCapsuleTitle: model.versions(for: job)?.capsuleTitle ?? "Heavy compression",
                                 heavyPopoverPresented: isShowingHeavyPopover(for: job.id),
-                                heavyPopoverContent: { AnyView(heavyPopover(for: job)) })
+                                heavyPopoverContent: { AnyView(heavyPopover(for: job)) },
+                                lead: lead(for: job),
+                                onLeadTap: { model.useVersion(.previous, for: job) },
+                                metaAccent: metaAccent(for: job))
                     }
                 }
                 VStack(alignment: .leading, spacing: Theme.Spacing.small) {
                     SectionLabel("Quality")
+                    // All five refuse-while-running sites — this selector, "+ Add", "Clear
+                    // finished", `outputFolderRow` and the drop guard — key on `model.isRunning`,
+                    // which now spans BOTH run phases: unchanged, deliberately (R9).
                     SegmentedPreset(options: presetOptions,
                                     selection: presetSelection,
                                     isEnabled: !model.isRunning)
@@ -118,9 +133,9 @@ struct CompressView: View {
 
     @ViewBuilder
     private func heavyPopover(for job: ToolJob) -> some View {
-        if let versions = model.versions(for: job) {
+        if let row = model.versions(for: job) {
             VersionsPopover(
-                versions: versions,
+                versions: row,
                 // Request panel dismissal before the swap (SwiftUI dismisses asynchronously, so
                 // a closing panel may still render one stale frame — accepted; the frozen items
                 // collection is untouched, so the panel never sees a shrinking collection).
@@ -130,10 +145,29 @@ struct CompressView: View {
                     heavyPopoverJobID = nil
                 },
                 onPreview: { url in
-                    frozenQuickLookItems = versions.cards.map(\.version.url)
+                    freezeQuickLookItems(row.cards.map(\.version.url))
                     quickLookURL = url
                 })
         }
+    }
+
+    /// Frozen at preview-open and never allowed to SHRINK: a SwiftUI collection feeding
+    /// `.quickLookPreview` that loses items while the panel is alive trips the
+    /// `QLPreviewPanelController` KVO reload — the field crash. Two versions used to be the only
+    /// case, so a plain overwrite was always same-size; with two OR three, previewing a 3-version
+    /// row and then a 2-version one would shrink it.
+    ///
+    /// The padding repeats the CURRENT row's own last URL, never the previous set's tail. Padding
+    /// with the old tail would leave the panel's arrow keys walking the user into a file belonging
+    /// to a different row — or, after a slot replacement or "Clear finished", into a discarded
+    /// path that no longer exists. A duplicate of a URL already in the set is inert by comparison:
+    /// the arrows land back on a page the user is already looking at.
+    private func freezeQuickLookItems(_ items: [URL]) {
+        var next = items
+        if let last = next.last {
+            while next.count < frozenQuickLookItems.count { next.append(last) }
+        }
+        frozenQuickLookItems = next
     }
 
     private func isShowingHeavyPopover(for id: ToolJob.ID) -> Binding<Bool> {
@@ -143,15 +177,13 @@ struct CompressView: View {
         )
     }
 
-    private func originalBytes(for job: ToolJob) -> Int {
-        model.versions(for: job)?.originalBytes ?? 0
-    }
-
-    /// Batch progress with a live count, mirroring the mockup's "Compressing 2 of 3…" bar.
+    /// Batch progress with a live count, mirroring the mockup's "Compressing 2 of 3…" bar. Scoped
+    /// to the RUN, not the list (R9): rows finished by an earlier batch are not this run's work.
     private var runningBar: some View {
         HStack(spacing: Theme.Spacing.medium) {
-            LinearProgress(fraction: overallProgress)
-            Text(batchProgressText("Compressing", finished: finishedCount, total: model.jobs.count))
+            LinearProgress(fraction: model.runProgress)
+            Text(batchProgressText(runVerb, finished: model.runFinishedCount,
+                                   total: model.runTotalCount))
                 .themeFont(.caption)
                 .foregroundStyle(Theme.Colors.textSecondary)
                 .fixedSize()
@@ -159,23 +191,22 @@ struct CompressView: View {
         }
     }
 
-    private var overallProgress: Double {
-        guard !model.jobs.isEmpty else { return 0 }
-        let total = model.jobs.reduce(0.0) { sum, job in
-            switch job.state {
-            case .done, .failed: return sum + 1
-            case .running(let f): return sum + f
-            default: return sum
-            }
-        }
-        return total / Double(model.jobs.count)
+    /// "Recompressing" only when the run is nothing but armed rows; a mixed run is a compress run
+    /// with recompression in it, and one bar cannot say both.
+    private var runVerb: String {
+        model.runComposition.queued == 0 && model.runComposition.armed > 0
+            ? "Recompressing" : "Compressing"
     }
 
+    /// `.queued` only — unchanged, deliberately: an armed row is a FINISHED row and stays
+    /// non-removable, per D5's deferral.
     private func canRemove(_ job: ToolJob) -> Bool {
         if case .queued = job.state { return !model.isRunning }
         return false
     }
 
+    /// Unchanged, deliberately: `displayedSizes` was re-derived off the version store in Task 4,
+    /// so this and `savedDetail`/`savedSummary` below already read the store (R17).
     private var savedBytes: Int {
         model.jobs.reduce(0) { sum, job in
             guard let (before, after) = model.displayedSizes(for: job) else { return sum }
@@ -184,6 +215,23 @@ struct CompressView: View {
     }
 
     private var savedHeadline: String { "Saved \(byteString(savedBytes))" }
+
+    /// Both fixed regions carry the story, because armed rows can be scrolled out of sight (R4).
+    private func armedHeadline(_ summary: CompressViewModel.ArmedSummary) -> String {
+        if summary.queuedCount > 0 {
+            return "Will compress \(summary.queuedCount) and recompress \(summary.armedCount) PDFs"
+        }
+        let n = summary.armedCount
+        return "Will recompress \(n) PDF\(n == 1 ? "" : "s") at \(model.preset.title)"
+    }
+
+    /// Summed over armed rows with a confident prediction only; nil when none has one, so the
+    /// banner shows no detail line rather than a fabricated zero (R4).
+    private func armedDetail(_ summary: CompressViewModel.ArmedSummary) -> String? {
+        guard let extra = summary.extraSaving else { return nil }
+        return extra > 0 ? "\u{2248} saves another \(byteString(extra))"
+                         : "files may grow for the extra quality"
+    }
 
     private var savedDetail: String {
         var before = 0, after = 0
@@ -218,6 +266,8 @@ struct CompressView: View {
     /// How the output will be named. With a single file in the queue that is its real resulting
     /// filename, which is more use than a placeholder; with several, the pattern they all follow.
     private var outputNamePreview: String {
+        // A recompress replaces the row's existing file — naming a new one would be a lie.
+        if model.armedCount > 0, model.pendingCount == 0 { return "replacing the current file" }
         if model.jobs.count == 1, let job = model.jobs.first {
             let base = job.url.deletingPathExtension().lastPathComponent
             return "as \(base)-compressed.pdf"
@@ -228,15 +278,17 @@ struct CompressView: View {
     private func revealOutputs() {
         // Fall back to the originals' folder when nothing new was written (every file was
         // already optimised), so the button still does something sensible.
-        let outputs = model.jobs.compactMap(\.resultURL)
+        let outputs = model.jobs.compactMap { model.versions(for: $0)?.shipped?.url ?? $0.resultURL }
         let urls = outputs.isEmpty ? model.jobs.map(\.url) : outputs
         guard !urls.isEmpty else { return }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
-    /// Open the compressed result if one was produced, otherwise the original.
+    /// Open the shipped version if one exists, otherwise the original. The STORE is asked first: a
+    /// recompressed no-gain row has a delivered file while the queue's `resultURL` is still nil.
+    /// (OCR's own `resultURL ?? url` path is untouched — R19.)
     private func open(_ job: ToolJob) {
-        NSWorkspace.shared.open(job.resultURL ?? job.url)
+        NSWorkspace.shared.open(model.versions(for: job)?.shipped?.url ?? job.resultURL ?? job.url)
     }
 
     private var outputFolderRow: some View {
@@ -327,22 +379,70 @@ struct CompressView: View {
             return .analysing
         case .running(let fraction):
             return .inProgress(fraction: fraction > 0 ? fraction : nil)
-        case .done(let outcome):
-            switch outcome {
-            case .compressed(let before, let after):
-                return .done(originalBytes: before, newBytes: after)
-            case .compressedHeavy(let before, let after, _):
-                guard let versions = model.versions(for: job) else {
-                    return .done(originalBytes: before, newBytes: after)
-                }
-                return .doneHeavy(originalBytes: before, newBytes: versions.shipped?.bytes ?? after)
-            case .noGain:
+        case .done:
+            // The version store, not the outcome shape, decides what a finished row shows: a
+            // recompressed no-gain row keeps its `.done(.noGain)` outcome while genuinely shipping
+            // a file, and a plain gs re-run of a heavy row still has two versions to offer (R15).
+            guard let row = model.versions(for: job), let shipped = row.shipped else {
                 return .unchanged("Already optimised")
-            case .ocrAdded, .alreadySearchable:
-                return .succeeded("Done")
             }
+            return row.count > 1
+                ? .doneHeavy(originalBytes: row.originalBytes, newBytes: shipped.bytes)
+                : .done(originalBytes: row.originalBytes, newBytes: shipped.bytes)
         case .failed(let message):
             return .error(message)
+        }
+    }
+
+    /// The leading item of a finished row's cluster.
+    ///
+    /// Decided deliberately: a recompress message is the outcome of a button the user pressed, so
+    /// it outranks a plain finished row and survives until the next run clears it — but an ARMED
+    /// preview supersedes it, because the user has moved on and asking "what would this preset
+    /// give me?" must be answerable while last attempt's message is still notionally live.
+    private func lead(for job: ToolJob) -> FileRow.Lead? {
+        let state = model.recompressState(for: job)
+        // R10, at arming time: an armed row whose ORIGINAL has gone cannot be recompressed at all,
+        // so it must say so rather than show a confident pill promising a size nothing can produce.
+        // Ahead of everything, because it invalidates the armed claim itself.
+        if case .armed = state, model.isOriginalMissing(for: job) {
+            return .error("The original file is no longer where it was")
+        }
+        // An error OUTRANKS the armed pill — unconditionally, not only when the row is disarmed.
+        // A failed recompress records no preset (R1), so the row RE-ARMS the instant the attempt
+        // fails; the old `state == .none` guard therefore suppressed R12's message on exactly the
+        // rows that had just failed, and an explicit button press would have failed silently. The
+        // message stays authoritative until the user changes preset or the next run starts — both
+        // of which clear `recompressErrors` at source, so no guard is needed here.
+        if let message = model.recompressErrors[job.id] { return .error(message) }
+        switch state {
+        case .armed(let target):
+            guard let predicted = model.recompressPrediction(for: job, at: target) else {
+                return .accentPill("→ may not shrink")
+            }
+            // The "≈" marker stays throughout: the figure is approximate however it was derived
+            // (R16), so this never borrows the queued row's "~" fallback marker.
+            return .accentPill("→ \u{2248}\(byteString(predicted))")
+        case .futile(let target):
+            return .neutralPill("No saving at \(target.title)")
+        case .instantSwitch:
+            return .link("Switch instantly")
+        case .none:
+            return nil
+        }
+    }
+
+    private func metaAccent(for job: ToolJob) -> String? {
+        switch model.recompressState(for: job) {
+        case .armed(let target):
+            // A row that has shipped nothing is being TRIED at the new preset, not re-shipped.
+            return model.versions(for: job)?.shipped == nil
+                ? "will try \(target.title)"
+                : "will recompress at \(target.title)"
+        case .instantSwitch(let target):
+            return "your \(target.title) version is kept"
+        case .futile, .none:
+            return nil
         }
     }
 
@@ -413,13 +513,16 @@ struct CompressView: View {
     }
 
     private var actionTitle: String {
-        let n = pendingCount
-        return n > 0 ? "Compress \(n) PDF\(n == 1 ? "" : "s")" : "Compress"
+        let queued = model.pendingCount, armed = model.armedCount
+        if queued > 0, armed > 0 { return "Compress \(queued) · Recompress \(armed)" }
+        if armed > 0 { return "Recompress \(armed) PDF\(armed == 1 ? "" : "s")" }
+        return queued > 0 ? "Compress \(queued) PDF\(queued == 1 ? "" : "s")" : "Compress"
     }
 
     private var footerNote: String {
         if model.isRunning {
-            return batchProgressText("Compressing", finished: finishedCount, total: model.jobs.count)
+            return batchProgressText(runVerb, finished: model.runFinishedCount,
+                                     total: model.runTotalCount)
         }
         return savedSummary ?? "Originals are never modified."
     }
@@ -440,15 +543,8 @@ struct CompressView: View {
         return "Saved \(byteString(before - after)) · \(percent)% smaller"
     }
 
-    private var pendingCount: Int {
-        model.jobs.filter { job in
-            switch job.state {
-            case .queued, .analysing: return true
-            case .running, .done, .failed: return false
-            }
-        }.count
-    }
-
+    /// Whole-list, NOT run-scoped, deliberately: its only consumer is "Clear finished", which
+    /// clears every finished row regardless of which batch finished it (R9).
     private var finishedCount: Int {
         model.jobs.filter { job in
             switch job.state {

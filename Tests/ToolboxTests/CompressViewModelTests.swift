@@ -1464,6 +1464,57 @@ final class CompressViewModelTests: XCTestCase {
                        "a message beside the row, never a failure that hides a good result")
     }
 
+    // MARK: lead derivation (R2/R6/R10/R12)
+
+    /// A no-gain row renders `.unchanged` (no shipped version ⇒ no size cluster) AND arms — the
+    /// pair that made the armed pill invisible on exactly the rows R1 names as its user. Both
+    /// halves must hold at once, which is what the view's `.unchanged` lead slot exists to draw.
+    func testANoGainRowIsBothUnchangedAndArmed() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
+                                          shippedBytes: nil, runnerUpBytes: nil) }
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        model.preset = .smallestSize
+        let job = try XCTUnwrap(model.jobs.first)
+        // Both halves, or the nil below would also pass for "there is no row at all" — the wrong
+        // reason entirely, and one that would hide a broken no-gain ingest.
+        XCTAssertNotNil(model.versions(for: job), "the no-gain attempt IS recorded")
+        XCTAssertNil(model.versions(for: job)?.shipped,
+                     "…and shipped nothing ⇒ the view renders this row `.unchanged`")
+        XCTAssertEqual(model.recompressState(for: job), .armed(.smallestSize),
+                       "…and it is armed, so the `.unchanged` cluster must carry a lead")
+
+        // The same row, futile: the neutral pill lives in that same slot.
+        model.preset = .balanced
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .futile(.balanced))
+    }
+
+    /// R10 at arming time: an armed row whose original is gone yields no prediction, which is the
+    /// signal the view turns into the error lead instead of a confident pill.
+    func testAnArmedRowWithAMissingOriginalOffersNoPrediction() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        try FileManager.default.removeItem(at: env.input)
+        model.preset = .smallestSize
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .armed(.smallestSize))
+        XCTAssertTrue(model.isOriginalMissing(for: job))
+        XCTAssertNil(model.recompressPrediction(for: job, at: .smallestSize))
+    }
+
     // MARK: helpers
 
     private func fileSize(_ url: URL) throws -> Int {
