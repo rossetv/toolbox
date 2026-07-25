@@ -3435,10 +3435,10 @@ branch (comment corrected, including the honest reason the guard fires). No file
 presentation fix stayed in `Components.swift` (Track P) and every behavioural fix in
 `CompressViewModel.swift` + its tests (Track E), so Track P/E disjointness holds exactly as stated.
 
-**Lesson-candidates** (derived from this round's findings — the reviewer supplied no verbatim list):
+**Lesson-candidates** (the reviewer's, one line each):
 
-1. A cancel path is only real if something *holds* the task: `Task.init` inherits no cancellation, and `await task.value` on a non-throwing task does not unwind, so every phase boundary needs an explicit guard, not a hope.
-2. When a plan adds an affordance to "finished rows", enumerate every `Status` case a finished row can render — `.unchanged` is a finished row and it is where the no-gain cases live.
-3. A commit protocol that already exists in the codebase (`switchVersions`) is the shape to mirror, byte for byte, not to re-derive: park beside the delivered file, never inside a swept cache, never across a volume boundary.
-4. Any typed error a called primitive can throw needs its own `catch` arm ahead of the generic one, or the generic message will eventually lie about the user's file.
-5. After a refactor changes where truth lives, grep every reader of the OLD source (`job.resultURL`, `job.alternateURL`) and account for each hit — a superseded read fails silently on exactly the rows the new feature creates.
+1. A display affordance added to *some* status branches but not the branch the requirement names — enumerate every branch of the status enum against the requirement's own list of row kinds.
+2. An execution path left on the old model when the sweep enumerated only display paths — sweeps must cover *writers* and re-run paths, not just readers.
+3. A commit primitive that copies a sibling's failure shapes while dropping the sibling's crash-window guarantee — "same semantics as X, for the same reason" is a claim to check against X's *comments*, not just its control flow.
+4. A phase serialised for concurrency but not for cancellation — "B runs after A" satisfies a concurrency bound and silently creates a cancellation hole: cancelling A merely makes A return, which *starts* B.
+5. A model-level test greening a display the user never sees — where a requirement says "never fails silently", the assertion belongs at the view-derivation function.
