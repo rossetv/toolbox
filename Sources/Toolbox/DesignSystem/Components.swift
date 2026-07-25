@@ -407,6 +407,22 @@ struct FileRow: View {
     var heavyPopoverPresented: Binding<Bool>?
     var heavyPopoverContent: (() -> AnyView)?
 
+    /// The leading item of a finished row's trailing cluster: the armed prediction, a
+    /// known-futile note, an instant-switch link, or a per-row error. Additive — the row keeps its
+    /// whole done cluster behind it, so nothing ever reads as lost (R2).
+    enum Lead: Equatable {
+        case accentPill(String)
+        case neutralPill(String)
+        case link(String)
+        case error(String)
+    }
+
+    var lead: Lead?
+    /// Action for a `.link` lead. Ignored by every other shape.
+    var onLeadTap: (() -> Void)?
+    /// A second, accent-toned clause appended to the meta line ("· will recompress at Balanced").
+    var metaAccent: String?
+
     @State private var isHoveringCapsule = false
 
     var body: some View {
@@ -422,7 +438,14 @@ struct FileRow: View {
                         .foregroundStyle(Theme.Colors.text)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text(meta).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
+                    HStack(spacing: 4) {
+                        Text(meta).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
+                        if let metaAccent {
+                            Text("· \(metaAccent)").themeFont(.micro)
+                                .foregroundStyle(Theme.Colors.accent)
+                                .lineLimit(1)
+                        }
+                    }
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
@@ -471,6 +494,7 @@ struct FileRow: View {
             }
         case .done(let originalBytes, let newBytes):
             HStack(spacing: 11) {
+                leadView
                 Text(byteString(originalBytes))
                     .themeFont(.micro)
                     .foregroundStyle(Theme.Colors.textTertiary)
@@ -479,8 +503,15 @@ struct FileRow: View {
                 StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
             }
+            // A lead makes this the widest this cluster has ever been; without fixedSize, width
+            // pressure wraps the pill onto two lines and grows the row (R8's single-line height).
+            // The name column absorbs the squeeze instead (lineLimit + middle truncation).
+            .fixedSize()
         case .doneHeavy(let originalBytes, let newBytes):
             HStack(spacing: 11) {
+                // Lead first, then the capsule, then the sizes and the pill — the lead leads the
+                // whole trailing cluster and the capsule, where the row has one, follows it.
+                leadView
                 // Capsule leads the cluster so the sizes and the pill appear in the same order,
                 // the same distance from the trailing edge, as on a plain `.done` row. There is
                 // no column mechanism: widths still follow the byte strings, so this is
@@ -513,12 +544,21 @@ struct FileRow: View {
             }
             .foregroundStyle(Theme.Colors.success)
         case .unchanged(let message):
-            Label {
-                Text(message).themeFont(.micro).lineLimit(1)
-            } icon: {
-                Image(systemName: "checkmark.circle")
+            // Lead first, then today's muted check and note — a no-gain row is armable (R1) and
+            // futile-markable (R6), so it must be able to carry a lead like any finished row.
+            HStack(spacing: 11) {
+                leadView
+                Label {
+                    Text(message).themeFont(.micro).lineLimit(1)
+                } icon: {
+                    Image(systemName: "checkmark.circle")
+                }
+                .foregroundStyle(Theme.Colors.textSecondary)
             }
-            .foregroundStyle(Theme.Colors.textSecondary)
+            // A lead makes this the widest this cluster has ever been; without fixedSize, width
+            // pressure wraps the pill onto two lines and grows the row (R8's single-line height).
+            // The name column absorbs the squeeze instead (lineLimit + middle truncation).
+            .fixedSize()
         case .error(let message):
             Label {
                 Text(message).themeFont(.micro).lineLimit(1)
@@ -526,6 +566,27 @@ struct FileRow: View {
                 Image(systemName: "exclamationmark.triangle.fill")
             }
             .foregroundStyle(.red)
+        }
+    }
+
+    @ViewBuilder
+    private var leadView: some View {
+        switch lead {
+        case .accentPill(let text):
+            StatPill(text: text, tone: .accent)
+        case .neutralPill(let text):
+            StatPill(text: text, tone: .neutral)
+        case .link(let title):
+            LinkButton(title: title) { onLeadTap?() }
+        case .error(let message):
+            Label {
+                Text(message).themeFont(.micro).lineLimit(1)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+            }
+            .foregroundStyle(.red)
+        case nil:
+            EmptyView()
         }
     }
 
@@ -588,6 +649,20 @@ private var fileRowStateGallery: some View {
         FileRow(name: "Receipts.pdf", meta: "2.1 MB", status: .succeeded("Searchable — 12 pages"))
         FileRow(name: "Already-Tiny.pdf", meta: "184 KB", status: .unchanged("Already optimised"))
         FileRow(name: "Encrypted.pdf", meta: "—", status: .error("Password protected"))
+        FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB · 32 pages",
+                status: .doneHeavy(originalBytes: 18_700_000, newBytes: 1_600_000),
+                lead: .accentPill("→ ≈0.9 MB"), metaAccent: "will recompress at Smallest")
+        FileRow(name: "Board-Minutes.pdf", meta: "3.2 MB · 8 pages",
+                status: .done(originalBytes: 3_200_000, newBytes: 1_400_000),
+                lead: .error("Recompress failed — kept your Balanced version"))
+        // The `.unchanged` lead, which is where the armed and futile pills actually live for a
+        // no-gain row — the case the mockup's screens 2 and 5 both show.
+        FileRow(name: "Already-Tiny.pdf", meta: "184 KB",
+                status: .unchanged("Already optimised"),
+                lead: .accentPill("→ may not shrink"), metaAccent: "will try Smallest")
+        FileRow(name: "Dense-Scan.pdf", meta: "2.1 MB · 4 pages",
+                status: .unchanged("Already optimised"),
+                lead: .neutralPill("No saving at Smallest"))
     }
     .padding(24)
 }
@@ -911,22 +986,47 @@ private struct PointingHandCursorModifier: ViewModifier {
 
 /// The mockup's completion banner: a green tick beside the headline saving and a detail line.
 struct SuccessBanner: View {
+    /// The banner's colour story: `.success` for a finished batch, `.accent` for the armed state,
+    /// where nothing has happened yet and a green tick would claim otherwise (R4).
+    enum Tone {
+        case success, accent
+
+        var color: Color {
+            switch self {
+            case .success: return Theme.Colors.success
+            case .accent: return Theme.Colors.accent
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .success: return "checkmark"
+            case .accent: return "arrow.triangle.2.circlepath"
+            }
+        }
+    }
+
     let headline: String
-    let detail: String
+    /// Optional: the armed banner has no detail line when no armed row has a confident prediction
+    /// (R4), and an empty `Text` would leave a blank line where the caller means "say nothing".
+    let detail: String?
+    var tone: Tone = .success
 
     var body: some View {
         HStack(spacing: Theme.Spacing.medium) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Theme.Colors.success)
+                    .fill(tone.color)
                     .frame(width: 48, height: 48)
-                Image(systemName: "checkmark")
+                Image(systemName: tone.symbol)
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(.white)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(headline).themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
-                Text(detail).themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
+                if let detail {
+                    Text(detail).themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -934,7 +1034,7 @@ struct SuccessBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .fill(Theme.Colors.success.opacity(0.12))
+                .fill(tone.color.opacity(0.12))
         )
     }
 }
