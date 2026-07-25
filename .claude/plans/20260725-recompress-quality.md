@@ -68,13 +68,16 @@ serial, because `CompressViewModel.swift` and `CompressView.swift` are consumed 
 | 1 — foundation | **serial** | 1–4 | `Compress/VersionStore.swift`, `Compress/RunnerUpStore.swift`, `Compress/CompressEstimator.swift`, `Compress/CompressViewModel.swift`, `Shared/FileNaming.swift`, `Compress/CompressView.swift` (accessor rename only), `Tests/ToolboxTests/{VersionStoreTests,RunnerUpStoreTests,EstimatorTests,CompressViewModelTests}.swift` |
 | 2 — fork | **Track P** (presentation) | 5–6 | `Compress/VersionsPopover.swift` (renamed from `HeavyCompressionPopover.swift`), `DesignSystem/Components.swift`, **and** the one `HeavyCompressionPopover` call site in `Compress/CompressView.swift` |
 | 2 — fork | **Track E** (engine/model) | 7–10 | `Compress/CompressViewModel.swift`, `Tests/ToolboxTests/CompressViewModelTests.swift` — **never** `CompressView.swift` |
-| 3 — integration | **serial** | 11–13 | `Compress/CompressView.swift`, the mockup HTML, then the gates |
+| 3 — integration | **serial** | 11–13 | `Compress/CompressViewModel.swift` (Task 11), `Compress/CompressView.swift` (Task 12), `Tests/ToolboxTests/CompressViewModelTests.swift` (Tasks 11 and 12), the mockup HTML (Task 12), then the gates |
 
 Track P and Track E are parallel-eligible: their file sets are disjoint, and every type Track P
 consumes (`FileVersion`, `RowVersions`, `EngineVariant`, `VersionSlot`) is defined in Phase 1, so
 neither compiles against the other's unmerged work. Tasks *inside* a track are sequential.
 
-Round 1's fixes changed **no file set**: every fix that touched presentation stayed inside
+Round 1's fixes changed **no FORK file set** — Track P's and Track E's sets are exactly as first
+stated (Phase 3's serial set did grow: Task 12 gained
+`Tests/ToolboxTests/CompressViewModelTests.swift`, which the row above now lists). Every fix that
+touched presentation stayed inside
 `Components.swift` (Track P) and every fix that touched behaviour stayed inside
 `CompressViewModel.swift` + `CompressViewModelTests.swift` (Track E). The disjointness above holds
 exactly as originally stated. This is deliberate, not luck — where a finding needed both an
@@ -86,8 +89,8 @@ serial file anyway.
 
 | File | Create/Modify | Responsibility |
 |------|---------------|----------------|
-| `Sources/Toolbox/Compress/VersionStore.swift` | **Create** | `EngineVariant`, `FileVersion`, `VersionSlot`, `RowVersions`, `VersionStore` — the row-versions display authority and the only path that discards a parked file. |
-| `Sources/Toolbox/Compress/RunnerUpStore.swift` | Modify | Adds `reservePreviousURL` and the R12 `promote(fresh:to:parking:)` commit primitive beside the existing `switchVersions`. |
+| `Sources/Toolbox/Compress/VersionStore.swift` | **Create** | `EngineVariant`, `FileVersion`, `VersionSlot`, `RowVersions`, `VersionStore` — the row-versions display authority, the only path that discards a parked file, and the owner of `reservePreviousURL` (which forwards to `cache.reserveURL(for:suffix:reserving:)`). |
+| `Sources/Toolbox/Compress/RunnerUpStore.swift` | Modify | Widens `reserveURL` with a `suffix:` parameter (default preserves every current call site) and adds the R12 `promote(fresh:to:parking:)` commit primitive beside the existing `switchVersions`. |
 | `Sources/Toolbox/Compress/CompressEstimator.swift` | Modify | `estimateAll` becomes `analyse`, returning `Analysis` (content type + per-preset estimates) so R16 can decide whether the engine path repeats. |
 | `Sources/Toolbox/Compress/CompressViewModel.swift` | Modify | Owns the store, the derived arming state, the R16 prediction, the two-phase run, the R12 commit and every aggregate the view reads. |
 | `Sources/Toolbox/Compress/HeavyCompressionPopover.swift` → `VersionsPopover.swift` | **Rename + modify** | 2 cards at 340 pt / 3 cards at 470 pt, preset+variant labels, per-card preview and "Use this". |
@@ -862,6 +865,13 @@ existing display path onto the store, with **no behaviour change**. The existing
 
       Adjust only the accessor, never the expected value. Add `try XCTUnwrap` where an accessor
       became optional — the byte, URL and variant accessors all did; `capsuleTitle` did not.
+
+      Two test DOC COMMENTS also name the old accessor and would survive a call-sites-only rename,
+      leaving the file documenting a symbol that no longer exists: the one above
+      `testCompressedHeavyOutcomePublishesHeavyVersions` ("surfaces both versions through
+      `heavyVersions(for:)`") and the one above `testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize`
+      ("`heavyVersions(for:)` must mark it so the popover labels that card 'Original'"). Both say
+      `versions(for:)` after this step; the wording is otherwise untouched.
 - [ ] Run the suite and watch it fail to compile (`versions(for:)` does not exist yet):
 
 ```sh
@@ -1061,10 +1071,12 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
       `versionStore.swapShipped(with: .runnerUp, for: id)` on a successful `store.switchVersions`.
 - [ ] Funnel every removal through the store: `discardRunnerUp(for:)` becomes
       `versionStore.discardRow(job.id)` plus a NEW `switchFailures[job.id] = nil` line — today's
-      body clears `switched`/`jobPresets`/`batchAlternates` and does **not** clear
-      `switchFailures`, so a removed-and-re-added row would inherit the old row's failure message.
-      Adding it here is a defect fix riding this refactor, not a rename; note it in the commit
-      body. Then `pruneStaleEstimateState` calls `versionStore.retain(only: liveIDs)` where it
+      body clears `switched`/`jobPresets`/`batchAlternates` and does not touch `switchFailures`.
+      This is tidiness, not a defect fix: `ToolJob.init` mints a fresh `UUID` per `add`, so a
+      re-added row can never key into the removed row's entry, and `pruneStaleEstimateState`
+      already filters `switchFailures` on every sink emission. The line simply clears the removed
+      row's message at removal time rather than one emission later, keeping every removal path in
+      one place. Then `pruneStaleEstimateState` calls `versionStore.retain(only: liveIDs)` where it
       filtered `switched`/`jobPresets`.
 - [ ] Rewrite `cancel()`'s reclaim over the reservation ledger, keeping the exact rule the
       `isDoneHeavy` check encoded (a reservation the store now owns as a committed runner-up is
@@ -1103,9 +1115,10 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
 
 ```swift
     var body: some View {
-        // This popover only ever draws for a row with both versions: `heavyVersions(for:)`
-        // returned nil otherwise, and the capsule that presents it is drawn on exactly that
-        // condition. One unwrap here keeps the card code identical to today's.
+        // This popover only ever draws for a row with both versions: `versions(for:)` returned
+        // nil otherwise, and the capsule that opens it is drawn only on a `.doneHeavy` row —
+        // which Task 12 derives from `row.count > 1`, i.e. exactly the rows that have a pair.
+        // One unwrap here keeps the card code identical to today's.
         if let shipped = versions.shipped, let runnerUp = versions.runnerUp {
             content(shipped: shipped, runnerUp: runnerUp)
         }
@@ -1119,7 +1132,12 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
         `versions.normalBytes` → `(shipped.variant == .mrc ? runnerUp : shipped).bytes`;
         `heavyURL` → `(shipped.variant == .mrc ? shipped : runnerUp).url`;
         `normalURL` → `(shipped.variant == .mrc ? runnerUp : shipped).url`;
-        `normalTitle` → `runnerUp.variant == .original ? "Original" : "Normal"`. (`heavyURL`,
+        `normalTitle` →
+        `((shipped.variant == .mrc ? runnerUp : shipped).variant == .original) ? "Original" : "Normal"`
+        — the same positional selector shape as `normalURL` above, deliberately: the title must
+        describe whichever record currently occupies the NORMAL position, and `swapShipped` moves
+        records between the shipped and runner-up positions, so keying the label off
+        `runnerUp.variant` would make the button lie the moment the user switches. (`heavyURL`,
         `normalURL` and `normalTitle` become parameters of, or locals inside, `content` — they
         can no longer be computed properties, because they now need the unwrapped pair.) Copy and
         geometry unchanged — Task 6 generalises it; this step only keeps it compiling.
@@ -1222,10 +1240,26 @@ of `ToolJob`/`CompressPreset`, as the design system's contract requires.
                 }
                 .foregroundStyle(Theme.Colors.textSecondary)
             }
+            // A lead makes this the widest this cluster has ever been; without fixedSize, width
+            // pressure wraps the pill onto two lines and grows the row (R8's single-line height).
+            // The name column absorbs the squeeze instead (lineLimit + middle truncation).
+            .fixedSize()
 ```
 
       and `.done`/`.doneHeavy` gain `leadView` as the first child of their existing `HStack`
-      (before the struck original size):
+      (before the struck original size). `.doneHeavy` already carries `.fixedSize()` for exactly
+      this reason; `.done` now needs it too, because the lead widens it the same way, so its
+      `HStack` gains the same modifier and the same one-line reason:
+
+```swift
+            // A lead makes this the widest this cluster has ever been; without fixedSize, width
+            // pressure wraps the pill onto two lines and grows the row (R8's single-line height).
+            // The name column absorbs the squeeze instead (lineLimit + middle truncation).
+            .fixedSize()
+```
+
+      (Neither previews nor the build can catch wrapping — it only shows under width pressure — so
+      the modifier is added by rule, not on the evidence of a screenshot.) The lead view itself:
 
 ```swift
     @ViewBuilder
@@ -1795,7 +1829,14 @@ because a ratio learned on one path does not transfer to the other.
     /// not only before the run. A row whose input has been deleted must not display a pill
     /// promising a size the app has no way to produce.
     func testPredictionIsWithheldWhenTheOriginalIsGone() async throws {
-        let env = try HeavyEnv(contentType: .bornDigital)
+        // `.scanColour`, so the POSITIVE control is genuinely confident before the deletion. The
+        // shipped version is MRC and `.scanColour` + `.smallestSize` gives `targetWantsMRC == true`,
+        // so `targetWantsMRC == shippedWasMRC` and the calibration branch runs: the prediction
+        // tracks the shipped 1.2 kB (scaled by raw/baseline), comfortably under the 9 kB original.
+        // With `.bornDigital` the paths would differ, the RAW estimate would be used, and that is
+        // derived from the multi-megabyte `imagePDF` fixture — the "must beat the original" guard
+        // would return nil before the deletion too, and the test would assert nothing.
+        let env = try HeavyEnv(contentType: .scanColour)
         let model = env.model
         model.preset = .balanced
         model.add([env.input])
@@ -1863,15 +1904,6 @@ because a ratio learned on one path does not transfer to the other.
     /// asserted against the same numbers the row displays.
     func analysis(for job: ToolJob) -> CompressEstimator.Analysis? { analyses[job.id] }
 
-    /// The armed row's predicted size at `target`, or nil when no confident number can be given —
-    /// the row then reads "may not shrink" (R16). The "≈" marker is the view's, and stays whatever
-    /// this returns: the figure is always approximate.
-    ///
-    /// The estimator models the gs path only, so its figure is calibrated by what the engine
-    /// actually did — but ONLY when the same path is expected to run again. `wantsMRC` is
-    /// `classification == .scanColour && preset != .maximumQuality`, so an MRC-shipped row crossing
-    /// to Maximum quality, or a gs-shipped row moving to an MRC-eligible preset, both change path
-    /// and take the raw estimate: a ratio learned on one path does not transfer to the other.
     /// R10's arming half: a recompress always reads the ORIGINAL input (D2), so a row whose input
     /// has gone cannot be recompressed at all — and must not advertise a prediction, or offer the
     /// armed pill, as if it could. Checked on every read rather than cached, exactly like the
@@ -1887,6 +1919,15 @@ because a ratio learned on one path does not transfer to the other.
         !FileManager.default.fileExists(atPath: job.url.path)
     }
 
+    /// The armed row's predicted size at `target`, or nil when no confident number can be given —
+    /// the row then reads "may not shrink" (R16). The "≈" marker is the view's, and stays whatever
+    /// this returns: the figure is always approximate.
+    ///
+    /// The estimator models the gs path only, so its figure is calibrated by what the engine
+    /// actually did — but ONLY when the same path is expected to run again. `wantsMRC` is
+    /// `classification == .scanColour && preset != .maximumQuality`, so an MRC-shipped row crossing
+    /// to Maximum quality, or a gs-shipped row moving to an MRC-eligible preset, both change path
+    /// and take the raw estimate: a ratio learned on one path does not transfer to the other.
     func recompressPrediction(for job: ToolJob, at target: CompressPreset) -> Int? {
         // Ahead of everything: a confident number for a row that cannot run is the one thing R10
         // names explicitly ("and before arming shows a confident estimate").
@@ -2272,20 +2313,21 @@ route destroys the delivered state this feature exists to protect.
     // `.failed` state, because R12 requires the previous result to stay displayed and openable, so
     // the message rides beside the row's result instead of replacing it.
 
-    /// The run's outer task, held so `cancel()` can cancel it. `Task.init` does NOT inherit the
-    /// caller's cancellation, and the queue's own `cancel()` only unwinds the queue's task — so
-    /// without this handle nothing propagates cancellation into the run body at all.
+    /// The run's outer task, held so `cancel()` can cancel it (Task 10 adds that call). `Task.init`
+    /// does NOT inherit the caller's cancellation, so this handle is the only way cancellation could
+    /// ever reach the run body — nothing in the body reads `Task.isCancelled` today, so it is kept
+    /// for the day a future structured run body needs to unwind correctly, not as a live mechanism.
     private var runTask: Task<Void, Never>?
     /// The phase-2 task group's handle, so an in-flight recompress is cancelled too.
     private var recompressTask: Task<Void, Never>?
     /// Run-scoped cancellation flag, set by `cancel()` and cleared at the START of every run (R9).
-    /// Three mechanisms are needed and each covers a different window; none is redundant:
+    /// Two mechanisms cover the two windows a cancel can land in:
     /// 1. this flag + the guard before phase 2 stops the recompress phase ever STARTING after a
     ///    cancel that landed during phase 1 — `queue.run` returns normally on cancel, so without
     ///    the guard phase 2 begins as if nothing happened;
-    /// 2. `runTask.cancel()` is what makes `Task.isCancelled` true inside the run body (and inside
-    ///    `runRecompressPhase`'s group), because the body's task is unstructured;
-    /// 3. `recompressTask.cancel()` unwinds recompresses already in flight.
+    /// 2. `recompressTask.cancel()` unwinds recompresses already in flight: it cancels the phase's
+    ///    unstructured task, which propagates to its task-group children, so `Task.isCancelled` is
+    ///    true inside `recompress` and its `try Task.checkCancellation()` throws before the commit.
     /// The flag is not merely a mirror of `Task.isCancelled`: `await task.value` on a
     /// non-throwing `Task` does not unwind on cancellation, so the explicit guard is load-bearing
     /// rather than decoration.
@@ -2396,6 +2438,11 @@ route destroys the delivered state this feature exists to protect.
                                                     alternateOutput: plan.runnerUp,
                                                     mrcReport: { capturedReport = $0 },
                                                     progress: report)
+            // The engine may return normally after its own final checkpoint (`CompressEngine`'s
+            // last `Task.checkCancellation()` precedes the rename-and-return), so a cancel landing
+            // in that window arrives here as a successful outcome — committing it would overwrite
+            // the file the user already has, which is exactly what R9 forbids.
+            try Task.checkCancellation()
             try commit(outcome, plan: plan, report: capturedReport)
         } catch is CancellationError {
             // Cancelled: the engine's atomic-write contract left no output and nothing was
@@ -2522,6 +2569,33 @@ route destroys the delivered state this feature exists to protect.
       Task 10 owns the run bookkeeping around it and writes that tail out in full; this task only
       needs `await runRecompressPhase(plans, engine: engine)` between `await queue.run { … }` and
       `isRunning = false`.
+- [ ] Extend `cancel()` **in this task**, not in Task 10. The two cancel tests above are written
+      here, so the mechanism they exercise must land here or this task's own gate is unreachable:
+      `runCancelled = true` is what makes
+      `testCancellingDuringTheQueuePhaseNeverStartsTheRecompressPhase` pass, and
+      `recompressTask?.cancel()` is what makes `try Task.checkCancellation()` throw in
+      `testCancellingARecompressKeepsThePreviousResult`. Task 10 then layers only `runTask?.cancel()`
+      and its reservation note on top of this form. The whole function as it stands after this task
+      (Task 4's reclaim loop kept verbatim):
+
+```swift
+    func cancel() {
+        // Set FIRST: `queue.cancel()` can let phase 1 return before the next line runs, and the
+        // phase-2 guard reads this flag.
+        runCancelled = true
+        queue.cancel()          // unwinds the queue's own task
+        recompressTask?.cancel()// unwinds recompresses already in flight
+        // Discard the in-flight batch's runner-up reservations, except any the store has since
+        // claimed as a committed version. A cancelled job returns to `.queued` and, by the engine's
+        // atomic-write contract, leaves no partial output — so this only reclaims files a
+        // completed-but-superseded job wrote before the cancel landed (R18).
+        for (id, url) in runReservations where versionStore.versions(for: id)?.runnerUp?.url != url {
+            store.discard(url)
+        }
+        runReservations = [:]
+    }
+```
+
 - [ ] Run the suite; all green.
 - [ ] Commit: `feat(compress): recompress armed rows through the engine with a parking commit`
 
@@ -2840,8 +2914,13 @@ concurrency is bounded by one normal batch width *by construction* rather than b
     }
 ```
 
-- [ ] Extend `cancel()` to stop both phases. Three mechanisms, each covering a window the others
-      cannot — see `runCancelled`'s doc comment in Task 9:
+- [ ] Add the ONE remaining line to `cancel()`: `runTask?.cancel()`. Task 9 already wrote
+      `runCancelled = true`, `queue.cancel()` and `recompressTask?.cancel()` — the two mechanisms
+      that actually stop both phases, per `runCancelled`'s doc comment there. This task adds the
+      outer-task cancel because this task is where `runTask` is assigned a body worth cancelling;
+      it has no current reader (nothing in the run body checks `Task.isCancelled`), and it is kept
+      so a future structured run body unwinds correctly rather than as a live third mechanism. The
+      function in full afterwards:
 
 ```swift
     func cancel() {
@@ -2850,8 +2929,8 @@ concurrency is bounded by one normal batch width *by construction* rather than b
         runCancelled = true
         queue.cancel()          // unwinds the queue's own task
         recompressTask?.cancel()// unwinds recompresses already in flight
-        runTask?.cancel()       // `Task.init` does not inherit cancellation; this is what makes
-                                // `Task.isCancelled` true inside the run body and its task group
+        runTask?.cancel()       // `Task.init` does not inherit cancellation; no current reader,
+                                // kept so a future structured run body cancels correctly
         // Discard the in-flight batch's runner-up reservations, except any the store has since
         // claimed as a committed version. A cancelled job returns to `.queued` and, by the engine's
         // atomic-write contract, leaves no partial output — so this only reclaims files a
@@ -3442,3 +3521,57 @@ presentation fix stayed in `Components.swift` (Track P) and every behavioural fi
 3. A commit primitive that copies a sibling's failure shapes while dropping the sibling's crash-window guarantee — "same semantics as X, for the same reason" is a claim to check against X's *comments*, not just its control flow.
 4. A phase serialised for concurrency but not for cancellation — "B runs after A" satisfies a concurrency bound and silently creates a cancellation hole: cancelling A merely makes A return, which *starts* B.
 5. A model-level test greening a display the user never sees — where a requirement says "never fails silently", the assertion belongs at the view-derivation function.
+
+---
+
+## Round 2 — 2026-07-25 — NO-SHIP (plan-reviewer, Opus, incremental)
+
+Eleven findings — one critical, two major, eight minor — all fixed in this round; 13 of round 1's 16
+findings were re-verified as genuinely resolved by the diff. The critical re-opened the cancel chain
+round 1 had closed at the wrong end: `recompress` went engine call → `commit` with no cancellation
+check between, and because the stub's `Gate.wait()` is non-throwing, `model.cancel(); await
+gate.open()` let the stub RETURN and the commit promote — `testCancellingARecompressKeepsThePreviousResult`
+would have failed, and in production a cancel landing after `CompressEngine`'s final
+`Task.checkCancellation()` (which precedes its rename-and-return) would have overwritten the
+delivered file; a `try Task.checkCancellation()` now sits immediately before `commit`, routing into
+the existing `catch is CancellationError` arm. The majors: Task 9's "run the suite; all green" was
+unsatisfiable because both new cancel tests live in Task 9 while `runCancelled = true` and
+`recompressTask?.cancel()` were only written in Task 10 (Task 9 now owns its own `cancel()` step with
+those two lines, and Task 10 layers only `runTask?.cancel()` and the reservation change on top, each
+task saying so explicitly); and Task 8's `testPredictionIsWithheldWhenTheOriginalIsGone` had an
+impossible positive control — a `.bornDigital` `HeavyEnv` takes the raw-estimate branch, whose figure
+derives from the multi-megabyte `imagePDF` fixture, so the prediction was already nil before the
+deletion (now `.scanColour`, where `targetWantsMRC == shippedWasMRC` at `.smallestSize` so the
+calibration branch runs and the prediction tracks the shipped 1.2 kB, with the mechanism pinned in
+the comment). The minors: `runCancelled`'s doc comment claimed a third mechanism that cannot fire
+(`runTask.cancel()` reaches nothing in the run body, which reads `Task.isCancelled` nowhere) and
+contradicted its own "`Task.init` does NOT inherit cancellation" two lines above (parenthetical and
+"none is redundant" both gone; `runTask?.cancel()` kept with an honest no-current-reader note in both
+places); Task 4's `normalTitle` mapping keyed off `runnerUp.variant`, which `swapShipped` moves, so
+the button would lie after a switch (now the same positional selector shape as `heavyURL`/`normalURL`),
+and the popover's new body comment cited the `heavyVersions(for:)` that this very task deletes (now
+`versions(for:)` plus Task 12's `row.count > 1` → `.doneHeavy` condition); `discardRunnerUp`'s new
+`switchFailures` line carried a false justification — `ToolJob.init` mints a fresh `UUID` per `add`
+and `pruneStaleEstimateState` already filters `switchFailures` on every sink emission (line kept, real
+reason stated, "defect fix" framing and the commit-body instruction dropped); Task 8 had inserted
+`isOriginalMissing` between `recompressPrediction`'s doc comment and its declaration, silently
+re-attributing the calibration paragraphs (block split, each comment on its own member); the Track
+plan's "Round 1's fixes changed no file set" was false and Phase 3's exact-file-set column omitted
+`CompressViewModel.swift` and `CompressViewModelTests.swift` (row completed, claim narrowed to "no
+FORK file set changed"); two test doc comments naming `heavyVersions(for:)` would have survived Task
+4's call-sites-only rename (both added to the mapping step); and Task 5 gave `.done` and `.unchanged`
+a lead without the `.fixedSize()` that the `.doneHeavy` arm documents as necessary against R8's
+single-line height, which neither previews nor the build can catch (both arms now carry it with the
+same one-line reason); finally the File Structure table credited `reservePreviousURL` to
+`RunnerUpStore.swift` when it is declared on `VersionStore` and forwards to
+`cache.reserveURL(for:suffix:reserving:)` (rows corrected, with `RunnerUpStore`'s row naming the
+`reserveURL` suffix widening and `promote`).
+
+**Lesson-candidates** (the reviewer's, one line each):
+
+1. A numeric premise about a generated fixture is a measurement, not a sentence: a test's positive control must be checked against the fixture's real magnitude before it is written.
+2. Sharpening a test's premise without landing the mechanism it now exercises converts a vacuous pass into a failing gate — when a fix changes a wait condition, re-derive the whole test's outcome, not just the window it observes.
+3. A fix that spans a task boundary must land its mechanism in the earlier task: a test added in task N whose enabling line is written in task N+1 makes N's own green gate unreachable.
+4. Inserting a member is a diff on its neighbours' documentation too — a new declaration placed between an existing doc comment and its owner silently re-attributes the comment.
+5. A mapping from an intrinsic field to a positional one must be checked against the operation that swaps positions: equivalence at rest is not equivalence after the swap.
+6. A justification invented while fixing a minor is a claim like any other — it needs the id-lifetime and prune checks before it is written into a commit body.
