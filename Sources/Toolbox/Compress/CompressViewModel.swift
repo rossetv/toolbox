@@ -633,7 +633,7 @@ final class CompressViewModel: ObservableObject {
             store.discard(plan.runnerUp)
             return
         }
-        if let previouslyShipped = row.shipped {
+        if let previouslyShipped = row.shipped, fm.fileExists(atPath: previouslyShipped.url.path) {
             try store.promote(fresh: plan.temp, to: previouslyShipped.url, parking: plan.parked)
             // `promote` reaches the cache slot on a best-effort third step (see its doc): a
             // successful return does NOT guarantee a file exists at `plan.parked`. Recording the
@@ -652,8 +652,12 @@ final class CompressViewModel: ObservableObject {
                                                 preset: plan.target, variant: variant),
                                     for: plan.id)
         } else {
-            // A row that shipped nothing has no version to park — the result simply takes the
-            // freshly reserved output name.
+            // Either the row shipped nothing (no version to park), or it shipped a version whose
+            // file was deleted/moved outside the app — `promote`'s first step (`moveItem(at:
+            // shipped, to: temp)`) would throw NSFileNoSuchFileError on that file, so there is
+            // nothing to park either way. `plan.output` is the row's existing result path when one
+            // exists (R11), so the fresh result simply lands there directly — the recompress
+            // succeeded and there is no lie to tell (R12).
             try fm.moveItem(at: plan.temp, to: plan.output)
             versionStore.setShipped(FileVersion(url: plan.output, bytes: shippedBytes,
                                                 preset: plan.target, variant: variant),

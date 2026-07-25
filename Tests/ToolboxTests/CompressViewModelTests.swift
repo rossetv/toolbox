@@ -795,6 +795,36 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(model.displayedSizes(for: job)?.after, 700)
     }
 
+    /// The shipped file can be deleted outside the app between shipping and the next recompress —
+    /// there is nothing to park, but the recompress itself still succeeds, so it must deliver the
+    /// fresh result rather than discard it behind a lying "kept your X version" message.
+    func testRecompressDeliversTheFreshResultWhenTheShippedFileWasDeletedOutsideTheApp() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        let shippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.shipped?.url)
+        try FileManager.default.removeItem(at: shippedURL)  // the user deletes it in Finder
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        let row = try XCTUnwrap(model.versions(for: job))
+        XCTAssertNil(model.recompressErrors[job.id], "the recompress succeeded — there is no failure to report")
+        XCTAssertEqual(row.shipped?.url, shippedURL, "the fresh result lands at the row's own output path")
+        XCTAssertEqual(row.shipped?.bytes, 700)
+        XCTAssertEqual(row.shipped?.preset, .smallestSize)
+        XCTAssertEqual(try fileSize(shippedURL), 700, "the new file is actually delivered on disk")
+        XCTAssertNil(row.previous, "there was nothing to park")
+    }
+
     /// R7: when the parked previous version was made at the selected preset, the row offers an
     /// instant switch instead of arming a recompute of a file already in the cache.
     ///
