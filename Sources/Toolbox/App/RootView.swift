@@ -14,6 +14,11 @@ struct RootView: View {
     @State private var selectedTool: Tool? = .compress
     @State private var sidebarCollapsed = false
     @StateObject private var updateChecker = UpdateChecker()
+    // The tools' state lives HERE, above the switch that rebuilds the detail pane, so
+    // switching tools never destroys a queue, a finished batch, or a running job's cancel
+    // handle (review M9, reproduced live: switch to OCR and back emptied the Compress list).
+    @StateObject private var compressModel = CompressViewModel()
+    @StateObject private var ocrModel = OCRViewModel()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,9 +48,9 @@ struct RootView: View {
     private func detail(for tool: Tool) -> some View {
         switch tool {
         case .compress:
-            CompressView()
+            CompressView(model: compressModel)
         case .ocr:
-            OCRView()
+            OCRView(model: ocrModel)
         }
     }
 }

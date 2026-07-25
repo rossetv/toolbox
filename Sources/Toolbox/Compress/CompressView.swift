@@ -14,7 +14,10 @@ import UniformTypeIdentifiers
 /// per-file rows (estimate → live progress → real before/after), cancel. Built from the design
 /// system: `ToolHeader`, `DropZone`, `FileRow`, `SegmentedPreset`, `PrimaryButton`.
 struct CompressView: View {
-    @StateObject private var model = CompressViewModel()
+    /// Owned by `RootView`, not this view: the detail pane is rebuilt on every tool switch, and
+    /// a view-owned `@StateObject` died with it — taking the finished batch, the runner-up
+    /// references and any in-flight run's cancel handle along (review M9, reproduced live).
+    @ObservedObject var model: CompressViewModel
     @State private var isTargeted = false
     @State private var heavyPopoverJobID: ToolJob.ID?
     @State private var quickLookURL: URL?
@@ -482,13 +485,13 @@ struct CompressView: View {
 }
 
 #Preview("Compress – Light") {
-    CompressView()
+    CompressView(model: CompressViewModel())
         .frame(width: 720, height: 520)
         .preferredColorScheme(.light)
 }
 
 #Preview("Compress – Dark") {
-    CompressView()
+    CompressView(model: CompressViewModel())
         .frame(width: 720, height: 520)
         .preferredColorScheme(.dark)
 }

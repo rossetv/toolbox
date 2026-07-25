@@ -30,33 +30,37 @@ enum WindowSetup {
 
     private static let autosaveName = "ToolboxMainWindow"
 
-    /// Keeps the main window from ever showing an unrequested keyboard focus ring. AppKit
-    /// re-assigns first responder to the first focusable control every time the window becomes
-    /// key again — closing a sheet or popover, reactivating the app — so a one-off
-    /// `makeFirstResponder(nil)` at launch is not enough: the stray blue ring around the
-    /// sidebar header kept resurrecting through exactly these paths.
+    /// Keeps the main window from ever showing an unrequested keyboard focus ring — the
+    /// recurring "stray blue square". The invariant: **only keyboard-driven focus may stand.**
+    /// AppKit hands first responder to the first focusable control on every path that is not a
+    /// key press — the window becoming key again, a sheet closing, a POPOVER closing (which
+    /// never takes key status itself, so a key-transition observer misses that path entirely;
+    /// it was exactly how the ring around the sidebar header resurrected), app reactivation.
+    /// Watching the responder itself catches every such path at the source: an assignment whose
+    /// current event is not a key press is cleared a turn later. Tab/arrow navigation arrives
+    /// as `.keyDown` and survives, rings and all, per DESIGN.md §6.
     ///
-    /// The cost, taken deliberately: the clear does not distinguish AppKit's auto-assignment
-    /// from the user's own. Focus position therefore resets to nothing whenever the window
-    /// re-keys — ⌘-Tab away and back, dismiss a sheet or a popover — and the next Tab restarts
-    /// from the top of the window. Rings themselves are untouched: every control still shows
-    /// its focus ring while the user Tabs through, per DESIGN.md §6.
-    private static var keyWindowObserver: NSObjectProtocol?
+    /// Costs, taken deliberately: focus POSITION (never the rings) is lost on non-key paths,
+    /// so Tab restarts from the top after e.g. ⌘-Tab away and back; and a future text field
+    /// focused by mouse click would need an exemption here — today the main window has none.
+    private static var responderObservation: NSKeyValueObservation?
 
-    private static func installStrayFocusClear() {
-        guard keyWindowObserver == nil else { return }
-        keyWindowObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
-        ) { note in
-            guard let window = note.object as? NSWindow,
-                  window.frameAutosaveName == autosaveName else { return }
-            // Deferred: AppKit assigns the auto first responder after the notification fires.
-            DispatchQueue.main.async { window.makeFirstResponder(nil) }
+    private static func installStrayFocusClear(on window: NSWindow) {
+        guard responderObservation == nil else { return }
+        responderObservation = window.observe(\.firstResponder) { window, _ in
+            guard let responder = window.firstResponder, responder !== window else { return }
+            if NSApp.currentEvent?.type == .keyDown { return }
+            // Deferred one turn: AppKit is mid-assignment when the observation fires, and a
+            // synchronous clear can be overwritten by the very change it reacts to.
+            DispatchQueue.main.async {
+                // A key press may have moved focus legitimately in the meantime — leave that.
+                guard window.firstResponder === responder else { return }
+                window.makeFirstResponder(nil)
+            }
         }
     }
 
     static func applyMinimumSize(_ minSize: NSSize) {
-        installStrayFocusClear()
         DispatchQueue.main.async {
             for window in NSApp.windows where window.contentView != nil && window.canBecomeMain {
                 window.minSize = minSize
@@ -69,8 +73,9 @@ enum WindowSetup {
                     let hasSavedFrame = UserDefaults.standard.string(forKey: key) != nil
                     // The result (false when another window already owns the name) is ignored:
                     // the app declares a single `Window` scene, so there is never a second one
-                    // to lose the race — and the focus observer below filters on this same name.
+                    // to lose the race.
                     window.setFrameAutosaveName(autosaveName)
+                    installStrayFocusClear(on: window)
                     if !hasSavedFrame {
                         var initial = window.frame
                         initial.origin.y += initial.height - preferredSize.height

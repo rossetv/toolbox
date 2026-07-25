@@ -14,7 +14,9 @@ import UniformTypeIdentifiers
 /// furniture — `ToolHeader`, `DropZone`, `FileRow`, `SegmentedPreset`, `PrimaryButton` — so the
 /// two tools read as one app.
 struct OCRView: View {
-    @StateObject private var model = OCRViewModel()
+    /// Owned by `RootView` — see `CompressView.model` for why a view-owned `@StateObject`
+    /// loses the batch on every tool switch.
+    @ObservedObject var model: OCRViewModel
     @State private var isTargeted = false
 
     /// Language override choices. `nil` = auto-detect. Curated common set (v1); Vision's full
@@ -293,13 +295,13 @@ struct OCRView: View {
 }
 
 #Preview("OCR – Light") {
-    OCRView()
+    OCRView(model: OCRViewModel())
         .frame(width: 720, height: 520)
         .preferredColorScheme(.light)
 }
 
 #Preview("OCR – Dark") {
-    OCRView()
+    OCRView(model: OCRViewModel())
         .frame(width: 720, height: 520)
         .preferredColorScheme(.dark)
 }
