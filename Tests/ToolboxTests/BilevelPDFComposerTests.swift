@@ -196,4 +196,11 @@ final class BilevelPDFComposerTests: XCTestCase {
 
         XCTAssertNil(image, "CoreGraphics must refuse a provider shorter than the declared geometry")
     }
+
+    /// `%d` truncates a 64-bit offset to 32 bits, corrupting the fixed 20-byte xref entry for
+    /// files over 2 GiB. `%ld` must be used instead.
+    func testXrefEntryDoesNotTruncateOffsetsAbove2GiB() {
+        XCTAssertEqual(BilevelPDFComposer.xrefEntry(offset: 3_000_000_000),
+                        "3000000000 00000 n \n")
+    }
 }

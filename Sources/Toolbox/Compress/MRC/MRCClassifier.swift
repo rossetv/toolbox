@@ -35,6 +35,7 @@ enum MRCClassifier {
         }
         let counts = Counts()
         guard let table = CGPDFOperatorTableCreate() else { return .complex }
+        defer { CGPDFOperatorTableRelease(table) }
 
         func register(_ op: String, _ callback: CGPDFOperatorCallback) {
             CGPDFOperatorTableSetCallback(table, op, callback)

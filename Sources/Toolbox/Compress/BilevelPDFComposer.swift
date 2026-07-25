@@ -154,10 +154,16 @@ enum BilevelPDFComposer {
         append("xref\n0 \(objectCount)\n")
         append("0000000000 65535 f \n")
         for offset in offsets.dropFirst() {
-            append(String(format: "%010d 00000 n \n", offset))
+            append(xrefEntry(offset: offset))
         }
         append("trailer\n<< /Size \(objectCount) /Root 1 0 R >>\nstartxref\n\(startxref)\n%%EOF\n")
         return out
+    }
+
+    /// A single 20-byte classic-xref entry for an in-use object. `%ld` (not `%d`) is required:
+    /// `%d` truncates the 64-bit offset to 32 bits, corrupting the entry for files over 2 GiB.
+    static func xrefEntry(offset: Int) -> String {
+        String(format: "%010ld 00000 n \n", offset)
     }
 
     /// A PDF real, written with an explicitly nil locale: the format requires "." as the decimal

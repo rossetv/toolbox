@@ -185,4 +185,11 @@ final class MRCComposerTests: XCTestCase {
         // Right = paper half → background white shows through: not red (G high).
         XCTAssertGreaterThan(right.g, 0.6, "paper half should show white background (G=\(right.g))")
     }
+
+    /// `%d` truncates a 64-bit offset to 32 bits, corrupting the fixed 20-byte xref entry for
+    /// files over 2 GiB. `%ld` must be used instead.
+    func testXrefEntryDoesNotTruncateOffsetsAbove2GiB() {
+        XCTAssertEqual(MRCComposer.xrefEntry(offset: 3_000_000_000),
+                        "3000000000 00000 n \n")
+    }
 }
