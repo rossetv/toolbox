@@ -622,8 +622,10 @@ final class CompressViewModel: ObservableObject {
     /// discard loop walks `runReservations` — the batch's up-front runner-up allocation — and so
     /// never reaches the separate reservation a plan carries. R9's cancel semantics are unchanged
     /// too: the swap runs on a GCD queue bridged with a checked continuation, which does not inherit
-    /// cancellation, so one already begun runs to completion rather than tearing, exactly as a
-    /// blocked main actor used to guarantee.
+    /// cancellation, so one already begun runs to completion rather than tearing at a `Task`
+    /// cancellation — that guarantee does not extend to a crash or quit mid-swap, which can still
+    /// strand the shipped file at `performSwap`'s dot-temp, the same accepted residual the engine's
+    /// own `destTemp` carries.
     private func commit(_ outcome: JobOutcome, plan: RecompressPlan,
                         report: MRCDocumentReport?) async throws {
         let fm = FileManager.default
