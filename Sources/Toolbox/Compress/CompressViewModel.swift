@@ -551,6 +551,15 @@ final class CompressViewModel: ObservableObject {
         recompressTask = nil
     }
 
+    /// A recompress attempt's two reserved artefacts — `plan.temp` and `plan.runnerUp` — neither of
+    /// which was committed. Shared by every exit path of `recompress` and `commit` that leaves
+    /// nothing landed: a "can't happen" branch is not a reason to leak a cache file and a
+    /// dot-temp for the rest of the session.
+    private func discardArtefacts(of plan: RecompressPlan) {
+        try? FileManager.default.removeItem(at: plan.temp)
+        store.discard(plan.runnerUp)
+    }
+
     private func recompress(_ plan: RecompressPlan, engine: any Compressing) async {
         let fm = FileManager.default
         // A recompress always reads the ORIGINAL input (D2 — never the compressed output), so a
@@ -590,8 +599,7 @@ final class CompressViewModel: ObservableObject {
             // produced one, its alternate at plan.runnerUp) — the two lines below remove both.
             // Nothing was committed either way,
             // so the row keeps its previous result (R9).
-            try? fm.removeItem(at: plan.temp)
-            store.discard(plan.runnerUp)
+            discardArtefacts(of: plan)
         } catch let stranded as RunnerUpStore.SwitchError {
             // MUST precede the generic catch. `shippedStranded` is the one failure where the
             // shipped file is NOT kept — it survives under a hidden dot-name nothing else looks
@@ -600,12 +608,10 @@ final class CompressViewModel: ObservableObject {
             // record, exactly as the switch path does: `reportSwitchFailure` sets
             // `switchFailures[id]`, and `versions(for:)` returns nil while that is set, so the row
             // stops advertising a delivered file it can no longer back (the F6 mislabel).
-            try? fm.removeItem(at: plan.temp)
-            store.discard(plan.runnerUp)
+            discardArtefacts(of: plan)
             reportSwitchFailure(plan.id, stranded.localizedDescription)
         } catch {
-            try? fm.removeItem(at: plan.temp)
-            store.discard(plan.runnerUp)
+            discardArtefacts(of: plan)
             // An explicit button press NEVER fails silently (R12), and the version they kept is
             // named so the message is actionable. Every error reaching here left the shipped file
             // exactly as it was — `promote`'s contract guarantees it for every throw except
@@ -649,8 +655,7 @@ final class CompressViewModel: ObservableObject {
         // reservation behind would leak them for the session, and a "can't happen" is not a
         // reason to leak.
         guard let row = versionStore.versions(for: plan.id) else {
-            try? fm.removeItem(at: plan.temp)
-            store.discard(plan.runnerUp)
+            discardArtefacts(of: plan)
             return
         }
         let shippedBytes: Int
@@ -670,15 +675,13 @@ final class CompressViewModel: ObservableObject {
             // shipped version, its URL and its parked versions all stay (R12); the attempt is
             // recorded so re-selecting this preset shows the futile caption rather than re-running
             // a known-futile job (R6).
-            try? fm.removeItem(at: plan.temp)
-            store.discard(plan.runnerUp)
+            discardArtefacts(of: plan)
             futileAttempts.insert(FutileAttempt(id: plan.id, preset: plan.target))
             versionStore.recordAttempt(plan.target, for: plan.id)
             return
         case .ocrAdded, .alreadySearchable:
             // Never produced by CompressEngine — cleaned up regardless, as above.
-            try? fm.removeItem(at: plan.temp)
-            store.discard(plan.runnerUp)
+            discardArtefacts(of: plan)
             return
         }
         if let previouslyShipped = row.shipped, fm.fileExists(atPath: previouslyShipped.url.path) {
