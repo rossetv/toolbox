@@ -194,7 +194,7 @@ final class CompressViewModelTests: XCTestCase {
     }
 
     /// A second tap before the first switch lands must be a no-op, not a second concurrent swap on
-    /// the same paths. `useVersion` sets its re-entrancy guard (`isSwitchRerunning`) synchronously,
+    /// the same paths. `useVersion` sets its re-entrancy guard (`switchesInFlight`) synchronously,
     /// before `store.switchVersions`'s first suspension point, so the two MainActor tasks below can
     /// race for real without needing an artificial delay: the first runs its synchronous prefix to
     /// completion (setting the guard) before yielding, so the second observes the guard already set.
@@ -253,7 +253,7 @@ final class CompressViewModelTests: XCTestCase {
     }
 
     /// A plain instant swap (the parked file still exists — no engine re-run) must render the row
-    /// as finished throughout, never as a running job (R4/R7): `isSwitchRerunning` is only a
+    /// as finished throughout, never as a running job (R4/R7): `switchesInFlight` is only a
     /// re-entrancy guard, and `publishJobs()` must not treat guard membership alone as "busy" —
     /// only a genuine `rerunForSwitch` re-run (which populates `rerunProgress`) may do that.
     /// There is no seam to gate `performSwap`'s GCD hop (`RunnerUpStoreTests` doesn't gate it
@@ -392,13 +392,13 @@ final class CompressViewModelTests: XCTestCase {
         // Wait until the re-run has genuinely entered the engine (callCount bumped), then the row
         // must be in its running state and flagged as re-running.
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
-        XCTAssertTrue(model.isSwitchRerunning.contains(job.id))
+        XCTAssertTrue(model.switchesInFlight.contains(job.id))
         if case .running = try XCTUnwrap(model.jobs.first).state {} else {
             XCTFail("the re-running row must show a running state")
         }
 
         await gate.open()
-        try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(job.id) }
 
         let settled = try XCTUnwrap(env.doneHeavyJob(model))
         let versions = try XCTUnwrap(model.versions(for: settled))
@@ -450,7 +450,7 @@ final class CompressViewModelTests: XCTestCase {
         await model.useVersion(.runnerUp, for: job)
         XCTAssertEqual(env.stub.callCount, callsBefore + 1,
                        "useVersion must not start a second engine run while a run is in flight")
-        XCTAssertFalse(model.isSwitchRerunning.contains(job.id))
+        XCTAssertFalse(model.switchesInFlight.contains(job.id))
 
         await gate.open()
         try await waitUntil(timeout: 5) { !model.isRunning }
@@ -468,7 +468,7 @@ final class CompressViewModelTests: XCTestCase {
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
         // Vanish the runner-up so the switch falls through to `rerunForSwitch` and hits the engine,
-        // and freeze that re-run mid-flight so `isSwitchRerunning` stays populated.
+        // and freeze that re-run mid-flight so `switchesInFlight` stays populated.
         try FileManager.default.removeItem(at: runnerUpURL)
         let gate = Gate()
         env.stub.gate = gate
@@ -476,7 +476,7 @@ final class CompressViewModelTests: XCTestCase {
 
         async let switching: Void = model.useVersion(.runnerUp, for: job)
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
-        XCTAssertTrue(model.isSwitchRerunning.contains(job.id))
+        XCTAssertTrue(model.switchesInFlight.contains(job.id))
         XCTAssertFalse(model.isRunning, "the switch's re-run, not a compress run, is in flight")
 
         // An armed/queued row present alongside the in-flight switch.
@@ -491,7 +491,7 @@ final class CompressViewModelTests: XCTestCase {
 
         await gate.open()
         _ = await switching
-        try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(job.id) }
 
         // Now that the switch has landed, compress() must work again.
         XCTAssertTrue(model.canCompress)
@@ -513,7 +513,7 @@ final class CompressViewModelTests: XCTestCase {
         let job = try XCTUnwrap(env.doneHeavyJob(model))
         let runnerUpURL = try XCTUnwrap(job.alternateURL)
         // Vanish the runner-up so the switch falls through to `rerunForSwitch` and hits the
-        // engine, and freeze that re-run mid-flight so `isSwitchRerunning` stays populated.
+        // engine, and freeze that re-run mid-flight so `switchesInFlight` stays populated.
         try FileManager.default.removeItem(at: runnerUpURL)
         let gate = Gate()
         env.stub.gate = gate
@@ -521,7 +521,7 @@ final class CompressViewModelTests: XCTestCase {
 
         async let switching: Void = model.useVersion(.runnerUp, for: job)
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
-        XCTAssertTrue(model.isSwitchRerunning.contains(job.id))
+        XCTAssertTrue(model.switchesInFlight.contains(job.id))
 
         model.clearFinished()
         XCTAssertEqual(model.jobs.count, 1, "the row survives while its switch is in flight")
@@ -532,7 +532,7 @@ final class CompressViewModelTests: XCTestCase {
 
         await gate.open()
         _ = await switching
-        try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(job.id) }
 
         // Now that the switch has landed, clearFinished() must work again.
         model.clearFinished()
@@ -567,7 +567,7 @@ final class CompressViewModelTests: XCTestCase {
         try FileManager.default.removeItem(at: runnerUpURL)
         await gate.open()
 
-        try await waitUntil(timeout: 5) { !model.isSwitchRerunning.contains(job.id) }
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(job.id) }
 
         let settled = try XCTUnwrap(env.doneHeavyJob(model))
         let versions = try XCTUnwrap(model.versions(for: settled))
@@ -620,7 +620,7 @@ final class CompressViewModelTests: XCTestCase {
 
         await model.useVersion(.runnerUp, for: job)
         try await waitUntil(timeout: 5) {
-            env.stub.callCount > callsBefore && !model.isSwitchRerunning.contains(job.id)
+            env.stub.callCount > callsBefore && !model.switchesInFlight.contains(job.id)
         }
 
         XCTAssertEqual(env.stub.presets.last, .smallestSize,

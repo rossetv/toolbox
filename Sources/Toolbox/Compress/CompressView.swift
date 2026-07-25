@@ -272,10 +272,10 @@ struct CompressView: View {
             // Gated on the run, like "+ Add" beside it: clearing mid-batch drops the progress
             // bar's denominator under the running batch and silently omits the files already
             // compressed from the final summary.
-            // Also gated on `isSwitchRerunning`: a mid-switch row still shows/queues as `.done`
+            // Also gated on `switchesInFlight`: a mid-switch row still shows/queues as `.done`
             // (ec61602), so `clearFinished()` refuses outright while one is in flight — mirror
             // that here so the button doesn't invite a click that does nothing.
-            if hasFinishedJobs, !model.isRunning, model.isSwitchRerunning.isEmpty {
+            if hasFinishedJobs, !model.isRunning, model.switchesInFlight.isEmpty {
                 LinkButton(title: "Clear finished") { model.clearFinished() }
             }
         }
@@ -440,8 +440,9 @@ struct CompressView: View {
         // A failed recompress records no preset (R1), so the row RE-ARMS the instant the attempt
         // fails; the old `state == .none` guard therefore suppressed R12's message on exactly the
         // rows that had just failed, and an explicit button press would have failed silently. The
-        // message stays authoritative until the user changes preset or the next run starts — both
-        // of which clear `recompressErrors` at source, so no guard is needed here.
+        // message stays authoritative until the user changes preset, the next run starts, or a
+        // switch on the same row actually lands — all three clear `recompressErrors` at source,
+        // so no guard is needed here.
         if let message = model.recompressErrors[job.id] { return .error(message) }
         switch state {
         case .armed(let target):

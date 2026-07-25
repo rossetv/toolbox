@@ -41,9 +41,10 @@ final class CompressViewModel: ObservableObject {
     @Published private(set) var pageCounts: [ToolJob.ID: Int] = [:]
     @Published private(set) var isRunning = false
     @Published private(set) var loadError: String?
-    /// Rows currently in the R10 re-run path — the runner-up vanished, so the switch is honestly
-    /// re-computing the job before applying the requested version (the view shows progress).
-    @Published private(set) var isSwitchRerunning: Set<ToolJob.ID> = []
+    /// Rows with a switch in flight: the R10 re-run AND every plain instant swap. Membership is
+    /// the re-entrancy/mutual-exclusion guard (`useVersion`, `compress`, `clearFinished`); only
+    /// `rerunProgress` drives the busy overlay.
+    @Published private(set) var switchesInFlight: Set<ToolJob.ID> = []
 
     let queue = ToolQueue()
     private let engine: (any Compressing)?
@@ -295,7 +296,7 @@ final class CompressViewModel: ObservableObject {
     }
 
     var canCompress: Bool {
-        engine != nil && !isRunning && isSwitchRerunning.isEmpty && (hasQueuedWork || armedCount > 0)
+        engine != nil && !isRunning && switchesInFlight.isEmpty && (hasQueuedWork || armedCount > 0)
     }
 
     func add(_ urls: [URL]) {
@@ -335,7 +336,7 @@ final class CompressViewModel: ObservableObject {
         // parked file `useVersion`/`rerunForSwitch` is mid-copy into. One coarse guard beats
         // threading an excluded-ids filter through `ToolQueue.removeCompleted()`, which OCR also
         // calls and has no notion of switches (R19).
-        guard !isRunning, isSwitchRerunning.isEmpty else { return }
+        guard !isRunning, switchesInFlight.isEmpty else { return }
         for job in jobs where isFinished(job) { discardRunnerUp(for: job) }
         queue.removeCompleted()
     }
@@ -384,7 +385,7 @@ final class CompressViewModel: ObservableObject {
         // Also refused while a switch is in flight: `switchVersions`'s promote is still rewriting
         // the shipped path an outstanding switch owns, and a fresh run here would hand out cache
         // reservations for paths that are transiently absent mid-swap (R9).
-        guard let engine, !isRunning, isSwitchRerunning.isEmpty else { return }
+        guard let engine, !isRunning, switchesInFlight.isEmpty else { return }
         let chosen = preset
         let folder = outputFolder
         // Allocate every output name up front, serially, on this thread — BEFORE the concurrent
@@ -795,7 +796,7 @@ final class CompressViewModel: ObservableObject {
             if let rerunReport = rerunReports[job.id] { display.mrcReport = rerunReport }
             if let failure = switchFailures[job.id] {
                 // Deliberately ahead of the re-run overlay: a failure recorded by the re-run's own
-                // tail lands while the id is still in `isSwitchRerunning`, and the row must show
+                // tail lands while the id is still in `switchesInFlight`, and the row must show
                 // the failure rather than a progress bar for work that has stopped. The row drops
                 // its capsule and byte badge with the outcome, which is the point — they described
                 // a file that is no longer there.
@@ -806,7 +807,7 @@ final class CompressViewModel: ObservableObject {
                 // R10 re-run overlay: the queue still reports the job `.done`, but the switch is
                 // re-computing it, so the row shows progress until the re-run lands. Only the
                 // genuine engine re-run populates `rerunProgress` (set by `rerunForSwitch`); a
-                // plain instant swap only sets `isSwitchRerunning` as a re-entrancy guard and must
+                // plain instant swap only sets `switchesInFlight` as a re-entrancy guard and must
                 // keep rendering the row's normal `.done`/`.doneHeavy` state throughout (R4/R7).
                 display.state = .running(fraction)
             } else if analysingIDs.contains(job.id), isStillQueued(job) {
@@ -977,24 +978,22 @@ final class CompressViewModel: ObservableObject {
         guard !isRunning else { return }
         // Re-entrancy guard: a second tap (either slot, or the popover's "Use this") before the
         // first switch lands would otherwise interleave two swaps on the same paths off-main-actor.
-        // Reuses `isSwitchRerunning` for membership only — a plain instant swap never touches
-        // `rerunProgress`, so `publishJobs()` keeps rendering the row's normal `.done`/`.doneHeavy`
-        // state; only `rerunForSwitch`'s genuine engine re-run overlays the busy `.running` state
-        // (R4/R7). Must be checked and set in this synchronous prefix, before the first `await`.
-        guard !isSwitchRerunning.contains(job.id) else { return }
+        // `switchesInFlight` is `@Published`, so inserting/removing it already republishes the
+        // view on its own — no `publishJobs()` call is needed purely to reflect membership.
+        // Must be checked and set in this synchronous prefix, before the first `await`.
+        guard !switchesInFlight.contains(job.id) else { return }
         guard let row = versions(for: job),
               let shipped = row.shipped,
               let parked = slot == .runnerUp ? row.runnerUp : row.previous else { return }
 
-        isSwitchRerunning.insert(job.id)
-        publishJobs()
+        switchesInFlight.insert(job.id)
         // Cleared before every return except the hand-off to `rerunForSwitch`, which owns clearing
-        // it itself once its (possibly still in-flight) work actually finishes.
+        // it itself once its (possibly still in-flight) work actually finishes. Every other return
+        // path below already calls `publishJobs()` for its own reason, so the defer does not need to.
         var handedOffToRerun = false
         defer {
             if !handedOffToRerun {
-                isSwitchRerunning.remove(job.id)
-                publishJobs()
+                switchesInFlight.remove(job.id)
             }
         }
 
@@ -1053,8 +1052,7 @@ final class CompressViewModel: ObservableObject {
             publishJobs()
             return
         }
-        handedOffToRerun = true
-        rerunForSwitch(job, wantHeavy: parked.variant == .mrc)
+        handedOffToRerun = rerunForSwitch(job, wantHeavy: parked.variant == .mrc)
     }
 
     /// Record a switch that could not be honoured, so the row reports it instead of continuing to
@@ -1067,8 +1065,10 @@ final class CompressViewModel: ObservableObject {
     /// R10 tail: reached only when the runner-up is genuinely gone — either absent before the swap
     /// was attempted, or confirmed absent by `useVersion`'s re-check after `switchVersions` threw.
     /// Re-run this one job directly through the engine (not the batch queue) to regenerate both
-    /// versions, then apply the switch the user asked for.
-    private func rerunForSwitch(_ job: ToolJob, wantHeavy: Bool) {
+    /// versions, then apply the switch the user asked for. Returns whether it took over the row —
+    /// `useVersion` already holds `switchesInFlight` membership for the row (its re-entrancy
+    /// guard), so `false` tells the caller it must be the one to clear it.
+    private func rerunForSwitch(_ job: ToolJob, wantHeavy: Bool) -> Bool {
         // The STORE, never `job.resultURL`/`job.alternateURL`: the queue's record is the first
         // run's and a recompress supersedes it without touching the queue. This tail is only ever
         // reached for a vanished RUNNER-UP (`useVersion` guards `slot == .runnerUp` before
@@ -1078,15 +1078,9 @@ final class CompressViewModel: ObservableObject {
               let row = versionStore.versions(for: job.id),
               let shipped = row.shipped?.url,
               let runnerUp = row.runnerUp?.url else {
-            // `useVersion` already inserted this id into `isSwitchRerunning` before handing off
-            // here (its re-entrancy guard) — if we bail before taking over, we must be the ones
-            // to clear it, or the row stays busy forever.
-            isSwitchRerunning.remove(job.id)
-            publishJobs()
-            return
+            return false
         }
         let chosen = row.rowPreset
-        isSwitchRerunning.insert(job.id)
         rerunProgress[job.id] = 0
         publishJobs()
 
@@ -1094,7 +1088,7 @@ final class CompressViewModel: ObservableObject {
             let id = job.id
             let report: @Sendable (Double) -> Void = { [weak self] fraction in
                 Task { @MainActor in
-                    guard let self, self.isSwitchRerunning.contains(id) else { return }
+                    guard let self, self.switchesInFlight.contains(id) else { return }
                     self.rerunProgress[id] = fraction
                     self.publishJobs()
                 }
@@ -1117,6 +1111,10 @@ final class CompressViewModel: ObservableObject {
             // pair matches.
             try? FileManager.default.removeItem(at: runnerUp)
             var capturedReport: MRCDocumentReport?
+            // Whether the switch the user asked for actually landed. Set true only on the paths
+            // that reach it, so a failed leg keeps whatever failure note it just recorded rather
+            // than have it wiped by an unconditional clear (32380c4's rule, applied here too).
+            var switched = false
             do {
                 let outcome = try await engine.compress(job.url, preset: chosen, to: freshShipped,
                                                          alternateOutput: runnerUp,
@@ -1140,10 +1138,13 @@ final class CompressViewModel: ObservableObject {
                             versionStore.swapShipped(with: .runnerUp, for: id)
                         }
                         rerunReports[id] = capturedReport
-                        if !wantHeavy {
+                        if wantHeavy {
+                            switched = true
+                        } else {
                             do {
                                 try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
                                 versionStore.swapShipped(with: .runnerUp, for: id)
+                                switched = true
                             } catch let stranded as RunnerUpStore.SwitchError {
                                 // The regenerated winner is parked under a hidden name that
                                 // nothing else looks for — the row must name it, not report a
@@ -1153,7 +1154,10 @@ final class CompressViewModel: ObservableObject {
                                 // The switch did not happen and `shipped` is unchanged (store
                                 // contract: any other throw restores it) — heavy is still shipped,
                                 // so leave the store's record canonical rather than describe a
-                                // switch that never took effect.
+                                // switch that never took effect, and say so — an explicit button
+                                // press never fails silently (R12).
+                                recompressErrors[id] = "Switch failed — kept your "
+                                                     + "\(chosen.title) version. Try again."
                             }
                         }
                     } catch {
@@ -1167,10 +1171,14 @@ final class CompressViewModel: ObservableObject {
             } catch {
                 // Re-run failed; leave the row's prior state untouched (its shipped file survives).
             }
-            isSwitchRerunning.remove(id)
+            // A retry that succeeds must not leave the previous attempt's failure note beside the
+            // row (32380c4); a leg that failed above has just set its own message and must keep it.
+            if switched { recompressErrors[id] = nil }
+            switchesInFlight.remove(id)
             rerunProgress[id] = nil
             publishJobs()
         }
+        return true
     }
 }
 
