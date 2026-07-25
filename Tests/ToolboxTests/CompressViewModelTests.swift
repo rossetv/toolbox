@@ -1199,6 +1199,245 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 10) { !model.isRunning }
     }
 
+    // MARK: armed-state aggregates and cache lifecycle (R4/R17/R18)
+
+    /// R4 hides the success banner and the "Reveal in Finder" / "Compress More" affordances while
+    /// anything is armed — all three hang off `allFinished`, which must therefore stop being true.
+    func testAllFinishedIsFalseWhileARowIsArmed() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        XCTAssertTrue(model.allFinished)
+
+        model.preset = .smallestSize
+        XCTAssertFalse(model.allFinished, "an armed row means the batch is not finished")
+
+        model.preset = .balanced
+        XCTAssertTrue(model.allFinished, "disarming restores the finished state exactly")
+    }
+
+    /// R18/D6: "Clear finished" discards the cleared rows' parked files — the previous version
+    /// included, not just the runner-up.
+    func testClearFinishedDiscardsTheParkedPreviousVersion() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        let previous = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?.previous?.url)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: previous.path))
+
+        model.clearFinished()
+        try await waitUntil(timeout: 5) { model.jobs.isEmpty }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: previous.path),
+                       "the parked previous version must go with the row")
+    }
+
+    /// R15: the capsule renders on ANY row with two or more versions — including a plain
+    /// (non-heavy) result that gained a previous version from a recompress.
+    func testAPlainResultWithAPreviousVersionOffersTheCapsule() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        // A Maximum-quality re-run that comes back plain gs — no runner-up at all.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 2_000),
+                                          shippedBytes: 2_000, runnerUpBytes: nil) }
+        model.preset = .maximumQuality
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertNil(row.runnerUp, "the re-run shipped plain gs, so there is no runner-up")
+        XCTAssertEqual(row.count, 2, "current + previous still draws the capsule")
+        XCTAssertEqual(row.capsuleTitle, "Versions")
+    }
+
+    // MARK: the armed banner's arithmetic (R4)
+
+    /// `armedSummary.extraSaving` is the banner's only number and Task 8's prediction feeds it, so
+    /// all three of its branches are pinned here — the untestable consumer (`armedDetail`, private
+    /// to a `View`) is the argument FOR asserting at the model, not against asserting at all.
+    /// Branch 1: a confident armed row moving to a smaller preset contributes a positive extra.
+    func testArmedSummarySumsThePredictedExtraSaving() async throws {
+        // Task 8's proven confident pair: `.scanColour` shipped MRC at Balanced and armed at
+        // Smallest Size keeps `targetWantsMRC == shippedWasMRC == true`, so the calibration branch
+        // runs and a confident number exists.
+        let env = try HeavyEnv(contentType: .scanColour)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .smallestSize
+        let job = try XCTUnwrap(model.jobs.first)
+        let analysis = try XCTUnwrap(model.analysis(for: job))
+        // The premise, measured rather than assumed: the sign of `extraSaving` is the sign of
+        // `balanced - smallest` in the estimator's own figures, because the prediction is the
+        // shipped size scaled by that ratio.
+        XCTAssertLessThan(try XCTUnwrap(analysis.estimates[.smallestSize]?.predictedBytes),
+                          try XCTUnwrap(analysis.estimates[.balanced]?.predictedBytes),
+                          "the estimator must rate Smallest Size below Balanced for this row")
+
+        // Read the prediction back rather than recomputing it: `Int(_:)` truncates, and a
+        // differently bracketed expression of the same real number lands a byte away.
+        let predicted = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.armedCount, 1)
+        XCTAssertEqual(summary.queuedCount, 0)
+        XCTAssertEqual(summary.extraSaving, HeavyEnv.heavyBytes - predicted)
+        XCTAssertGreaterThan(try XCTUnwrap(summary.extraSaving), 0,
+                             "the banner reads \u{2248} saves another N")
+    }
+
+    /// Branch 2: moving UP in quality predicts a bigger file, so the extra is zero or negative —
+    /// the banner must be able to say "files may grow for the extra quality" rather than show a
+    /// negative saving. The row is shipped at Smallest Size and armed at Balanced, the same
+    /// repeating-path pair in reverse, over a large original so the "must beat the original" guard
+    /// cannot suppress the prediction and send this test down the nil branch instead.
+    func testArmedSummaryGoesNonPositiveWhenTheArmedPresetIsLessAggressive() async throws {
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour)
+        let model = env.model
+        model.preset = .smallestSize
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        let predicted = try XCTUnwrap(model.recompressPrediction(for: job, at: .balanced),
+                                      "the prediction must exist, or this asserts the nil branch")
+        XCTAssertGreaterThan(predicted, HeavyEnv.heavyBytes,
+                             "Balanced is rated above Smallest Size, so the scaled figure grows")
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.extraSaving, HeavyEnv.heavyBytes - predicted)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(summary.extraSaving), 0)
+    }
+
+    /// Branch 3: no armed row has a confident prediction ⇒ `extraSaving` is nil, so the banner
+    /// shows no detail line rather than a fabricated zero. `armedCount` is asserted alongside it,
+    /// or "nil because there is no summary at all" would pass for the wrong reason.
+    func testArmedSummaryWithholdsTheExtraWhenNoRowPredictsConfidently() async throws {
+        // Task 8's proven no-confident-prediction pair: `.bornDigital` is never MRC-eligible while
+        // `HeavyEnv` always ships MRC, so the raw multi-megabyte estimate is used and the "must
+        // beat the original" guard fires against the 1 kB original.
+        let env = try HeavyEnv(before: 1_000, contentType: .bornDigital)
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .maximumQuality
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertNil(model.recompressPrediction(for: job, at: .maximumQuality))
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.armedCount, 1, "the row IS armed — the number is what is missing")
+        XCTAssertNil(summary.extraSaving)
+    }
+
+    // MARK: the previous version, end to end (R7/R15)
+
+    /// R7's third card: "Use this" on the PREVIOUS version swaps the delivered file back, records
+    /// and all. The whole point of parking it is that this costs no engine call, so the engine must
+    /// not be entered — and the file on disk must actually change, not just the record describing it.
+    func testUsingThePreviousVersionSwapsTheDeliveredFileBack() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        var job = try XCTUnwrap(model.jobs.first)
+        var row = try XCTUnwrap(model.versions(for: job))
+        let deliveredURL = try XCTUnwrap(row.shipped?.url)
+        XCTAssertEqual(row.shipped?.bytes, 700)
+        XCTAssertEqual(row.shipped?.preset, .smallestSize)
+        XCTAssertEqual(row.previous?.bytes, HeavyEnv.heavyBytes)
+        XCTAssertEqual(row.previous?.preset, .balanced)
+        XCTAssertEqual(try fileSize(deliveredURL), 700)
+        let callsBefore = env.stub.callCount
+
+        model.useVersion(.previous, for: job)
+
+        job = try XCTUnwrap(model.jobs.first)
+        row = try XCTUnwrap(model.versions(for: job))
+        XCTAssertEqual(env.stub.callCount, callsBefore, "an instant switch enters no engine")
+        XCTAssertEqual(row.shipped?.bytes, HeavyEnv.heavyBytes, "the previous version is shipped")
+        XCTAssertEqual(row.shipped?.preset, .balanced)
+        XCTAssertEqual(row.previous?.bytes, 700, "…and the Smallest result takes the previous slot")
+        XCTAssertEqual(row.previous?.preset, .smallestSize)
+        XCTAssertEqual(row.shipped?.url, deliveredURL, "the delivered path is stable across a switch")
+        // The record is not the proof: the user's own file at that path must now hold the other
+        // version's content.
+        XCTAssertEqual(try fileSize(deliveredURL), HeavyEnv.heavyBytes)
+    }
+
+    /// A vanished PREVIOUS version can never be regenerated (a re-run reproduces the row's own
+    /// preset, not the previous one), so it must say so beside the row and drop the slot — while
+    /// leaving the perfectly good delivered result exactly where it is.
+    func testUsingAVanishedPreviousVersionReportsItAndDropsTheSlot() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let job = try XCTUnwrap(model.jobs.first)
+        let previous = try XCTUnwrap(model.versions(for: job)?.previous?.url)
+        try FileManager.default.removeItem(at: previous)
+        let callsBefore = env.stub.callCount
+
+        model.useVersion(.previous, for: job)
+
+        XCTAssertEqual(env.stub.callCount, callsBefore, "a vanished previous is never re-run")
+        XCTAssertNil(model.versions(for: job)?.previous, "the slot is dropped, not left dangling")
+        XCTAssertEqual(model.recompressErrors[job.id],
+                       "That version is no longer available — recompress at "
+                       + "\(CompressPreset.balanced.title) to get it back.")
+        XCTAssertEqual(model.versions(for: job)?.shipped?.bytes, 700,
+                       "a message beside the row, never a failure that hides a good result")
+    }
+
     // MARK: helpers
 
     private func fileSize(_ url: URL) throws -> Int {

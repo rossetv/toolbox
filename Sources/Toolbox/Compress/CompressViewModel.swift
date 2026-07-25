@@ -337,7 +337,17 @@ final class CompressViewModel: ObservableObject {
         }
     }
 
-    var allFinished: Bool { !jobs.isEmpty && !isRunning && jobs.allSatisfy { if case .done = $0.state { return true }; if case .failed = $0.state { return true }; return false } }
+    /// True only when every row has finished AND nothing is armed: an armed row is pending work,
+    /// so the success banner, "Reveal in Finder" and "Compress More" must all stand down (R4).
+    var allFinished: Bool {
+        guard !jobs.isEmpty, !isRunning, armedCount == 0 else { return false }
+        return jobs.allSatisfy { job in
+            switch job.state {
+            case .done, .failed: return true
+            case .queued, .analysing, .running: return false
+            }
+        }
+    }
 
     /// Page count for a job, once resolved.
     func pageCount(for job: ToolJob) -> Int? { pageCounts[job.id] }
