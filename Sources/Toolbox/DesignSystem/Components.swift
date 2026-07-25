@@ -574,7 +574,11 @@ struct FileRow: View {
         case .link(let title):
             LinkButton(title: title) { onLeadTap?() }
         case .error(let message):
-            errorLabel(message)
+            // Bounded, not just line-limited: this lead sits inside a `.fixedSize()` cluster
+            // (.done/.doneHeavy/.unchanged), which proposes the text its full untruncated width
+            // — lineLimit(1) caps line COUNT, not width — so an 83-char recompress message would
+            // otherwise claim the whole row instead of yielding it to the name column.
+            errorLabel(message).frame(maxWidth: 220, alignment: .leading)
         case nil:
             EmptyView()
         }
