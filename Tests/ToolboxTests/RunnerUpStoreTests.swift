@@ -101,7 +101,7 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: runnerUp), Data("runner-up-content".utf8),
                        "the runner-up must survive a switch that did not happen")
         let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix(".toolbox-swap-") }
+            .filter { $0.hasPrefix(".toolbox-") }
         XCTAssertTrue(leftoverSwapFiles.isEmpty)
     }
 
@@ -126,7 +126,7 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: shipped), Data("shipped-content".utf8),
                        "a failed promote must put the user's shipped file back untouched")
         let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix(".toolbox-swap-") }
+            .filter { $0.hasPrefix(".toolbox-") }
         XCTAssertTrue(leftoverSwapFiles.isEmpty, "the park file must not be left behind")
     }
 
@@ -162,7 +162,7 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: shipped), Data("runner-up-content".utf8))
 
         let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix(".toolbox-swap-") }
+            .filter { $0.hasPrefix(".toolbox-") }
         XCTAssertTrue(leftoverSwapFiles.isEmpty, "the parked file must be discarded, not stranded")
     }
 

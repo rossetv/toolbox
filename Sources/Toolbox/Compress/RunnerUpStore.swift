@@ -72,20 +72,18 @@ final class RunnerUpStore {
     /// shipped file beside itself under a dot-temp name (never straight into the cache root — see
     /// `promote`'s doc for why), move `incoming` into the shipped slot, and on success relocate the
     /// park into `destination`; on failure to promote, restore the park back to `shipped`.
-    /// `tempPrefix` keeps each caller's dot-temp idiom distinguishable in a crash-leftover sweep.
     ///
     /// `nonisolated` and `async`: the blocking body runs on a GCD queue bridged with a checked
     /// continuation (CODE_GUIDELINES §6.1's named shape — see `GhostscriptRunner.run`), never
     /// inline on the caller's executor. Both `switchVersions` (the main actor, one click, one row,
     /// on an app that is idle by `useVersion`'s `guard !isRunning`) and `promote` (the recompress
     /// commit, once per row inside phase 2's sliding window) await it off whichever actor called.
-    private nonisolated func performSwap(incoming: URL, shipped: URL, destination: URL,
-                                         tempPrefix: String) async throws {
+    private nonisolated func performSwap(incoming: URL, shipped: URL, destination: URL) async throws {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     try self.performSwapBlocking(incoming: incoming, shipped: shipped,
-                                                 destination: destination, tempPrefix: tempPrefix)
+                                                 destination: destination)
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -97,11 +95,11 @@ final class RunnerUpStore {
     /// The straight-line blocking `FileManager` I/O — never called directly; always through
     /// `performSwap`'s GCD bridge above, which keeps it off both the main actor and the
     /// cooperative pool.
-    private nonisolated func performSwapBlocking(incoming: URL, shipped: URL, destination: URL,
-                                                  tempPrefix: String) throws {
+    private nonisolated func performSwapBlocking(incoming: URL, shipped: URL,
+                                                  destination: URL) throws {
         let fm = FileManager.default
         let temp = shipped.deletingLastPathComponent()
-            .appendingPathComponent(".toolbox-\(tempPrefix)-\(UUID().uuidString).pdf")
+            .appendingPathComponent(".toolbox-\(UUID().uuidString).pdf")
         try fm.moveItem(at: shipped, to: temp)            // park the shipped version
         do {
             try fm.moveItem(at: incoming, to: shipped)    // promote the incoming version
@@ -143,7 +141,7 @@ final class RunnerUpStore {
     /// A successful switch never throws; if the demoted version cannot take the cache slot it is
     /// discarded, leaving the runner-up absent — callers already handle a missing runner-up.
     func switchVersions(shipped: URL, runnerUp: URL) async throws {
-        try await performSwap(incoming: runnerUp, shipped: shipped, destination: runnerUp, tempPrefix: "swap")
+        try await performSwap(incoming: runnerUp, shipped: shipped, destination: runnerUp)
     }
 
     /// The R12 recompress commit: park the currently-shipped file, promote `fresh` into its place,
@@ -183,8 +181,7 @@ final class RunnerUpStore {
     /// does — so a cancel landing mid-swap cannot tear the three steps apart with the user's file
     /// in the dot-temp.
     func promote(fresh: URL, to shipped: URL, parking parked: URL) async throws {
-        try await performSwap(incoming: fresh, shipped: shipped, destination: parked,
-                              tempPrefix: "promote")
+        try await performSwap(incoming: fresh, shipped: shipped, destination: parked)
     }
 
     func discard(_ url: URL) {
