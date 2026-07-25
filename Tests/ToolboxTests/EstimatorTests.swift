@@ -30,6 +30,38 @@ private struct FailingAnalyser: PDFAnalysing {
     func classify(_ url: URL) throws -> PDFContentType { throw Boom() }
 }
 
+/// Counts how many analyses are inside `classify` at once, and remembers the peak.
+private final class ConcurrencyCounter {
+    private let lock = NSLock()
+    private var inFlight = 0
+    private(set) var peak = 0
+
+    func enter() {
+        lock.lock()
+        inFlight += 1
+        peak = max(peak, inFlight)
+        lock.unlock()
+    }
+
+    func leave() {
+        lock.lock()
+        inFlight -= 1
+        lock.unlock()
+    }
+}
+
+/// An analyser that occupies its slot long enough for concurrent callers to overlap.
+private struct CountingAnalyser: PDFAnalysing {
+    let counter: ConcurrencyCounter
+    func pageCount(_ url: URL) throws -> Int { 1 }
+    func classify(_ url: URL) throws -> PDFContentType {
+        counter.enter()
+        defer { counter.leave() }
+        Thread.sleep(forTimeInterval: 0.02)
+        return .scanColour
+    }
+}
+
 final class EstimatorTests: XCTestCase {
 
     func testEstimateReturnsWithinTheTimeBox() async throws {
@@ -75,6 +107,27 @@ final class EstimatorTests: XCTestCase {
 
         XCTAssertTrue(estimate.isFallback)
         XCTAssertGreaterThan(estimate.predictedBytes, 0)
+    }
+
+    /// One estimate is scheduled per dropped file, and an image-dominated document's analysis holds
+    /// a full-page raster while it runs — so the number of concurrent analyses is scaled by the
+    /// user's drop and must respect a named bound (§4.4), not GCD's incidental thread ceiling.
+    func testConcurrentAnalysesNeverExceedTheNamedBound() async throws {
+        let counter = ConcurrencyCounter()
+        // A budget far above the injected 20 ms so nothing here times out into the fallback: this
+        // test is about how many analyses run at once, not about the time box.
+        let estimator = CompressEstimator(analyser: CountingAnalyser(counter: counter), timeBudget: 30)
+        let input = try Fixtures.bornDigitalPDF(pages: 1)
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<(CompressEstimator.maxConcurrentEstimates * 4) {
+                group.addTask { _ = await estimator.estimateAll(input) }
+            }
+        }
+
+        XCTAssertGreaterThan(counter.peak, 0, "precondition: the analyses genuinely ran")
+        XCTAssertLessThanOrEqual(counter.peak, CompressEstimator.maxConcurrentEstimates,
+                                 "\(counter.peak) analyses were in flight at once")
     }
 
     func testUnreadableInputFallsBackRatherThanCrashing() async throws {

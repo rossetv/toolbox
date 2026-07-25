@@ -407,6 +407,79 @@ final class CompressViewModelTests: XCTestCase {
                       "the failed post-regeneration switch must leave the row canonical (heavy shipped)")
     }
 
+    /// A second batch at a different preset must not rewrite what an ALREADY-FINISHED row was
+    /// compressed under: `ToolQueue` only ever re-runs `.queued` jobs, so a finished row keeps its
+    /// own preset, and the R10 re-run must reproduce that output rather than silently replacing the
+    /// user's delivered file with a differently-compressed one.
+    func testLaterBatchDoesNotRewriteAFinishedRowsPreset() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .smallestSize
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        // A second file joins the list alongside the finished row, at a different preset.
+        model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        model.preset = .balanced
+        model.compress()
+        try await waitUntil(timeout: 10) { !model.isRunning }
+
+        // The first row's runner-up vanishes, so switching it honestly re-runs the job — which
+        // must go through the engine at the preset that row was compressed at.
+        let job = try XCTUnwrap(model.jobs.first { $0.url == env.input })
+        try FileManager.default.removeItem(at: try XCTUnwrap(job.alternateURL))
+        let callsBefore = env.stub.callCount
+
+        model.switchVersion(for: job)
+        try await waitUntil(timeout: 5) {
+            env.stub.callCount > callsBefore && !model.isSwitchRerunning.contains(job.id)
+        }
+
+        XCTAssertEqual(env.stub.presets.last, .smallestSize,
+                       "the re-run must reproduce the row's own output, not the current preset")
+    }
+
+    /// The delivered file can disappear behind the app's back (deleted or moved in Finder — there
+    /// is no file watcher). The switch must then fail loudly: re-running would regenerate the pair
+    /// around a stale runner-up, and two further switches would hand the user the HEAVY file under
+    /// the "Normal compression" label with gs's byte count in the row and the batch totals.
+    func testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        var job = try XCTUnwrap(env.doneHeavyJob(model))
+        let shippedURL = try XCTUnwrap(job.resultURL)
+        model.switchVersion(for: job)                       // now shipping the normal version
+        job = try XCTUnwrap(env.doneHeavyJob(model))
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.normalBytes)
+
+        try FileManager.default.removeItem(at: shippedURL)  // the user deletes it in Finder
+        let callsBefore = env.stub.callCount
+
+        model.switchVersion(for: job)
+
+        XCTAssertEqual(env.stub.callCount, callsBefore,
+                       "a row whose delivered file is gone must not be re-run behind the user's back")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shippedURL.path),
+                       "the deleted file must not be silently re-created")
+        let row = try XCTUnwrap(model.jobs.first)
+        guard case .failed(let message) = row.state else {
+            return XCTFail("expected the row to report the failed switch, got \(row.state)")
+        }
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertNil(model.heavyVersions(for: row),
+                     "the row must stop advertising a version pair it cannot back")
+        XCTAssertNil(model.displayedSizes(for: row),
+                     "and must stop contributing bytes to the batch totals")
+    }
+
     /// Removing a row discards its cached runner-up (R15).
     func testRemoveRowDiscardsRunnerUp() async throws {
         let env = try HeavyEnv()
@@ -524,6 +597,9 @@ final class CompressViewModelTests: XCTestCase {
         /// When set, handed to the caller's `mrcReport` closure — exercises the retention path.
         var reportToDeliver: MRCDocumentReport?
         private(set) var callCount = 0
+        /// Every preset the engine was called with, in order — so a test can assert which one a
+        /// re-run reproduced.
+        private(set) var presets: [CompressPreset] = []
         var gate: Gate?
 
         init(outcome: JobOutcome, shippedBytes: Int, runnerUpBytes: Int) {
@@ -536,6 +612,7 @@ final class CompressViewModelTests: XCTestCase {
                       alternateOutput: URL?, mrcReport: ((MRCDocumentReport) -> Void)?,
                       progress: @escaping (Double) -> Void) async throws -> JobOutcome {
             callCount += 1
+            presets.append(preset)
             let fm = FileManager.default
             // Mirror the production engine's never-overwrite delivery contract (it `moveItem`s the
             // winner into place, which throws on an existing destination) — a stub that overwrites

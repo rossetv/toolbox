@@ -50,11 +50,30 @@ final class RunnerUpStore {
         FileNaming.output(for: input, suffix: "runner-up", folder: root, reserving: &reserved)
     }
 
+    /// Why a switch could not be completed, in the one shape where the caller cannot simply retry.
+    enum SwitchError: Error, LocalizedError {
+        /// The runner-up could not be promoted *and* the parked shipped file could not be put
+        /// back. The user's file is intact at `parked` — a hidden name nothing else ever looks
+        /// for — so the path travels with the error rather than being swallowed.
+        case shippedStranded(parked: URL)
+
+        var errorDescription: String? {
+            switch self {
+            case .shippedStranded(let parked):
+                return "The switch failed and the compressed file could not be put back. "
+                     + "It is safe at \(parked.path)."
+            }
+        }
+    }
+
     /// Atomically exchange the shipped file's content with the runner-up's (the UI switch).
     ///
-    /// Throws only when the switch did not happen (shipped file unchanged). A successful switch
-    /// never throws; if the demoted version cannot take the cache slot it is discarded, leaving
-    /// the runner-up absent — callers already handle a missing runner-up.
+    /// Throws only when the switch did not happen, in one of two shapes the caller must tell
+    /// apart: any ordinary throw leaves the shipped file exactly as it was, whereas
+    /// `SwitchError.shippedStranded` means the promotion failed AND the shipped file could not be
+    /// restored — it survives at the park path the error names, and nothing else will look for it.
+    /// A successful switch never throws; if the demoted version cannot take the cache slot it is
+    /// discarded, leaving the runner-up absent — callers already handle a missing runner-up.
     func switchVersions(shipped: URL, runnerUp: URL) throws {
         let fm = FileManager.default
         // Parked alongside the shipped file, not in the sweep-on-launch cache dir: a crash in
@@ -67,7 +86,16 @@ final class RunnerUpStore {
         do {
             try fm.moveItem(at: runnerUp, to: shipped)    // promote the runner-up
         } catch {
-            try? fm.moveItem(at: parked, to: shipped)     // restore; the user's file survives
+            // Restore with `replaceItemAt`, not `moveItem`: `moveItem` throws when the
+            // destination exists, so anything that recreated `shipped` in this window (a
+            // sync client, the user) would turn a recoverable failure into a vanished file.
+            // If even that fails the file is NOT where the user left it — say so, with the
+            // park path, rather than reporting a mere failed switch.
+            do {
+                _ = try fm.replaceItemAt(shipped, withItemAt: parked)
+            } catch {
+                throw SwitchError.shippedStranded(parked: parked)
+            }
             throw error
         }
         do {

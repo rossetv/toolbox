@@ -87,7 +87,14 @@ struct OCREngine {
              progress: @escaping (Double) -> Void) async throws -> JobOutcome {
         let input = input.canonical
         let output = output.canonical
-        guard input.path != output.path else { throw OCRError.sameInputOutput }
+        // Compared the way the filesystem compares, not the way `String` does (§5.2): APFS is
+        // case- and normalisation-insensitive by default, and `canonical` can only case-correct a
+        // path that already exists — the output does not yet, so `Report.pdf` and `report.pdf`
+        // would otherwise pass this guard and the delivery would overwrite the input.
+        guard input.path.precomposedStringWithCanonicalMapping.lowercased()
+                != output.path.precomposedStringWithCanonicalMapping.lowercased() else {
+            throw OCRError.sameInputOutput
+        }
 
         switch try OpenGuard.inspect(input) {
         case .ok: break

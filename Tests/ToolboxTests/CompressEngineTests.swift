@@ -93,6 +93,24 @@ final class CompressEngineTests: XCTestCase {
         }
     }
 
+    /// The "never overwrite the input" guard must compare the way the filesystem compares (§5.2):
+    /// APFS is case-insensitive by default, so `blank.pdf` and `BLANK.PDF` are one file — and
+    /// `canonical` cannot case-correct the output, which does not exist yet. A byte-exact `String`
+    /// comparison therefore waves this pair through and the delivery overwrites the input.
+    func testOutputDifferingFromTheInputOnlyByCaseIsRefused() async throws {
+        let engine = CompressEngine(runner: StubRunner(exitCode: 0, output: .none))
+        let input = try Fixtures.blankPDF(pages: 1)
+        let output = input.deletingLastPathComponent()
+            .appendingPathComponent(input.lastPathComponent.uppercased())
+
+        do {
+            let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+            XCTFail("expected sameInputOutput, got \(outcome)")
+        } catch CompressError.sameInputOutput {
+            // expected
+        }
+    }
+
     // MARK: FIX 2 — a gs exit-0 with no / invalid output is a FAILURE, never `.noGain`
 
     /// gs "succeeds" (exit 0) but writes nothing → the batch must see a failure, not a

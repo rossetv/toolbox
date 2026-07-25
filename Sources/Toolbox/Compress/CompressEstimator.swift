@@ -99,31 +99,6 @@ struct CompressEstimator {
         return SizeEstimate(predictedBytes: predicted, isFallback: false)
     }
 
-    // MARK: sample-based analysis
-
-    private static func analyse(_ input: URL, inputSize: Int, preset: CompressPreset,
-                                analyser: PDFAnalysing) throws -> SizeEstimate {
-        guard inputSize > 0 else { throw CompressEstimatorError.unreadable }
-        let pageCount = try analyser.pageCount(input)
-        let contentType = try analyser.classify(input)
-
-        let bytesPerPage = pageCount > 0 ? Double(inputSize) / Double(pageCount) : Double(inputSize)
-        // A plain vector/text page runs well under this density; density above it is
-        // attributed to embedded image payload, approaching 1.0 as it grows.
-        let textBaselineBytesPerPage = 20_000.0
-        let payloadRatio = bytesPerPage > textBaselineBytesPerPage
-            ? 1.0 - (textBaselineBytesPerPage / bytesPerPage)
-            : 0.0
-
-        let base = baseReduction[contentType]?[preset] ?? typicalReduction[preset] ?? 0.2
-        // Born-digital text barely varies with image payload (there mostly isn't any); scans
-        // and mixed content scale the baseline reduction by how image-heavy the sample is.
-        let reduction = contentType == .bornDigital ? base : base * (0.3 + 0.7 * payloadRatio)
-
-        let predicted = max(1, Int(Double(inputSize) * (1 - reduction)))
-        return SizeEstimate(predictedBytes: predicted, isFallback: false)
-    }
-
     /// Typical-range fallback (content type unknown/unreliable) — a flat reduction per preset.
     private static func fallbackEstimate(inputSize: Int, preset: CompressPreset) -> SizeEstimate {
         let reduction = typicalReduction[preset] ?? 0.3
@@ -146,14 +121,38 @@ struct CompressEstimator {
 
     // MARK: time-boxing
 
-    /// Races `work` against a `seconds` deadline on the global dispatch pool — never blocks
-    /// the Swift concurrency cooperative pool (mirrors `GhostscriptRunner`'s continuation
-    /// bridge) — and returns whichever finishes first. A `work` that overruns keeps running
-    /// to completion in the background; its (now-unused) result is simply discarded.
+    /// Most analyses that may run at once, process-wide.
+    ///
+    /// One estimate is scheduled per file the user drops, and an image-dominated document's
+    /// analysis holds a full-page raster (`PDFService.classify` renders at 1500 px) while it runs —
+    /// so without a bound the peak is set by the drop size, which is exactly the input-scaled
+    /// growth every sibling path here bounds by a named constant (`CompressEngine.maxBilevelPixels`,
+    /// `maxBilevelPages`, `maxMRCPages`). Same figure as `ToolQueue`'s batch cap, for the same
+    /// reason: it is what the machine can genuinely work on at once.
+    ///
+    /// Consequence to keep in view: the time box below now covers the wait for a slot as well as
+    /// the analysis, so a drop far larger than this bound settles on `isFallback` estimates for its
+    /// tail. That is the designed degradation — a typical-range prediction shown promptly beats an
+    /// exact one that arrives after a thrash.
+    static let maxConcurrentEstimates = SystemInfo.performanceCoreCount
+
+    /// The bounded pool every analysis runs on. Static so the bound holds across estimator
+    /// instances (each `CompressViewModel` builds its own).
+    private static let analysisQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = maxConcurrentEstimates
+        queue.qualityOfService = .utility
+        return queue
+    }()
+
+    /// Races `work` against a `seconds` deadline off the Swift concurrency cooperative pool
+    /// (mirrors `GhostscriptRunner`'s continuation bridge) and returns whichever finishes first.
+    /// A `work` that overruns keeps running to completion in the background; its (now-unused)
+    /// result is simply discarded.
     private static func timeBoxed<T>(seconds: TimeInterval, work: @escaping () -> T?) async -> T? {
         await withCheckedContinuation { continuation in
             let once = OnceContinuation(continuation)
-            DispatchQueue.global(qos: .utility).async { once.resume(work()) }
+            analysisQueue.addOperation { once.resume(work()) }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + seconds) { once.resume(nil) }
         }
     }

@@ -76,6 +76,29 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: shipped), Data("shipped-content".utf8))
     }
 
+    /// A switch whose shipped file has gone (deleted in Finder — the app has no file watcher) must
+    /// throw with the runner-up untouched. Promoting it into the vacant path would leave the cache
+    /// slot empty while the row still claims two versions, which is how the caller ends up shipping
+    /// one version under the other's label and byte count.
+    func testSwitchWithAbsentShippedThrowsAndLeavesTheRunnerUpInPlace() throws {
+        let root = try tempRoot()
+        let store = RunnerUpStore(rootOverride: root)
+
+        let shipped = root.appendingPathComponent("shipped.pdf")   // never written
+        let runnerUp = root.appendingPathComponent("runner-up.pdf")
+        try Data("runner-up-content".utf8).write(to: runnerUp)
+
+        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: shipped.path),
+                       "a failed switch must not conjure the deleted file back")
+        XCTAssertEqual(try Data(contentsOf: runnerUp), Data("runner-up-content".utf8),
+                       "the runner-up must survive a switch that did not happen")
+        let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
+            .filter { $0.hasPrefix(".toolbox-swap-") }
+        XCTAssertTrue(leftoverSwapFiles.isEmpty)
+    }
+
     /// If the final move (parked -> runner-up slot) fails, the switch has already succeeded from
     /// the user's perspective (shipped holds the new content) — the function must not throw. The
     /// reviewer's suggested lever (pre-existing non-empty directory at the runner-up path) cannot

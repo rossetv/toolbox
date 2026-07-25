@@ -52,6 +52,12 @@ final class CompressViewModel: ObservableObject {
     /// The preset each job was compressed under, so an R10 re-run reproduces the *same* output
     /// rather than silently rewriting the shipped file under a preset the user changed since.
     private var jobPresets: [ToolJob.ID: CompressPreset] = [:]
+    /// Rows whose switch could not be honoured, with the message the row shows in place of its
+    /// outcome. A `.compressedHeavy` row's capsule states which version is on disk and how big it
+    /// is; when that claim can no longer be backed — the delivered file is gone, or the swap left
+    /// it parked under a hidden name — the row must say so rather than keep labelling a file that
+    /// is not there (the F6 mislabel: heavy content under "Normal compression" and gs's bytes).
+    private var switchFailures: [ToolJob.ID: String] = [:]
     /// Runner-up files reserved for the in-flight batch, so `cancel()` can discard the ones whose
     /// jobs never completed as heavy. Cleared when the batch ends; done-heavy runner-ups persist on
     /// the job's `alternateURL` and are discarded via `remove`/`clearFinished` instead.
@@ -193,7 +199,13 @@ final class CompressViewModel: ObservableObject {
             // Runner-up name from the same serial allocator, into the cache root (C4/R15). Only a
             // `.compressedHeavy` job actually writes this file; the rest just hold the reservation.
             alternates[job.id] = store.reserveURL(for: job.url, reserving: &reserved)
-            jobPresets[job.id] = chosen
+            // Only for the rows this batch will actually run: `ToolQueue.execute` picks up
+            // `.queued` jobs only, so recording the current preset against a finished row from an
+            // earlier batch would misattribute it — and a later R10 re-run would rewrite that row's
+            // delivered file under a preset it was never compressed at. (The reservations above
+            // stay unfiltered: a finished row still owns its output and runner-up paths, and this
+            // batch must not hand either to a new same-basename job.)
+            if isStillQueued(job) { jobPresets[job.id] = chosen }
         }
         batchAlternates = alternates
         isRunning = true
@@ -291,6 +303,7 @@ final class CompressViewModel: ObservableObject {
         switched = switched.filter { liveIDs.contains($0) }
         jobPresets = jobPresets.filter { liveIDs.contains($0.key) }
         rerunReports = rerunReports.filter { liveIDs.contains($0.key) }
+        switchFailures = switchFailures.filter { liveIDs.contains($0.key) }
         for (id, task) in estimationTasks where !liveIDs.contains(id) {
             task.cancel()
             estimationTasks[id] = nil
@@ -305,7 +318,14 @@ final class CompressViewModel: ObservableObject {
             var display = job
             display.estimate = estimates[job.id]?[preset]
             if let rerunReport = rerunReports[job.id] { display.mrcReport = rerunReport }
-            if isSwitchRerunning.contains(job.id) {
+            if let failure = switchFailures[job.id] {
+                // Deliberately ahead of the re-run overlay: a failure recorded by the re-run's own
+                // tail lands while the id is still in `isSwitchRerunning`, and the row must show
+                // the failure rather than a progress bar for work that has stopped. The row drops
+                // its capsule and byte badge with the outcome, which is the point — they described
+                // a file that is no longer there.
+                display.state = .failed(failure)
+            } else if isSwitchRerunning.contains(job.id) {
                 // R10 re-run overlay: the queue still reports the job `.done`, but the switch is
                 // re-computing it, so the row shows progress until the re-run lands.
                 display.state = .running(rerunProgress[job.id] ?? 0)
@@ -386,17 +406,41 @@ final class CompressViewModel: ObservableObject {
         let shipped = versions.shippedURL
         let runnerUp = versions.runnerUpURL
 
+        // Everything below assumes the delivered file is still where this row says it is. If the
+        // user deleted or moved it outside the app (there is no file watcher), the re-run tail
+        // would quietly re-create it — and, worse, leave the regenerated pair mismatched, so a
+        // later switch would ship one version under the other's label and byte count. Say what
+        // happened instead.
+        guard FileManager.default.fileExists(atPath: shipped.path) else {
+            reportSwitchFailure(job.id, "The compressed file is no longer where it was saved, "
+                                      + "so there is no version to switch to.")
+            return
+        }
+
         if FileManager.default.fileExists(atPath: runnerUp.path) {
             do {
                 try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
                 if switched.contains(job.id) { switched.remove(job.id) } else { switched.insert(job.id) }
                 publishJobs()   // no state moved, but the row's badge/capsule read from `switched`
                 return
+            } catch let stranded as RunnerUpStore.SwitchError {
+                // The shipped file is parked under a hidden name and nothing else will look for
+                // it — re-running would write a new file over the top and bury it for good.
+                reportSwitchFailure(job.id, stranded.localizedDescription)
+                return
             } catch {
-                // The switch did not happen (the runner-up raced away) — fall through to the re-run.
+                // The switch did not happen and `shipped` is unchanged (store contract: any other
+                // throw restores it) — the runner-up raced away, so fall through to the re-run.
             }
         }
         rerunForSwitch(job, wantHeavy: wantHeavy)
+    }
+
+    /// Record a switch that could not be honoured, so the row reports it instead of continuing to
+    /// advertise a version pair it can no longer back.
+    private func reportSwitchFailure(_ id: ToolJob.ID, _ message: String) {
+        switchFailures[id] = message
+        publishJobs()
     }
 
     /// R10 tail: reached either because the runner-up is gone, or because it still exists but
@@ -426,11 +470,16 @@ final class CompressViewModel: ObservableObject {
             // this point — targeting it directly throws `NSFileWriteFileExistsError`, which the
             // outer catch below would silently swallow into a no-op switch. So the primary output
             // goes to a fresh, guaranteed-absent temp file instead, landed into `shipped`
-            // afterwards. `runnerUp` is safe to pass straight through as `alternateOutput`: this
-            // path only ever runs when it is missing.
+            // afterwards.
             let freshShipped = shipped.deletingLastPathComponent()
                 .appendingPathComponent(".toolbox-rerun-\(UUID().uuidString).pdf")
             defer { try? FileManager.default.removeItem(at: freshShipped) }
+            // The runner-up may still exist here — this tail is also reached when `switchVersions`
+            // threw with it in place. The engine writes it with a best-effort `copyItem`, which
+            // throws (and is swallowed) onto an occupied destination, so a surviving file would
+            // stay STALE beside a freshly regenerated winner and the next switch would hand the
+            // user one version under the other's label. Clear the slot so the pair matches.
+            try? FileManager.default.removeItem(at: runnerUp)
             var capturedReport: MRCDocumentReport?
             do {
                 let outcome = try await engine.compress(job.url, preset: chosen, to: freshShipped,
@@ -454,11 +503,16 @@ final class CompressViewModel: ObservableObject {
                             do {
                                 try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
                                 switched.insert(id)
+                            } catch let stranded as RunnerUpStore.SwitchError {
+                                // The regenerated winner is parked under a hidden name that
+                                // nothing else looks for — the row must name it, not report a
+                                // switch that silently cost the user their file.
+                                reportSwitchFailure(id, stranded.localizedDescription)
                             } catch {
-                                // The switch did not happen (store contract: a throw leaves
-                                // `shipped` unchanged) — heavy is still shipped, so leave
-                                // `switched` canonical rather than record a switch that never took
-                                // effect.
+                                // The switch did not happen and `shipped` is unchanged (store
+                                // contract: any other throw restores it) — heavy is still shipped,
+                                // so leave `switched` canonical rather than record a switch that
+                                // never took effect.
                             }
                         }
                     } catch {
