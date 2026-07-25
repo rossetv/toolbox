@@ -550,6 +550,12 @@ struct CompressView: View {
             return batchProgressText(runVerb, finished: model.runFinishedCount,
                                      total: model.runTotalCount)
         }
+        // The primary button is disabled for the duration of a switch (a416a19), which shows no
+        // running bar of its own since `isRunning` stays false throughout — say why, or the
+        // button just looks dead.
+        if !model.switchesInFlight.isEmpty {
+            return "Applying your version choice — the button will re-enable in a moment."
+        }
         // An armed set hasn't run yet, so a finished-batch "Saved X · Y% smaller" footnote would
         // read as a completed-work claim beside the still-to-run "Recompress" button. The mockup
         // (recompress-ux-mockup.html, screen 2) swaps it for the originals reassurance instead.
