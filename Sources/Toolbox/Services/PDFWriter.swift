@@ -71,8 +71,8 @@ struct PDFWriter {
 
     /// Deepest `/Kids` nesting walked before the file is called malformed.
     static let maxPageTreeDepth = 256
-    /// Most page-tree nodes visited before the file is called malformed. Well clear of the
-    /// 1000-page scans the tool targets.
+    /// Most page-tree nodes visited — and most queued to visit — before the file is called
+    /// malformed. Well clear of the 1000-page scans the tool targets.
     static let maxPageTreeNodes = 500_000
     /// Most top-level objects indexed. The index is the one structure that grows with the file
     /// rather than with the page count: two gigabytes of `1 0 obj<<>>endobj` is a hundred
@@ -417,7 +417,13 @@ struct PDFWriter {
         }
     }
 
-    private static func fmt(_ v: CGFloat) -> String { String(format: "%.2f", v) }
+    /// A non-finite coordinate (hostile /MediaBox arithmetic upstream) would print as "nan"/"inf"
+    /// — an illegal PDF token that corrupts the whole content stream. Zero is the least-damage
+    /// stand-in: the affected glyph box was already garbage, the file stays parseable.
+    private static func fmt(_ v: CGFloat) -> String {
+        guard v.isFinite else { return "0.00" }
+        return String(format: "%.2f", v)
+    }
 
     /// Escape a string for a PDF literal `( )`: backslash-escape `\ ( )`, drop control bytes,
     /// map non-Latin-1 to `?` (WinAnsi/Helvetica cannot render it — a conscious v1 limitation).
@@ -1126,8 +1132,18 @@ struct PDFWriter {
             if type == "Page" {
                 pages.append(node.num)
             } else if let kids = PDFSyntax.dictValue(of: "Kids", in: obj.bytes, dictAt: 0) {
+                // The node cap has to be spent here, on what is *pushed*: `nodes` counts pops
+                // past the `visited` dedupe, so a single `/Kids` naming the same child a hundred
+                // million times never reaches it — it just sizes the ref array and the stack to
+                // the file. One ref past the cap is enough to refuse, so `parseRefArray` stops
+                // there too rather than building the file-sized array to be rejected.
+                let refs = PDFSyntax.parseRefArray(Array(obj.bytes[kids]),
+                                                   limit: maxPageTreeNodes + 1)
+                guard stack.count + refs.count <= maxPageTreeNodes else {
+                    throw PDFWriterError.malformedPDF
+                }
                 // Push in reverse so the stack yields the kids in document order.
-                for ref in PDFSyntax.parseRefArray(Array(obj.bytes[kids])).reversed() {
+                for ref in refs.reversed() {
                     stack.append((ref.num, node.depth + 1))
                 }
             } else if type == "Pages" {
@@ -1140,12 +1156,18 @@ struct PDFWriter {
         return pages
     }
 
+    /// The scan window for `lastStartxref`. The spec puts `startxref` in the last few dozen
+    /// bytes; 64 KiB tolerates trailing junk from sloppy writers while keeping a hostile
+    /// 2 GiB file from turning the backward scan into a whole-file walk.
+    static let maxStartxrefScanBytes = 65_536
+
     /// The offset written by the file's final `startxref` (the previous xref, for `/Prev`).
     static func lastStartxref<C: RandomAccessCollection>(_ b: C) throws -> Int
     where C.Element == UInt8, C.Index == Int {
         let kw = Array("startxref".utf8)
+        let floor = Swift.max(b.startIndex, b.endIndex - maxStartxrefScanBytes)
         var i = b.endIndex - kw.count
-        while i >= b.startIndex {
+        while i >= floor {
             if b[i] == 0x73, PDFSyntax.isKeyword(b, at: i, kw) {
                 guard let tok = PDFSyntax.readToken(b, from: i + kw.count),
                       let v = PDFSyntax.parseInt(tok.bytes) else { throw PDFWriterError.malformedPDF }

@@ -361,11 +361,31 @@ enum PDFSyntax {
     }
 
     /// Every `N G R` reference inside an array (or a bare run of them).
-    static func parseRefArray(_ bytes: [UInt8]) -> [(num: Int, gen: Int)] {
+    ///
+    /// `limit` stops the scan once that many refs are collected, so a caller whose own bound is
+    /// smaller than the file never allocates the file-sized array first. A result *at* `limit` is
+    /// a breach for such a caller, never a quiet trim: pass one more than the bound being
+    /// enforced so a truncated array always fails the caller's own check.
+    static func parseRefArray(_ bytes: [UInt8], limit: Int = .max) -> [(num: Int, gen: Int)] {
         var refs: [(num: Int, gen: Int)] = []
         var i = 0
         var pending: [Int] = []
         while i < bytes.count {
+            // Skip strings and comments wholesale, as `endOfArray` does: digits inside a literal
+            // `(1 0 R)` or hex `<313052>` string are data, not tokens, and stepping through them
+            // byte-wise would fabricate a phantom reference from string content.
+            let c = bytes[i]
+            if c == 0x28 { i = endOfLiteralString(bytes, from: i); pending.removeAll(); continue }
+            if c == 0x3C {
+                if i + 1 < bytes.count, bytes[i + 1] == 0x3C {
+                    i = endOfDictionary(bytes, from: i) ?? bytes.count
+                } else {
+                    i = endOfHexString(bytes, from: i)
+                }
+                pending.removeAll()
+                continue
+            }
+            if c == 0x25 { i = skipSpace(bytes, from: i); pending.removeAll(); continue }
             guard let tok = readToken(bytes, from: i) else {
                 // Step over a delimiter (`[`, `]`, …) and carry on.
                 let next = skipSpace(bytes, from: i)
@@ -379,6 +399,7 @@ enum PDFSyntax {
                     let gen = pending.removeLast()
                     let num = pending.removeLast()
                     refs.append((num, gen))
+                    if refs.count >= limit { return refs }
                 }
                 pending.removeAll()
             } else if let v = parseInt(tok.bytes) {

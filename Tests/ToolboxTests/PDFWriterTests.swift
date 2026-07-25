@@ -323,6 +323,37 @@ final class PDFWriterTests: XCTestCase {
         }
     }
 
+    /// The breadth sibling of the depth chain: one `/Pages` node whose `/Kids` names more
+    /// children than the node cap. The same reference is repeated deliberately — `visited`
+    /// dedupes on pop, so a node count taken at pop time never sees the fan-out at all and the
+    /// walk happily allocates a ref array and a stack the file's author sized. The bound has to
+    /// be applied where the entries are produced.
+    func testAbsurdlyWidePageTreeIsRefusedNotFatal() throws {
+        let kids = String(repeating: "3 0 R ", count: PDFWriter.maxPageTreeNodes + 1)
+        let input = try Fixtures.rawPDF([
+            Fixtures.rawObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+            Fixtures.rawObject(2, "<< /Type /Pages /Kids [ \(kids)] /Count 1 >>"),
+            Fixtures.rawObject(3, "<< /Type /Page /Parent 2 0 R "
+                                + "/MediaBox [ 0 0 612 792 ] /Resources << >> >>"),
+        ], root: 1, name: "wide-tree.pdf")
+
+        let bytes = [UInt8](try Data(contentsOf: input))
+        let index = try fullIndex(bytes)
+
+        // The fixture must be the layout under test: a readable `/Kids` that really does parse to
+        // more refs than the cap. Otherwise a `/Kids` the scanner failed to find would reach the
+        // walk's empty-pages guard and throw the very same error for the wrong reason.
+        let node = try XCTUnwrap(PDFWriter.objectDict(bytes, objects: index, objNum: 2))
+        let kidsValue = try XCTUnwrap(PDFSyntax.dictValue(of: "Kids", in: node.bytes, dictAt: 0))
+        XCTAssertGreaterThan(PDFSyntax.parseRefArray(Array(node.bytes[kidsValue])).count,
+                             PDFWriter.maxPageTreeNodes)
+
+        XCTAssertThrowsError(try PDFWriter.orderedPageObjects(bytes, objects: index,
+                                                              root: (num: 1, gen: 0))) {
+            XCTAssertEqual($0 as? PDFWriterError, .malformedPDF)
+        }
+    }
+
     /// Page order must follow the `/Kids` arrays, depth first — the iterative walk has to
     /// reproduce exactly what the recursive one did.
     func testPageOrderFollowsTheKidsTree() throws {
@@ -516,9 +547,39 @@ final class PDFWriterTests: XCTestCase {
                                     "fixture must stay large enough to measure a whole copy against")
 
         let output = try sibling(of: input, "footprint-ocr.pdf")
-        let before = Self.residentFootprint()
+        let before = try XCTUnwrap(Self.residentFootprint(),
+                                   "task_info failed — the memory bound cannot be measured")
+        // Sample the footprint while the writer runs: a whole-copy held only transiently would
+        // be invisible to an end-state delta, and a transient copy is exactly the defect class
+        // this test exists for. Sampling can undershoot the true peak, so this is a lower
+        // bound — but one that fails reliably for a copy held across the streaming loop.
+        final class PeakBox: @unchecked Sendable {
+            let lock = NSLock()
+            var sampling = true
+            var peak: Int
+            init(peak: Int) { self.peak = peak }
+        }
+        let box = PeakBox(peak: before)
+        let sampler = Thread {
+            while true {
+                box.lock.lock()
+                let live = box.sampling
+                box.lock.unlock()
+                guard live else { return }
+                if let now = Self.residentFootprint() {
+                    box.lock.lock()
+                    if now > box.peak { box.peak = now }
+                    box.lock.unlock()
+                }
+                usleep(2_000)
+            }
+        }
+        sampler.start()
+        defer {
+            box.lock.lock(); box.sampling = false; box.lock.unlock()
+        }
         try write(input, to: output)
-        let growth = Self.residentFootprint() - before
+        box.lock.lock(); box.sampling = false; let growth = box.peak - before; box.lock.unlock()
 
         XCTAssertLessThan(growth, size,
                           "peak growth \(growth) B against a \(size) B input — the writer is "
@@ -527,7 +588,9 @@ final class PDFWriterTests: XCTestCase {
                        "streaming the output must still leave the original a verbatim prefix")
     }
 
-    private static func residentFootprint() -> Int {
+    /// Nil when `task_info` fails, so callers fail loudly instead of comparing against a
+    /// fabricated zero — the silent-pass hole this test previously had.
+    private static func residentFootprint() -> Int? {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &info) {
@@ -535,7 +598,7 @@ final class PDFWriterTests: XCTestCase {
                 task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
             }
         }
-        return result == KERN_SUCCESS ? Int(info.phys_footprint) : 0
+        return result == KERN_SUCCESS ? Int(info.phys_footprint) : nil
     }
 
     // MARK: - helpers
