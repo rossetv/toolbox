@@ -65,15 +65,19 @@ jobs:
         run: scripts/package-dmg.sh
 
       # Kept in step with `gate: packaged-app-compresses` in .claude/GATES.md — a private temp
-      # dir (never a fixed /tmp path, which a stale bundle could make falsely green) and a trap
-      # that always detaches the mount.
+      # dir (never a fixed /tmp path, which a stale bundle could make falsely green), the mount
+      # point parsed from hdiutil's plist (a hard-coded /Volumes/Toolbox copies a stale bundle
+      # whenever that name is already taken), and a trap that detaches only what was mounted.
       - name: Smoke — the packaged app really compresses a PDF
         run: |
           set -o pipefail
           D="$(mktemp -d)"
-          trap 'hdiutil detach "/Volumes/Toolbox" -quiet 2>/dev/null; rm -rf "$D"' EXIT
-          hdiutil attach dist/Toolbox.dmg -nobrowse -quiet
-          cp -R "/Volumes/Toolbox/Toolbox.app" "$D/"
+          MOUNT=""
+          trap '[ -n "$MOUNT" ] && hdiutil detach "$MOUNT" -quiet 2>/dev/null || true; rm -rf "$D"' EXIT
+          MOUNT="$(hdiutil attach dist/Toolbox.dmg -nobrowse -plist | grep -A1 '<key>mount-point</key>' | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -1)"
+          [ -n "$MOUNT" ]
+          [ -d "$MOUNT/Toolbox.app" ]
+          cp -R "$MOUNT/Toolbox.app" "$D/"
           TOOLBOX_SMOKE=compress "$D/Toolbox.app/Contents/MacOS/Toolbox" | grep -q "SMOKE PASS"
 
       - name: Upload DMG artifact
@@ -125,10 +129,15 @@ jobs:
           xcrun stapler staple Toolbox.dmg
           rm -f cert.p12 key.p8
 
+      - name: Checksum
+        run: shasum -a 256 Toolbox.dmg > Toolbox.dmg.sha256
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: Toolbox.dmg
+          files: |
+            Toolbox.dmg
+            Toolbox.dmg.sha256
           generate_release_notes: true
           body: |
             **Toolbox** — Compress and OCR PDFs on macOS (Apple Silicon, macOS 14+).

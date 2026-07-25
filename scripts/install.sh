@@ -3,9 +3,9 @@
 # Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# One-line installer: downloads the latest Toolbox DMG from GitHub Releases,
-# copies the app to /Applications (or ~/Applications if that isn't writable),
-# removes the quarantine attribute (the app isn't notarised yet) and launches it.
+# One-line installer: downloads the latest Toolbox DMG from GitHub Releases, verifies its
+# checksum, copies the app to /Applications (or ~/Applications if that isn't writable),
+# removes the quarantine attribute if the build isn't notarised, and launches it.
 #
 #   curl -fsSL https://raw.githubusercontent.com/rossetv/toolbox/main/scripts/install.sh | bash
 #
@@ -25,19 +25,35 @@ main() {
     macos_major=$(sw_vers -productVersion | cut -d. -f1)
     [ "$macos_major" -ge 14 ] || fail "Toolbox requires macOS 14 or later (you have $(sw_vers -productVersion))."
 
+    # Force https on every request and redirect hop, and refuse to fetch from anywhere
+    # but GitHub — belt-and-braces against a compromised mirror or a downgraded redirect.
+    local curl_safe=(curl --proto '=https' --proto-redir '=https')
+
     echo "Finding the latest release…"
     local dmg_url
-    dmg_url=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
+    dmg_url=$("${curl_safe[@]}" -fsSL "https://api.github.com/repos/${REPO}/releases/latest" |
         grep -o '"browser_download_url": *"[^"]*\.dmg"' | head -1 | cut -d'"' -f4)
     [ -n "$dmg_url" ] || fail "no DMG found in the latest release — see https://github.com/${REPO}/releases"
+    case "$dmg_url" in
+        https://github.com/*) ;;
+        *) fail "refusing to download from an unexpected host: $dmg_url" ;;
+    esac
+    local sha_url="${dmg_url}.sha256"
 
     local workdir mount=""
     workdir=$(mktemp -d)
-    # shellcheck disable=SC2064 — expand workdir now; mount is re-read at trap time via the file.
+    # Expand workdir now; mount is re-read at trap time via the file.
+    # shellcheck disable=SC2064
     trap '[ -s "$workdir/mount" ] && hdiutil detach "$(cat "$workdir/mount")" -quiet 2>/dev/null; rm -rf "$workdir"' EXIT
 
     echo "Downloading $(basename "$dmg_url")…"
-    curl -fL --progress-bar -o "$workdir/Toolbox.dmg" "$dmg_url"
+    "${curl_safe[@]}" -fL --progress-bar -o "$workdir/Toolbox.dmg" "$dmg_url"
+
+    echo "Verifying checksum…"
+    "${curl_safe[@]}" -fsSL -o "$workdir/Toolbox.dmg.sha256" "$sha_url" ||
+        fail "could not download the checksum file — see https://github.com/${REPO}/releases"
+    (cd "$workdir" && shasum -a 256 -c Toolbox.dmg.sha256) >/dev/null ||
+        fail "checksum verification failed — the download may be corrupt or tampered with"
 
     # Ask hdiutil where it actually mounted the volume rather than assuming a name:
     # a busy /Volumes/Toolbox would otherwise silently become "/Volumes/Toolbox 1".
@@ -55,8 +71,12 @@ main() {
     rm -rf "${dest:?}/Toolbox.app"
     ditto "$mount/Toolbox.app" "$dest/Toolbox.app"
 
-    # The app isn't notarised yet; without this, Gatekeeper blocks the first launch.
-    xattr -dr com.apple.quarantine "$dest/Toolbox.app"
+    # Builds are only notarised once the repo owner has added signing secrets (see
+    # .github/workflows/build.yml); until then Gatekeeper blocks the first launch, so strip
+    # quarantine only when the app isn't already Gatekeeper-accepted (i.e. isn't notarised).
+    if ! spctl -a -t exec "$dest/Toolbox.app" >/dev/null 2>&1; then
+        xattr -dr com.apple.quarantine "$dest/Toolbox.app"
+    fi
 
     # Best-effort: Spotlight can hold the volume busy for a moment; the EXIT trap retries,
     # and a still-mounted volume must not fail an install that has already succeeded.

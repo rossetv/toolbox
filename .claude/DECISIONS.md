@@ -417,3 +417,50 @@ colour tints black body text whenever a page's ink mean is polluted by a saturat
 733,595 B reference), text now crisp against the original; every MRC-eligible corpus document ≤ its
 current shipped size with visibly sharp text; the whole MRC unit + engine + invariant test suite
 green with no assertion changes (the fix lives in emission, not the segmenter output the tests pin).
+
+## 2026-07-25 — Gate edit: `packaged-app-compresses` mount point parsed, not hard-coded (panel-ruled)
+
+A decision panel (3 lensed panellists + hardened judge) ruled EDIT on `gate: packaged-app-compresses`
+in `.claude/GATES.md`, winner the defensively-hardened variant. The gate's command previously
+hard-coded `/Volumes/Toolbox`: with any volume of that name already mounted, `hdiutil attach` lands
+at `/Volumes/Toolbox 1` while the gate copies and smokes a stale bundle — a reachable false GREEN in
+the repo's only end-to-end artefact check. One panellist reproduced this live on the maintainer's
+machine (stale volume squatting the name; fresh DMG mounted at `/Volumes/Toolbox 1`).
+
+The edit strictly strengthens: same assertion chain (build DMG → mount → copy → run smoke), mount
+point now parsed from `hdiutil`'s plist output (`scripts/install.sh`'s proven parse), new fail-loud
+guards `[ -n "$MOUNT" ]` and `[ -d "$MOUNT/Toolbox.app" ]`, the destructive blind pre-detach of
+`/Volumes/Toolbox` deleted, trap detaches only what was mounted and survives errexit (`|| true`,
+`rm -rf` last).
+
+**Judge's flaw notes:** the two losing variants leaked the temp dir on a busy detach at trap time (no
+`|| true` in an errexit trap) and one deferred the `build.yml` mirror, leaving its "kept in step"
+comment false.
+
+**Recorded rebuttals (judge-directed):** (1) `pipefail` deliberately NOT added around the `SMOKE
+PASS` tail — `grep -q` closing early risks a SIGPIPE false-RED; the marker already binds to the
+binary's success path; (2) `cp -R` retained over `ditto` as out of contested scope; revisit
+copy-signature fidelity if distribution signing lands.
+
+The `.github/workflows/build.yml` smoke step mirrors the same command in the same commit (ordinary
+code edit riding along; the panel verdict governs the `GATES.md` stanza).
+
+Gate was not mandated-by-human; prior edits to this gate were strengthenings; nothing disqualified
+the edit.
+
+**Affects:** .claude/GATES.md (gate: packaged-app-compresses), .github/workflows/build.yml (smoke step).
+
+## 2026-07-25 — DesignSystem component strokes/shadows recorded as deliberate DESIGN.md divergences
+
+Adversarial UI review flagged three `DesignSystem/Components.swift` visuals as unrecorded
+divergences from `DESIGN.md` §6/§7 (single shadow, no borders on cards): `PDFThumbnail`'s
+two-layer shadow (tight contact + faint depth — a single mid-radius shadow reads as a grey
+smudge at thumbnail size), `DropZone`'s accent-tinted disc shadow + hairline ring (the disc and
+pane are both `surface`; in dark mode the shadow alone does not separate them), and
+`SegmentedPreset.optionCard`'s stroke on unselected cards (they dissolve into the pane without
+it). All three are the shipped, owner-approved look from the original mockups — conforming them
+would change the app's appearance, not fix a defect — so they are recorded here as deliberate,
+monocratic (fable). The `SegmentedPreset` doc comment that asserted the no-borders rule while
+the code beneath stroked every card was corrected in the same change.
+
+**Affects:** Sources/Toolbox/DesignSystem/Components.swift (PDFThumbnail, DropZone, SegmentedPreset).
