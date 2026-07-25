@@ -1771,7 +1771,6 @@ final class CompressViewModelTests: XCTestCase {
         let previousURL = try XCTUnwrap(model.versions(for: job)?.previous?.url)
         let deliveredURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
         let outputFolder = try XCTUnwrap(model.outputFolder)
-        let callsBefore = env.stub.callCount
 
         // Deny creating entries in the OUTPUT folder — the same asymmetric ACL lever
         // `RunnerUpStoreTests` uses — so parking the shipped file beside itself throws, while the
@@ -1781,7 +1780,6 @@ final class CompressViewModelTests: XCTestCase {
 
         await model.useVersion(.previous, for: job)
 
-        XCTAssertEqual(env.stub.callCount, callsBefore, "a failed swap must not burn an engine run")
         XCTAssertTrue(FileManager.default.fileExists(atPath: previousURL.path),
                       "the parked file was never touched by the failure — it must survive it")
         let row = try XCTUnwrap(model.versions(for: job))
@@ -1805,6 +1803,41 @@ final class CompressViewModelTests: XCTestCase {
                        "the retry must swap for real")
         XCTAssertEqual(try fileSize(deliveredURL), HeavyEnv.heavyBytes)
         XCTAssertNil(model.recompressErrors[job.id], "a successful retry clears the failure note")
+    }
+
+    /// The `.runnerUp` half of the same failure: the parked file here is the row's OWN runner-up,
+    /// and `rerunForSwitch` opens by deleting it — so if the "parked file raced away" guard above
+    /// were missing for this slot, a transient failure would burn a whole engine run over a runner-up
+    /// that was never actually gone.
+    func testAFailedRunnerUpSwitchKeepsTheRunnerUpThatIsStillOnDisk() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.add([env.input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { env.doneHeavyJob(model) != nil }
+
+        let job = try XCTUnwrap(env.doneHeavyJob(model))
+        let runnerUpURL = try XCTUnwrap(model.versions(for: job)?.runnerUp?.url)
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        let callsBefore = env.stub.callCount
+
+        // Same asymmetric ACL lever as the `.previous` test above: denying new entries in the
+        // OUTPUT folder makes parking the shipped file throw while the runner-up itself, still
+        // sitting untouched wherever the run wrote it, is never touched by the failed attempt.
+        try Fixtures.denyingNewEntries(true, at: outputFolder)
+        defer { try? Fixtures.denyingNewEntries(false, at: outputFolder) }
+
+        await model.useVersion(.runnerUp, for: job)
+
+        XCTAssertEqual(env.stub.callCount, callsBefore, "a failed swap must not burn an engine run")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: runnerUpURL.path),
+                      "the runner-up was never touched by the failure — it must survive it")
+        XCTAssertEqual(model.versions(for: job)?.runnerUp?.url, runnerUpURL,
+                       "the record must survive too, or the version is unreachable and then swept")
+        XCTAssertEqual(model.recompressErrors[job.id],
+                       "Switch failed — kept your \(CompressPreset.balanced.title) version. Try again.",
+                       "an honest transient failure, never a claim that the version is gone")
     }
 
     // MARK: lead derivation (R2/R6/R10/R12)
