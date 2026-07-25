@@ -377,6 +377,75 @@ final class CompressEngineRoutingTests: XCTestCase {
         XCTAssertFalse(spy.fired)
     }
 
+    /// Mutable state shared with the cancelled job's callbacks. A class rather than a captured
+    /// `var` because the progress callback runs inside the `Task` under test.
+    private final class CancelHook: @unchecked Sendable {
+        var task: Task<JobOutcome, Error>?
+        var reachedRungThree = false
+    }
+
+    /// §3.2 on the Rung-3 delivery path — "a failed or cancelled job leaves nothing behind".
+    /// `CompressEngineTests.testCancelDuringRungTwoPropagatesCancellationRatherThanFallingBackToRungOne`
+    /// asserts this for Rung 2; its Rung-3 sibling `testCancellationRethrows` asserts only the
+    /// rethrow, and it drives `mrcCompress` directly — which stages into a work dir and has no
+    /// `output`, no `alternateOutput` and no staging temp to assert on. So the delivery invariant
+    /// needs the whole `compress`, which is what this drives.
+    ///
+    /// The job cancels itself from its own progress callback rather than at dispatch: gs is capped
+    /// at 0.45 for an MRC-routed document and the hybrid leg maps into 0.45…0.95, so a tick at 0.95
+    /// is proof the Rung-3 leg ran — cancelling at dispatch would throw at the post-gs check and
+    /// never reach Rung 3 at all. `reachedRungThree` asserts that, so the test cannot quietly
+    /// degrade into the earlier check's coverage.
+    ///
+    /// What this deliberately does NOT pin: the two `Task.checkCancellation()` calls inside the
+    /// winner block itself. A cancelled `OutputValidator.validate` throws, and the D7 gate calls it
+    /// through `try?`, so the cancellation is read as "the hybrid failed to validate" and surfaces
+    /// one step later from the gs delivery's own validate. There is no caller-visible hook between
+    /// the D7 gate and the rename, so landing a cancel strictly inside that window would take a
+    /// wall-clock guess — a flaky red, not a proof. Stated rather than manufactured. The staging
+    /// assertion below is therefore defence-in-depth rather than a currently-reachable invariant:
+    /// on the path this test takes the throw arrives before any `.toolbox-*` temp is created, and
+    /// the assertion only goes live if someone loosens `validate`'s cancellation check AND drops
+    /// the winner block's own checks. Kept because that pair is exactly what would regress here.
+    func testCancelDuringRungThreeDeliversNoOutput() async throws {
+        let input = try Fixtures.colourTextScanPDF(pages: 1)
+        let inputBytes = try Data(contentsOf: input)
+        // The same stub as the winning-hybrid test: a gs candidate one byte under the input, so the
+        // hybrid is on course to win the D7 race and reach the delivery block being guarded.
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: inputBytes.dropLast(1)))
+        let (output, alternate) = try makeOutputURLs()
+
+        let hook = CancelHook()
+        hook.task = Task {
+            try await engine.compress(input, preset: .balanced, to: output,
+                                      alternateOutput: alternate) { fraction in
+                if fraction >= 0.9 {
+                    hook.reachedRungThree = true
+                    hook.task?.cancel()
+                }
+            }
+        }
+
+        do {
+            let outcome = try await XCTUnwrap(hook.task).value
+            XCTFail("expected the cancelled Rung-3 job to propagate cancellation, got \(outcome)")
+        } catch is CancellationError {
+            // expected
+        }
+
+        XCTAssertTrue(hook.reachedRungThree,
+                      "the cancel must land on the Rung-3 leg — otherwise this only re-tests the post-gs check")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "a cancelled job must leave no output file")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
+                       "a cancelled job must leave no runner-up remnant either")
+        let staging = try FileManager.default
+            .contentsOfDirectory(atPath: output.deletingLastPathComponent().path)
+            .filter { $0.hasPrefix(".toolbox-") }
+        XCTAssertTrue(staging.isEmpty,
+                      "a cancelled job must leave no staging temp in the destination: \(staging)")
+    }
+
     /// The driver needs no gs; this runner exists only to satisfy the initialiser and fails the
     /// test if the document is ever routed to Ghostscript.
     private struct UnusedRunner: GhostscriptRunning {

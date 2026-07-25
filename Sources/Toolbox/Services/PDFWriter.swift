@@ -89,8 +89,14 @@ struct PDFWriter {
     /// This is the OCR path's per-job memory bound, and it is a set of four cooperating limits
     /// rather than one number, because the in-process path has no child to put a cap on:
     ///
-    /// 1. The input is *memory-mapped*, not read — the kernel pages it in and evicts it under
-    ///    pressure, so parsing a 500 MB scan costs no resident copy.
+    /// 1. The input is memory-mapped *where the platform allows it* — the kernel then pages it in
+    ///    and evicts it under pressure, so parsing a 500 MB scan costs no resident copy. This one
+    ///    is **conditional, not a guarantee**: `.mappedIfSafe` is best-effort by construction, and
+    ///    Foundation declines to map a source it judges unsafe (network and removable volumes are
+    ///    the documented cases), falling back to reading the file whole. A scan opened from an SMB
+    ///    share or a USB stick therefore *is* fully resident, and limit 4 is the only bound left
+    ///    standing for it. Whether a given `Data` ended up mapped is not observable from here, so
+    ///    the honest statement is the conditional one rather than a number.
     /// 2. The output is *streamed* — the mapped original is copied to the destination in bounded
     ///    chunks and the appended section written after it, so the writer never materialises the
     ///    file a second (or third) time to grow it.

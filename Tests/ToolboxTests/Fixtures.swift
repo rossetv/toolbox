@@ -513,6 +513,23 @@ enum Fixtures {
         return url.canonical
     }
 
+    /// One page whose MediaBox is 14400 × 0.02 points — legal per the specification, and thin
+    /// enough that any raster of it rounds below one pixel high. Nothing can be recognised on such
+    /// a page, so OCR must decline the file rather than report it as searchable.
+    static func degeneratePageScanPDF() throws -> URL {
+        let url = try uniqueURL("degenerate-page.pdf")
+        var media = CGRect(x: 0, y: 0, width: 14400, height: 0.02)
+        guard let ctx = CGContext(url as CFURL, mediaBox: &media, nil) else {
+            throw FixtureError.contextCreation
+        }
+        ctx.beginPDFPage(nil)
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 100, height: 0.01))
+        ctx.endPDFPage()
+        ctx.closePDF()
+        return url.canonical
+    }
+
     /// One page with an oversized MediaBox (3000×3000 points) carrying a small text image.
     /// The large format causes the render clamp to land below 150 dpi, triggering the
     /// minBilevelDPI floor guard in both Rung 2 and Rung 3. Used to verify the decline

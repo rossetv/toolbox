@@ -124,6 +124,58 @@ final class OCREngineTests: XCTestCase {
                        "a cancelled OCR job must leave no output file")
     }
 
+    /// M3 — a page no raster can be made of cannot be recognised, so the file is declined. The old
+    /// behaviour counted it in `pages` and delivered the document as searchable.
+    func testPageThatCannotBeRasterisedFailsTheFile() async throws {
+        let engine = OCREngine()
+        let input = try Fixtures.degeneratePageScanPDF()
+        let output = input.deletingLastPathComponent().appendingPathComponent("degenerate-ocr.pdf")
+
+        do {
+            let outcome = try await engine.ocr(input, to: output, options: OCROptions()) { _ in }
+            XCTFail("expected the unrenderable page to fail the file, got \(outcome)")
+        } catch let error as OCRError {
+            guard case .unrenderablePage(let index) = error else {
+                return XCTFail("expected .unrenderablePage, got \(error)")
+            }
+            XCTAssertEqual(index, 0)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "a declined file leaves nothing behind")
+    }
+
+    /// m9 — a blank scan is recognised, yields nothing, and must not be handed back as a
+    /// byte-identical copy reported as searchable: no file, and a tally of zero pages.
+    func testScanWithNothingToRecogniseWritesNoFile() async throws {
+        let engine = OCREngine()
+        let input = try Fixtures.blankPDF(pages: 1)
+        let output = input.deletingLastPathComponent().appendingPathComponent("blank-ocr.pdf")
+
+        let outcome = try await engine.ocr(input, to: output, options: OCROptions()) { _ in }
+
+        XCTAssertEqual(outcome, .ocrAdded(pages: 0, skipped: 0),
+                       "no page gained text, and the tally must say so")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "a duplicate of the input is not an OCR result")
+    }
+
+    // MARK: - Recognised-text bound (M4)
+
+    /// §4.4 — the recognised text accumulates for the whole document, so it carries a named bound,
+    /// and a document past it is declined rather than delivered with a truncated text layer.
+    func testRecognisedTextBoundDeclinesTheFile() throws {
+        XCTAssertEqual(try OCREngine.accumulate(runs: 10, adding: 5), 15)
+        XCTAssertEqual(try OCREngine.accumulate(runs: OCREngine.maxRecognisedTextRuns - 1, adding: 1),
+                       OCREngine.maxRecognisedTextRuns,
+                       "the bound itself is still accepted")
+        XCTAssertThrowsError(try OCREngine.accumulate(runs: OCREngine.maxRecognisedTextRuns,
+                                                      adding: 1)) { error in
+            guard case OCRError.recognisedTextTooLarge = error else {
+                return XCTFail("expected .recognisedTextTooLarge, got \(error)")
+            }
+        }
+    }
+
     // MARK: - Raster bound (S8)
 
     /// An ordinary page is unaffected: Letter at 300 DPI is still exactly 2550 × 3300.
@@ -187,6 +239,33 @@ extension OCREngineTests {
         try original.prefix(original.count / 2).write(to: short)
         XCTAssertFalse(try OCREngine.hasVerbatimPrefix(of: input, in: short),
                        "an output shorter than the original must be caught")
+    }
+
+    /// T5 — the helper above is only worth having if the engine *enforces* it. This drives the
+    /// whole fail-loud net with an output that opens cleanly and has the right page count, so the
+    /// verbatim-prefix guard is the only one that can fire: delete it and this test goes green
+    /// against a rewritten file, which is exactly the writer desync §3.5 exists to catch.
+    func testValidationRejectsAnOutputThatIsNotAVerbatimAppend() throws {
+        let engine = OCREngine()
+        let input = try Fixtures.textImagePDF()
+        let output = input.deletingLastPathComponent()
+            .appendingPathComponent("resaved-\(UUID().uuidString).pdf")
+        let doc = try XCTUnwrap(PDFDocument(url: input))
+        XCTAssertTrue(doc.write(to: output))
+
+        XCTAssertNotNil(PDFDocument(url: output), "precondition: the doctored output still opens")
+        XCTAssertEqual(PDFDocument(url: output)?.pageCount, doc.pageCount,
+                       "precondition: the page-count guard must not be what fires")
+        XCTAssertFalse(try OCREngine.hasVerbatimPrefix(of: input, in: output),
+                       "precondition: a re-serialised copy is not a verbatim append")
+
+        do {
+            try engine.validateOCROutput(input: input, output: output,
+                                         textPages: [], pageCount: doc.pageCount)
+            XCTFail("an output that is not the input's verbatim prefix must be rejected")
+        } catch OCRError.validationFailed {
+            // expected
+        }
     }
 }
 

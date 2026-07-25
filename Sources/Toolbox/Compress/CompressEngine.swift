@@ -195,7 +195,7 @@ struct CompressEngine {
             }
             let staged = work.appendingPathComponent("bilevel.pdf")
             if let bytes = bilevelBytes, bytes < outputSize, bytes < inputSize,
-               (try? validator.validate(input: workIn, output: staged, samplePages: 3)) == true {
+               try await validatesOffPool(input: workIn, output: staged) {
                 try Task.checkCancellation()
                 let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
                 var placed = false
@@ -233,7 +233,7 @@ struct CompressEngine {
             }
             if let (mrcURL, mrcBytes, report) = mrcResult,
                mrcBytes < outputSize, mrcBytes < inputSize,
-               (try? validator.validate(input: workIn, output: mrcURL, samplePages: 3)) == true {
+               try await validatesOffPool(input: workIn, output: mrcURL) {
                 // The hybrid wins — deliver it via the same atomic idiom as every other winner.
                 try Task.checkCancellation()
                 let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
@@ -279,8 +279,11 @@ struct CompressEngine {
             return .noGain(bytes: inputSize)
         }
 
-        // 6. Re-validate the smaller output before it is delivered.
-        guard try validator.validate(input: workIn, output: workOut, samplePages: 3) else {
+        // 6. Re-validate the smaller output before it is delivered. Validation renders pages —
+        //    blocking work — so it hops off the cooperative pool (§6.1).
+        guard try await offloadBlocking({ [validator] in
+            try validator.validate(input: workIn, output: workOut, samplePages: 3)
+        }) else {
             throw CompressError.validationFailed
         }
 
@@ -328,6 +331,23 @@ struct CompressEngine {
     /// Binarisation is irreversible in appearance terms, so a page that is not genuinely
     /// near-two-tone aborts the whole attempt: a wrongly-binarised photograph is a far worse
     /// outcome than a missed saving.
+    /// The D7 gates' validation, off the cooperative pool (§6.1) — rendering sample pages is
+    /// blocking work. A `CancellationError` propagates so a cancelled job aborts instead of
+    /// reading as "invalid, fall to the next rung"; any other validator error keeps the old
+    /// `try?` semantics and reads as invalid. Cancellation inside the hop is a no-op (see
+    /// `offloadBlocking`), so callers keep their own post-await `Task.checkCancellation()`.
+    private func validatesOffPool(input: URL, output: URL) async throws -> Bool {
+        do {
+            return try await offloadBlocking { [validator] in
+                try validator.validate(input: input, output: output, samplePages: 3)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return false
+        }
+    }
+
     private func bilevelCompress(_ input: URL,
                                  preset: CompressPreset,
                                  to work: URL,

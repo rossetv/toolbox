@@ -15,6 +15,8 @@ enum OCRError: Error, LocalizedError {
     case corrupt
     case sameInputOutput
     case validationFailed
+    case unrenderablePage(index: Int)
+    case recognisedTextTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +24,9 @@ enum OCRError: Error, LocalizedError {
         case .corrupt: return "The PDF is damaged and cannot be read."
         case .sameInputOutput: return "The output path must differ from the input."
         case .validationFailed: return "The OCR'd PDF failed validation."
+        case .unrenderablePage(let index):
+            return "Page \(index + 1) could not be rendered for recognition."
+        case .recognisedTextTooLarge: return "This PDF holds more text than OCR can process."
         }
     }
 }
@@ -29,8 +34,10 @@ enum OCRError: Error, LocalizedError {
 /// Makes image-only PDFs searchable by adding an invisible Vision text layer (spec §6).
 ///
 /// Per page: pages that already carry extractable text are skipped (`PDFService.pageHasText`);
-/// image pages are rendered upright at 300 DPI (**per-page render/release** — survives a
-/// 1000-page scan), recognised with `VisionOCR`, and the results handed to `PDFWriter` to embed.
+/// image pages are rendered upright at 300 DPI (**per-page render/release** — one raster resident
+/// at a time, whatever the page count), recognised with `VisionOCR`, and the results handed to
+/// `PDFWriter` to embed. The recognised *text* is not per-page — it accumulates for the whole
+/// document until the writer consumes it, which is what `maxRecognisedTextRuns` bounds.
 /// Output is written to a temp file **in the output directory** then atomically renamed, and
 /// re-validated before success. If every page already had text → `.alreadySearchable`.
 struct OCREngine {
@@ -48,6 +55,25 @@ struct OCREngine {
     /// 40 megapixels renders every page up to about A2 at the full 300 DPI; beyond that the
     /// resolution degrades instead of the memory. Vision gains nothing from a 60,000-px page.
     static let maxRasterPixels: CGFloat = 40_000_000
+
+    /// Upper bound on the recognised text retained for one document.
+    ///
+    /// The raster is per-page, but the recognised runs are not: every `PositionedText` (a `String`
+    /// plus a `CGRect`) stays resident until the writer consumes them, and both the page count and
+    /// the density of each page come from the input. Two million runs is roughly 2000 words on
+    /// each of a thousand pages — past any honest scan, and already hundreds of megabytes with two
+    /// OCR jobs in flight. Past it the file is declined rather than silently truncated: half a
+    /// text layer delivered as a success is the outcome §3.7 forbids.
+    static let maxRecognisedTextRuns = 2_000_000
+
+    /// The running total of recognised runs, or a throw once the document passes
+    /// `maxRecognisedTextRuns`. Split out of the recognition loop so the bound has a test that
+    /// exercises it (§4.4) without needing Vision to recognise two million runs.
+    static func accumulate(runs: Int, adding boxes: Int) throws -> Int {
+        let total = runs + boxes
+        guard total <= maxRecognisedTextRuns else { throw OCRError.recognisedTextTooLarge }
+        return total
+    }
 
     /// The raster size for a page of `displayed` points at `dpi`, clamped to `maxRasterPixels`,
     /// or nil when the page is degenerate.
@@ -109,19 +135,28 @@ struct OCREngine {
         var geometry: [Int: PageGeometry] = [:]
         var skipped = 0
         var ocrPages = 0
+        var retainedRuns = 0
 
         for i in 0..<count {
             try Task.checkCancellation()
-            guard let page = doc.page(at: i) else { continue }
+            // A page the document counts but cannot materialise is a damaged file (§3.7): skipping
+            // it would drop the user's page from both tallies and still report success.
+            guard let page = doc.page(at: i) else { throw OCRError.corrupt }
             geometry[i] = PageGeometry(mediaBox: page.bounds(for: .mediaBox), rotation: page.rotation)
 
             if service.pageHasText(page) {
                 skipped += 1                                   // already searchable — leave it (spec §6)
             } else {
+                // A page that cannot be rasterised cannot be recognised, so the file is declined
+                // (§3.8) — counting it as OCR'd would report work that never happened.
+                guard let image = await renderUpright(page, dpi: Self.renderDPI) else {
+                    throw OCRError.unrenderablePage(index: i)
+                }
                 ocrPages += 1
-                if let image = await renderUpright(page, dpi: Self.renderDPI) {
-                    let boxes = try await vision.recognise(image, options: options)
-                    if !boxes.isEmpty { pageText[i] = boxes }  // blank scans add nothing but still count as OCR'd
+                let boxes = try await vision.recognise(image, options: options)
+                if !boxes.isEmpty {
+                    retainedRuns = try Self.accumulate(runs: retainedRuns, adding: boxes.count)
+                    pageText[i] = boxes
                 }
             }
             progress(Double(i + 1) / Double(count))
@@ -129,6 +164,10 @@ struct OCREngine {
 
         // Every page already had text → nothing to do.
         guard ocrPages > 0 else { return .alreadySearchable }
+        // Recognition found nothing anywhere (a blank or unreadable scan). The writer's no-op path
+        // would emit a byte-identical duplicate of the input, so nothing is written and the tally
+        // says what actually happened: no page gained text.
+        guard !pageText.isEmpty else { return .ocrAdded(pages: 0, skipped: skipped) }
 
         // Temp file in the OUTPUT directory (same volume → atomic rename can't cross-device fail).
         let outputDir = output.deletingLastPathComponent().canonical
@@ -136,12 +175,18 @@ struct OCREngine {
         var renamed = false
         defer { if !renamed { try? FileManager.default.removeItem(at: tempURL) } }
 
-        try writer.appendTextLayer(to: input, output: tempURL, pageText: pageText, geometry: geometry)
-        guard try validator.validate(input: input, output: tempURL) else {
-            throw OCRError.validationFailed
+        // Writing and both validation passes are synchronous and unbounded — the whole input is
+        // streamed to disk, read back byte for byte, then re-rendered — so they run off the
+        // cooperative pool (§6.1); parking a pool thread here would starve every other job.
+        try await offloadBlocking {
+            try self.writer.appendTextLayer(to: input, output: tempURL,
+                                            pageText: pageText, geometry: geometry)
+            guard try self.validator.validate(input: input, output: tempURL) else {
+                throw OCRError.validationFailed
+            }
+            try self.validateOCROutput(input: input, output: tempURL,
+                                       textPages: Set(pageText.keys), pageCount: count)
         }
-        try validateOCROutput(input: input, output: tempURL,
-                              textPages: Set(pageText.keys), pageCount: count)
         // Last thing before the file becomes visible to the user. The only other check is inside
         // the recognition loop, and everything between it and here — writing the incremental
         // update, then two validation passes that re-render pages — is slow enough to cover a
@@ -155,6 +200,7 @@ struct OCREngine {
         return .ocrAdded(pages: ocrPages, skipped: skipped)
     }
 
+
     /// OCR-specific fail-loud net, run before the output is ever placed.
     ///
     /// The generic `OutputValidator` samples a few pages and is tuned for lossy compression, where
@@ -163,7 +209,7 @@ struct OCREngine {
     /// a plausible-looking but structurally corrupt document. Any failure here discards the output
     /// and fails that file — a skipped file is always preferable to a silently corrupt one, and it
     /// is the same visible outcome the object-stream limitation already produces.
-    private func validateOCROutput(input: URL, output: URL, textPages: Set<Int>, pageCount: Int) throws {
+    func validateOCROutput(input: URL, output: URL, textPages: Set<Int>, pageCount: Int) throws {
         // 1. The incremental-update invariant, and the strongest check available: the original
         //    file must be the output's verbatim prefix. That proves every original object — and
         //    so every image XObject — is byte-identical, and catches any writer desync that
@@ -197,7 +243,17 @@ struct OCREngine {
         while true {
             let expected = try inHandle.read(upToCount: chunkSize) ?? Data()
             if expected.isEmpty { return true }              // consumed the whole original
-            let actual = try outHandle.read(upToCount: expected.count) ?? Data()
+            // `read(upToCount:)` may return fewer bytes than asked for without being at the end of
+            // the file, so a short read is topped up rather than called a mismatch — failing a
+            // sound job on an I/O quirk would lose the user the work. Only a read that yields
+            // nothing is the end of the output, and an output that ends inside the original region
+            // is a genuine mismatch.
+            var actual = Data()
+            while actual.count < expected.count {
+                let chunk = try outHandle.read(upToCount: expected.count - actual.count) ?? Data()
+                if chunk.isEmpty { break }
+                actual.append(chunk)
+            }
             if actual != expected { return false }
         }
     }

@@ -76,8 +76,10 @@ final class OCRViewModel: ObservableObject {
         }
         isRunning = true
         Task {
-            // A modest concurrency cap: each in-flight file holds one 300-DPI page raster, so 2
-            // bounds memory while still overlapping I/O and recognition.
+            // A modest concurrency cap: each in-flight file holds one 300-DPI page raster plus
+            // its accumulated recognised runs (bounded by `OCREngine.maxRecognisedTextRuns`), so
+            // 2 keeps the worst case at two files' worth while still overlapping I/O and
+            // recognition.
             await queue.run({ job, report in
                 // A missing reservation means `add` let a file into the batch after the up-front
                 // allocation pass — fail this one job loudly rather than silently allocating a
@@ -87,8 +89,10 @@ final class OCRViewModel: ObservableObject {
                     throw MissingOutputReservationError()
                 }
                 let outcome = try await self.engine.ocr(job.url, to: output, options: chosen) { report($0) }
-                // `.alreadySearchable` writes nothing — no new file to reveal.
+                // Two outcomes write no file: `.alreadySearchable`, and a run that recognised no
+                // text on any page (`pages == 0`). Neither has anything to reveal.
                 if case .alreadySearchable = outcome { return JobResult(outcome) }
+                if case .ocrAdded(let pages, _) = outcome, pages == 0 { return JobResult(outcome) }
                 return JobResult(outcome, outputURL: output)
             }, maxConcurrent: 2)
             isRunning = false

@@ -126,9 +126,13 @@ final class ToolQueue: ObservableObject {
 
         setState(id, .running(0))
         // Formed here on @MainActor but invoked by the engines from `DispatchQueue.global` — must
-        // be `@Sendable` to cross that boundary legitimately.
+        // be `@Sendable` to cross that boundary legitimately. Delivered via the main QUEUE, not an
+        // unstructured `Task { @MainActor }` per tick: tasks carry no ordering guarantee, so two
+        // ticks could land swapped and walk the progress bar backwards; the main queue is FIFO.
         let report: @Sendable (Double) -> Void = { [weak self] fraction in
-            Task { @MainActor in self?.setState(id, .running(fraction)) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.setState(id, .running(fraction)) }
+            }
         }
 
         do {
@@ -148,8 +152,8 @@ final class ToolQueue: ObservableObject {
 
     private func setState(_ id: UUID, _ state: JobState) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
-        // A progress tick is a separate, untracked `Task` (see `report` in `process`) and can land
-        // after the job already reached `.done`/`.failed` — e.g. `OCREngine.ocr` calls
+        // A progress tick hops through the main queue (see `report` in `process`) and can still
+        // land after the job already reached `.done`/`.failed` — e.g. `OCREngine.ocr` calls
         // `progress(1.0)` immediately before returning, immediately before `process` sets `.done`.
         // Applying it anyway would resurrect a finished job back to `.running`, and since
         // `removeCompleted()` only matches `.done`/`.failed`, that job would then be stranded

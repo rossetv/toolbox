@@ -58,11 +58,17 @@ struct OutputValidator {
                 }
                 compared += 1
                 if outInk < inInk * Self.minRetainedInk { return (compared, false) }
-                // Bounded upwards too. A one-sided floor passes the worst corruption there is: an
-                // inverted or ink-flooded page measures near 1.0 and sails through, so any future
-                // polarity or bitstream regression would be delivered as a success rather than
-                // falling back. Compression never multiplies a page's ink; this only catches damage.
-                if outInk > inInk * Self.maxRetainedInk { return (compared, false) }
+                // Bounded upwards too, by whichever of the two ceilings binds first. A one-sided
+                // floor passes the worst corruption there is: an inverted or ink-flooded page
+                // measures near 1.0 and sails through, so any future polarity or bitstream
+                // regression would be delivered as a success rather than falling back. Compression
+                // never multiplies a page's ink; this only catches damage. The RELATIVE ceiling
+                // alone is blind on a dense page — its headroom grows with the denominator, so the
+                // denser the page the bigger the flood it tolerates — which is what `maxInkGain`
+                // closes.
+                if outInk > min(inInk * Self.maxRetainedInk, inInk + Self.maxInkGain) {
+                    return (compared, false)
+                }
             }
             return (compared, true)
         }
@@ -102,6 +108,22 @@ struct OutputValidator {
     /// legitimately thickens strokes — while still an order of magnitude below an inversion, which
     /// turns a sparse page's ink ratio from roughly 0.02 to roughly 0.98.
     private static let maxRetainedInk = 3.0
+    /// The other half of the ceiling: the most ink, in absolute page fraction, a re-encode may
+    /// ADD. It exists because `maxRetainedInk` is a ratio, and a ratio's headroom scales with the
+    /// page — the denser the input, the larger the flood it tolerates. Measured: an input page at
+    /// 0.41 flooded to solid black reads 1.00, a ratio of 2.44, so the relative ceiling passes the
+    /// exact corruption it was written to catch. No legitimate re-encode darkens a page by 35
+    /// points of its area: binarising a soft greyscale scan thickens strokes and JPEG/CCITT
+    /// artefact noise speckles the margins, but both stay in the low single digits (measured here:
+    /// a dark page re-encoded darker gains 0.035), while a polarity or bitstream regression turns
+    /// half the page or more. The two bind on either side of an input ink of 0.175 — below it the
+    /// ratio is tighter, above it this is.
+    ///
+    /// Accepted limit: a page that was ALREADY near-black (a full-bleed photo at 0.90) flooded to
+    /// 1.00 gains only 0.10 and still passes. Ink alone cannot separate those two pages, and
+    /// false-rejecting every dark photo is the worse trade — the sparse and mid-density pages that
+    /// make up a scan carry the signal instead.
+    private static let maxInkGain = 0.35
     /// The ceiling for a page the relative test cannot judge (input ink below `contentFloor`).
     /// Absolute, because there is no meaningful denominator: measured, such a page's legitimate
     /// output is 0.0 (blank) to 0.001 (a folio number reads 0.0003), while the flood this catches

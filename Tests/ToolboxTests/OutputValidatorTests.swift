@@ -83,6 +83,30 @@ final class OutputValidatorTests: XCTestCase {
                        "a near-blank page returned as solid black must fail validation")
     }
 
+    /// Regression: the RELATIVE ceiling alone cannot see a flood on a DENSE page. Measured on
+    /// these fixtures the input block reads 0.4104 and the same page flooded to solid black reads
+    /// 1.0000 — a ratio of 2.44, comfortably inside `maxRetainedInk` (3.0), so the worst
+    /// corruption there is sailed through on exactly the pages that carry the most content. The
+    /// absolute `maxInkGain` cap is what catches it: 1.0000 − 0.4104 = 0.59 of the page turned
+    /// black in a "re-encode".
+    func testDenseInkFloodedOutputFails() throws {
+        let input = try Self.pagesPDF([[Self.block]], label: "dense")
+        let output = try Self.pagesPDF([[Fixtures.letter]], label: "dense-flooded")
+        XCTAssertFalse(try validator.validate(input: input, output: output, samplePages: 1),
+                       "a dense page flooded to solid black must fail even though the ratio is < 3×")
+    }
+
+    /// The counterweight to `testDenseInkFloodedOutputFails`: a page that was already dark — a
+    /// full-bleed photo — and stays dark through the re-encode must still pass. Measured 0.8891
+    /// in, 0.9243 out (a gain of 0.035), an order of magnitude inside `maxInkGain`, so the
+    /// absolute cap cannot start rejecting legitimately dark scans.
+    func testLegitimatelyDarkPageStaysValid() throws {
+        let input = try Self.pagesPDF([[Self.darkPage]], label: "dark-in")
+        let output = try Self.pagesPDF([[Self.thickenedDarkPage]], label: "dark-out")
+        XCTAssertTrue(try validator.validate(input: input, output: output, samplePages: 1),
+                      "a dark page that stays dark is a re-encode, not a flood")
+    }
+
     /// A near-blank input page whose output is legitimately near-blank too must still pass — the
     /// flood ceiling must not become the absolute floor `testSparseContentValidates` forbids.
     func testNearBlankPageStaysValid() throws {
@@ -94,6 +118,8 @@ final class OutputValidatorTests: XCTestCase {
     private static let block = CGRect(x: 100, y: 100, width: 400, height: 500)   // ink 0.41
     private static let bar = CGRect(x: 100, y: 400, width: 400, height: 20)      // ink 0.015
     private static let folio = CGRect(x: 300, y: 40, width: 12, height: 10)      // ink 0.0003
+    private static let darkPage = CGRect(x: 16, y: 21, width: 580, height: 750)  // ink 0.8891
+    private static let thickenedDarkPage = CGRect(x: 11, y: 13, width: 590, height: 765)  // ink 0.9243
 
     /// A `pages`-page PDF that is blank everywhere except `contentOnPage` (a solid black block),
     /// or blank everywhere if `contentOnPage` is nil.
