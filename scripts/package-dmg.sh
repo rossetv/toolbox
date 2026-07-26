@@ -17,6 +17,9 @@ NAME="Toolbox"
 BUILD_DIR="build"
 DIST_DIR="dist"
 SIGN_ID="${DEVELOPER_ID:--}"          # "-" = ad-hoc
+# Optional version override (e.g. "0.1.1", set by CI from the release tag). Empty = keep
+# project.yml's MARKETING_VERSION. Never quoted with spaces — tags are dot-separated numbers.
+VERSION="${VERSION:-}"
 
 echo "==> Ensuring bundled Ghostscript is present"
 if [ ! -x "Resources/ghostscript/bin/gs" ]; then
@@ -32,6 +35,7 @@ rm -rf "$BUILD_DIR" "$DIST_DIR"
 xcodebuild -project "$NAME.xcodeproj" -scheme "$NAME" \
   -configuration "$CONFIG" -derivedDataPath "$BUILD_DIR" \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+  ${VERSION:+MARKETING_VERSION="$VERSION"} \
   build >/dev/null
 
 APP="$BUILD_DIR/Build/Products/$CONFIG/$NAME.app"

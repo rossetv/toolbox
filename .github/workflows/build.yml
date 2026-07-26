@@ -20,6 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The app icon is an Icon Composer .icon document (Resources/AppIcon.icon), which only
+      # Xcode 26's actool can compile — the image default (16.4) builds an icon-less bundle
+      # without erroring. Pick the newest 26.x installed on the runner image.
+      - name: Select latest Xcode 26
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+
       - name: Show toolchain
         run: |
           sw_vers
@@ -61,8 +67,15 @@ jobs:
           xcodebuild -project Toolbox.xcodeproj -scheme Toolbox \
             -configuration Debug test | tail -40
 
+      # Tag builds stamp the app with the release's own version — the About panel and
+      # UpdateChecker must report the tag the DMG was published under, not whatever
+      # project.yml last hard-coded.
       - name: Package DMG
-        run: scripts/package-dmg.sh
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            export VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          scripts/package-dmg.sh
 
       # Kept in step with `gate: packaged-app-compresses` in .claude/GATES.md — a private temp
       # dir (never a fixed /tmp path, which a stale bundle could make falsely green), the mount
@@ -78,6 +91,14 @@ jobs:
           [ -n "$MOUNT" ]
           [ -d "$MOUNT/Toolbox.app" ]
           cp -R "$MOUNT/Toolbox.app" "$D/"
+          # Icon must have compiled (an actool too old for .icon documents fails silently).
+          [ -f "$D/Toolbox.app/Contents/Resources/AppIcon.icns" ]
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$D/Toolbox.app/Contents/Info.plist" >/dev/null
+          # A tag build must report the tag's own version.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$D/Toolbox.app/Contents/Info.plist")"
+            [ "v$V" = "$GITHUB_REF_NAME" ]
+          fi
           TOOLBOX_SMOKE=compress "$D/Toolbox.app/Contents/MacOS/Toolbox" | grep -q "SMOKE PASS"
 
       - name: Upload DMG artifact
