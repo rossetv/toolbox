@@ -517,3 +517,29 @@ is written to hold under either reading.
 
 **Spec:** none (gate governance, no feature spec).
 **Affects:** .claude/GATES.md (gate: packaged-app-compresses), .github/workflows/build.yml (smoke step).
+
+## 2026-07-26 — Corrections and closures from the push-gate adversarial review
+
+Four records set straight after the Opus adversarial review of the icon/version push
+(verdict SHIP, all findings minor):
+
+- **"Byte-level mirror with CI" was false when written.** The `packaged-app-compresses`
+  command and `build.yml`'s smoke step are a *semantic* mirror, not byte-identical: CI sets
+  `set -o pipefail` where the gate does not; the gate runs `scripts/package-dmg.sh` inline
+  while CI runs it as a prior step; and the tag-version assertion exists in CI only. The
+  PlistBuddy check stands on its remaining justification (catching the Info.plist template
+  dropping `CFBundleIconName`).
+- **The panel's named uncertainty is closed, first-hand.** The published v0.0.1 DMG was
+  downloaded and mounted: its bundle contains NO `AppIcon.icns` (Xcode 16.4 copied the raw
+  `AppIcon.icon` folder as an ordinary resource) while `CFBundleIconName=AppIcon` IS present.
+  The inference the amended why-text rested on is now observed fact: only the `.icns`
+  presence check discriminates the actool failure; the PlistBuddy check would have passed.
+- **The "next tag must be ≥ v0.1.1" concern is rebutted by the human** (2026-07-26): no
+  installed versions exist, so the shipped-0.1.0-vs-lower-tag UpdateChecker shadow has no
+  victims. Any next tag number is fine.
+- **`CURRENT_PROJECT_VERSION` sibling fixed in the same push:** tag builds now also stamp
+  the build number (`BUILD_NUMBER=$GITHUB_RUN_NUMBER` → `CURRENT_PROJECT_VERSION`), so
+  successive releases stop all reporting build 1 in the About panel.
+
+**Spec:** none (review follow-up).
+**Affects:** .claude/GATES.md (preamble toolchain note), scripts/package-dmg.sh, .github/workflows/build.yml (Package DMG step).

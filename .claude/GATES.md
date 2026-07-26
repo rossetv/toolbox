@@ -26,6 +26,9 @@ Never `--no-verify`. If you cannot make a gate pass, **stop and say so** — tha
 legitimate, respectable outcome. Silently weakening the standard is not.
 
 All commands run from the repo root, on macOS 14+, Apple Silicon.
+`gate: packaged-app-compresses` additionally requires Xcode 26+: below that, actool
+cannot compile the Icon Composer `.icon` document and the gate goes red by design —
+correct fail-loud behaviour, never flakiness (see DECISIONS.md 2026-07-26).
 
 ## Mechanical gates
 
