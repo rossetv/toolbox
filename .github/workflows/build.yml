@@ -26,6 +26,10 @@ jobs:
       - name: Select latest Xcode 26
         run: |
           sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          # Prime the freshly selected toolchain: installs first-launch components and
+          # initialises the XPC agents ibtoold depends on — the Release .icon standalone
+          # icns render crashed with "tool closed the connection" on the unprimed image.
+          sudo xcodebuild -runFirstLaunch
           # Icon Composer .icon compilation needs the icontool helper inside the Xcode
           # bundle for the Release thinned variant; print its presence so a failure log
           # answers the first diagnostic question by itself.
@@ -82,7 +86,9 @@ jobs:
             export VERSION="${GITHUB_REF_NAME#v}"
           fi
           export BUILD_NUMBER="$GITHUB_RUN_NUMBER"
-          scripts/package-dmg.sh
+          # One retry: the asset-catalog agent crash (FB20183399) is reported as
+          # CI-intermittent; a deterministic failure still fails the step on the rerun.
+          scripts/package-dmg.sh || { echo "::warning::package-dmg failed once — retrying"; scripts/package-dmg.sh; }
 
       # Kept in step with `gate: packaged-app-compresses` in .claude/GATES.md — a private temp
       # dir (never a fixed /tmp path, which a stale bundle could make falsely green), the mount
