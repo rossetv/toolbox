@@ -88,5 +88,5 @@ scripts/                          # build-ghostscript.sh, package-dmg.sh, instal
 | Compress estimate time-box | 0.5 s | `Compress/CompressEstimator.swift` (`timeBudget` default) |
 | Output-validation sample pages | 3 | `Services/OutputValidator.swift` (`validate(samplePages:)` default) |
 | App bundle ID | `com.toolbox.app` | `project.yml` (`PRODUCT_BUNDLE_IDENTIFIER`) |
-| App version | `0.1.0`, or the pushed tag less its leading `v` on a tag build (build number from the run number) | `project.yml` (`MARKETING_VERSION`), overridden by `scripts/package-dmg.sh` (`VERSION` env, wired from `GITHUB_REF_NAME` in `.github/workflows/build.yml` for tag builds) |
+| App version | `0.1.0`, or the pushed tag less its leading `v` on a tag build; every CI build stamps the build number from the run number | `project.yml` (`MARKETING_VERSION`), overridden by `scripts/package-dmg.sh` (`VERSION` env, wired from `GITHUB_REF_NAME` in `.github/workflows/build.yml` for tag builds) |
 | Licence | AGPL-3.0-or-later | `LICENSE`, every source file's SPDX header |

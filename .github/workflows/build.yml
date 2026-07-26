@@ -69,8 +69,8 @@ jobs:
 
       # Tag builds stamp the app with the release's own version — the About panel and
       # UpdateChecker must report the tag the DMG was published under, not whatever
-      # project.yml last hard-coded. The build number gets the run number so successive
-      # releases don't all report build 1.
+      # project.yml last hard-coded. Every CI build stamps the build number from the run
+      # number so successive builds don't all report build 1.
       - name: Package DMG
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then

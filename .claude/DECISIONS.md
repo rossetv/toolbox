@@ -543,3 +543,7 @@ Four records set straight after the Opus adversarial review of the icon/version 
 
 **Spec:** none (review follow-up).
 **Affects:** .claude/GATES.md (preamble toolchain note), scripts/package-dmg.sh, .github/workflows/build.yml (Package DMG step).
+
+Addendum (same day, delta review): the build-number stamp applies to EVERY CI build, not
+only tag builds — `build.yml` exports `BUILD_NUMBER` unconditionally. Deliberate: branch/PR
+artefacts get a real build number too, and nothing asserts on it.
