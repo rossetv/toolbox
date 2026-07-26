@@ -24,7 +24,12 @@ jobs:
       # Xcode 26's actool can compile — the image default (16.4) builds an icon-less bundle
       # without erroring. Pick the newest 26.x installed on the runner image.
       - name: Select latest Xcode 26
-        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          # Icon Composer .icon compilation needs the icontool helper inside the Xcode
+          # bundle for the Release thinned variant; print its presence so a failure log
+          # answers the first diagnostic question by itself.
+          ls "$(xcode-select -p)/../Applications/Icon Composer.app/Contents/MacOS" 2>&1 || true
 
       - name: Show toolchain
         run: |

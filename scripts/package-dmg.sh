@@ -35,12 +35,19 @@ xcodegen generate
 
 echo "==> Building $CONFIG"
 rm -rf "$BUILD_DIR" "$DIST_DIR"
-xcodebuild -project "$NAME.xcodeproj" -scheme "$NAME" \
+mkdir -p "$BUILD_DIR"
+# Full build output goes to a log, not /dev/null: a CI failure with the detail discarded
+# is undebuggable (an asset-catalog error cost a round trip to learn exactly this).
+if ! xcodebuild -project "$NAME.xcodeproj" -scheme "$NAME" \
   -configuration "$CONFIG" -derivedDataPath "$BUILD_DIR" \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
   ${VERSION:+MARKETING_VERSION="$VERSION"} \
   ${BUILD_NUMBER:+CURRENT_PROJECT_VERSION="$BUILD_NUMBER"} \
-  build >/dev/null
+  build > "$BUILD_DIR/xcodebuild.log" 2>&1; then
+  echo "build failed — last 80 lines of $BUILD_DIR/xcodebuild.log:" >&2
+  tail -80 "$BUILD_DIR/xcodebuild.log" >&2
+  exit 1
+fi
 
 APP="$BUILD_DIR/Build/Products/$CONFIG/$NAME.app"
 [ -d "$APP" ] || { echo "build produced no app at $APP"; exit 1; }
