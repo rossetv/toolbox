@@ -72,7 +72,9 @@ Sources/Toolbox/DesignSystem/  # Theme tokens + reusable SwiftUI components
 Resources/ghostscript/            # bundled gs tree — git-ignored, built by scripts/build-ghostscript.sh
 Tests/ToolboxTests/            # XCTest suite incl. a real sandboxed-gs run and synthetic fixtures
 scripts/                          # build-ghostscript.sh, package-dmg.sh, install.sh (user-facing one-line installer), make-app-icon.sh/.swift
-.github/workflows/build.yml       # CI: build gs, xcodebuild test, package DMG, guarded notarised release
+.github/workflows/build.yml       # CI: select Xcode 26 (Icon Composer .icon needs actool 26; older toolchains
+                                  # build an icon-less bundle without erroring), build gs, xcodebuild test,
+                                  # package DMG (tag builds pass VERSION=<tag> through), guarded notarised release
 ```
 
 ## Key constants
@@ -86,4 +88,5 @@ scripts/                          # build-ghostscript.sh, package-dmg.sh, instal
 | Compress estimate time-box | 0.5 s | `Compress/CompressEstimator.swift` (`timeBudget` default) |
 | Output-validation sample pages | 3 | `Services/OutputValidator.swift` (`validate(samplePages:)` default) |
 | App bundle ID | `com.toolbox.app` | `project.yml` (`PRODUCT_BUNDLE_IDENTIFIER`) |
+| App version | `0.1.0`, or the pushed tag on a tag build | `project.yml` (`MARKETING_VERSION`), overridden by `scripts/package-dmg.sh` (`VERSION` env, wired from `GITHUB_REF_NAME` in `.github/workflows/build.yml` for tag builds) |
 | Licence | AGPL-3.0-or-later | `LICENSE`, every source file's SPDX header |
