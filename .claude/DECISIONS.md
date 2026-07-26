@@ -477,3 +477,43 @@ clickable affordance — so conforming them would remove the visual signal the f
 Recorded here as deliberate, monocratic (review-team minor fixer), per the CODE_GUIDELINES.md §8.4 bar.
 
 **Affects:** Sources/Toolbox/DesignSystem/Components.swift (SuccessBanner.Tone, FileRow.Lead.accentPill, FileRow.metaAccent).
+
+## 2026-07-26 — Gate edit: `packaged-app-compresses` asserts the app icon (panel-ruled)
+
+A decision panel (3 lensed panellists + hardened judge, all Fable) ruled EDIT on
+`gate: packaged-app-compresses`: approve the strengthened smoke command exactly as proposed —
+add `[ -f "$D/Toolbox.app/Contents/Resources/AppIcon.icns" ]` and a PlistBuddy
+`Print :CFBundleIconName` check — but with the stanza's why-text and audit line amended.
+
+**Trigger:** CI's default Xcode 16.4 `actool` cannot compile the Icon Composer `.icon` document
+and fails silently; CI released a generic-icon DMG while every check ran green.
+`build.yml`'s smoke step (kept in step with this gate by design) gained the same assertions.
+
+**Judge-verified correction adopted into the why-text:** `CFBundleIconName` is declared
+statically in `Resources/Info.plist` (the `INFOPLIST_FILE` template), so that assertion
+survives an `actool` failure and cannot catch the observed defect — only the `.icns` presence
+check discriminates it; the PlistBuddy check is retained because it guards a different
+regression (the template dropping the key, which goes generic silently) and preserves the
+byte-level mirror with CI.
+
+The committed stanza's original audit line self-certified "additive only … no panel needed"; the
+panel replaced it — "this is just additive" is the wedge every future gate-weakening would claim,
+so the ratchet covers ANY edit and self-certified exemptions must not survive in a stanza.
+
+The gate is now toolchain-gated: red on any machine below Xcode 26 is correct fail-loud behaviour
+(a hard local-toolchain requirement), never flakiness — do not misdiagnose it as a test defect.
+
+Stronger assertions (icns byte validation, icon-name value check, `sips` render) were considered
+and rejected as guarding unobserved failures.
+
+**Losing proposals, one line each:** A — approve verbatim incl. the claim that the PlistBuddy
+check catches the `actool` failure (factually wrong on verified code); B — approve command
+verbatim, hedged on the `CFBundleIconName` mechanism instead of verifying it, fix only the audit
+line.
+
+**Named uncertainty (judge-endorsed):** the released broken DMG's Info.plist was never inspected
+first-hand; the survives-`actool`-failure claim rests on the static template. The adopted wording
+is written to hold under either reading.
+
+**Spec:** none (gate governance, no feature spec).
+**Affects:** .claude/GATES.md (gate: packaged-app-compresses), .github/workflows/build.yml (smoke step).

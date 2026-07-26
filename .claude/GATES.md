@@ -82,13 +82,14 @@ xcodebuild -project Toolbox.xcodeproj -scheme Toolbox -configuration Debug test 
 
 ### gate: packaged-app-compresses
 kind: mechanical
-why: A green unit suite does not prove the SHIPPED bundle works: the app must find its bundled `gs`, launch it under the seatbelt sandbox, and actually compress. This is the end-to-end check that the artefact users receive is functional. The mount point is read back from `hdiutil`'s plist output rather than assumed: with any volume already named "Toolbox", attach lands at "/Volumes/Toolbox 1" and a hard-coded path would copy and smoke a stale bundle — a false green.
+why: A green unit suite does not prove the SHIPPED bundle works: the app must find its bundled `gs`, launch it under the seatbelt sandbox, and actually compress. This is the end-to-end check that the artefact users receive is functional. The mount point is read back from `hdiutil`'s plist output rather than assumed: with any volume already named "Toolbox", attach lands at "/Volumes/Toolbox 1" and a hard-coded path would copy and smoke a stale bundle — a false green. The AppIcon.icns assertion exists because an actool too old for the Icon Composer `.icon` document (anything below Xcode 26) ships an icon-less bundle without erroring — CI did exactly that until 2026-07-26. The CFBundleIconName assertion guards a different regression: the key is declared statically in `Resources/Info.plist`, so it survives an actool failure and would not catch one; what it catches is the template dropping the key, which goes generic silently. (The tag-version match is asserted in CI only: `VERSION` diverges from `project.yml`'s default solely on tag builds.)
 added: 2026-07-23 — monocratic (opus)
 edited: 2026-07-25 — panel (see DECISIONS.md): parse the real mount point, fail loud on empty/appless mounts, detach only what was mounted
+edited: 2026-07-26 — panel (see DECISIONS.md): assert AppIcon.icns + CFBundleIconName in the packaged bundle, mirroring build.yml's smoke step
 mandated-by-human: no
 
 ```sh
-D="$(mktemp -d)"; MOUNT=""; trap '[ -n "$MOUNT" ] && hdiutil detach "$MOUNT" -quiet 2>/dev/null || true; rm -rf "$D"' EXIT; set -e; scripts/package-dmg.sh; MOUNT="$(hdiutil attach dist/Toolbox.dmg -nobrowse -plist | grep -A1 '<key>mount-point</key>' | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -1)"; [ -n "$MOUNT" ]; [ -d "$MOUNT/Toolbox.app" ]; cp -R "$MOUNT/Toolbox.app" "$D/"; TOOLBOX_SMOKE=compress "$D/Toolbox.app/Contents/MacOS/Toolbox" | grep -q "SMOKE PASS"
+D="$(mktemp -d)"; MOUNT=""; trap '[ -n "$MOUNT" ] && hdiutil detach "$MOUNT" -quiet 2>/dev/null || true; rm -rf "$D"' EXIT; set -e; scripts/package-dmg.sh; MOUNT="$(hdiutil attach dist/Toolbox.dmg -nobrowse -plist | grep -A1 '<key>mount-point</key>' | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -1)"; [ -n "$MOUNT" ]; [ -d "$MOUNT/Toolbox.app" ]; cp -R "$MOUNT/Toolbox.app" "$D/"; [ -f "$D/Toolbox.app/Contents/Resources/AppIcon.icns" ]; /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$D/Toolbox.app/Contents/Info.plist" >/dev/null; TOOLBOX_SMOKE=compress "$D/Toolbox.app/Contents/MacOS/Toolbox" | grep -q "SMOKE PASS"
 ```
 
 ## Semantic gates
