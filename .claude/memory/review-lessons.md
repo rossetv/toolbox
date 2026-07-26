@@ -86,3 +86,29 @@ apply as a checklist during review.
   last round of fixes is a stale binary, however green the tree is.
 - **One fix per commit, full suite after each, revert anything that cascades.** A green tree with
   fewer fixes beats a half-refactored broken one — especially with nobody awake to unblock it.
+
+## Concurrency retrofits (from the recompress review rounds, 2026-07-26)
+
+- **Making a synchronous method `async` re-opens every critical section it sat in.** Each new
+  suspension point needs an in-flight guard set in the synchronous prefix, BEFORE the first await —
+  and the guard is not the display state: keying a busy overlay on guard membership turned an
+  instant switch into a fake run. Guard and render from different signals.
+- **A phase serialised for concurrency is not serialised for cancellation.** "B runs after A"
+  means cancelling A merely makes A return — which starts B. Every phase boundary needs its own
+  cancellation check, and the engine may return normally after its final checkpoint, so check again
+  between the call and the commit.
+- **Blocking file I/O goes off the main actor via a GCD queue bridged with a continuation — never
+  `Task.detached`.** The cooperative pool is not a background queue; a parked cooperative thread
+  starves every job in the app. The reference shapes are already in the repo (`GhostscriptRunner.run`).
+- **Never delete a user's file on an assumption a throw implies it is gone.** A swap's step 1 can
+  fail for reasons that never touched the parked file (read-only folder, immutable flag); re-check
+  existence in the catch and split the disposition on evidence.
+- **The first test that exercises a path at width > 1 must re-derive the shared double's own
+  arity.** A single-continuation gate deadlocks at two waiters; an `@unchecked Sendable` stub with
+  bare counters races. The double is part of the concurrency contract.
+- **A behaviour change to a shared entry point is a diff on every existing test that calls it** —
+  enumerate them with a stated outcome each, and re-derive every sibling in a test block when one
+  premise is fixed.
+- **Verify the launched artefact is the build you think it is.** `ls | head -1` over DerivedData
+  handed the self-test a pre-feature binary; resolve `BUILT_PRODUCTS_DIR` from the project instead.
+  (The "re-build from the final tree" lesson, one rung earlier: also re-LAUNCH the right product.)
