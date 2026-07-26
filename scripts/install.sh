@@ -67,7 +67,7 @@ main() {
 
     local dest="/Applications"
     [ -w "$dest" ] || { dest="$HOME/Applications"; mkdir -p "$dest"; }
-    echo "Installing to $dest…"
+    echo "Installing to ${dest}…"
     rm -rf "${dest:?}/Toolbox.app"
     ditto "$mount/Toolbox.app" "$dest/Toolbox.app"
 
