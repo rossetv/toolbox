@@ -547,3 +547,18 @@ Four records set straight after the Opus adversarial review of the icon/version 
 Addendum (same day, delta review): the build-number stamp applies to EVERY CI build, not
 only tag builds — `build.yml` exports `BUILD_NUMBER` unconditionally. Deliberate: branch/PR
 artefacts get a real build number too, and nothing asserts on it.
+
+## 2026-07-26 — CI primes the selected Xcode; Package DMG step retries once
+
+**Trigger:** the Release build's standalone `.icon`-to-`.icns` render crashed in `ibtoold`
+("tool closed the connection", FB20183399) on the runner, while the same catalog compiled
+fine in Debug. First hypothesis: the freshly-selected Xcode 26.3 is unprimed on the image.
+
+`sudo xcodebuild -runFirstLaunch` runs immediately after `xcode-select -s` to install
+first-launch components and initialise the XPC agents `ibtoold` depends on. The Package DMG
+step's `scripts/package-dmg.sh` call now retries once (`|| { ...; scripts/package-dmg.sh; }`)
+to cover the reported CI-intermittent variant — a deterministic crash still fails the rerun,
+so the retry doesn't mask a real regression, only flakiness on an unprimed toolchain.
+
+**Spec:** none (CI hardening).
+**Affects:** .github/workflows/build.yml (Select latest Xcode 26 step, Package DMG step).
