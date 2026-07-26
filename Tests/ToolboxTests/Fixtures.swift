@@ -16,7 +16,21 @@ import PDFKit
 /// with a deterministic PRNG. **No personal documents, paths, names, or contents ever
 /// enter the test suite.** Extended across Phase 0 (image here in 0.2; the rest in 0.3).
 enum Fixtures {
-    enum FixtureError: Error { case contextCreation, imageRender }
+    enum FixtureError: Error { case contextCreation, imageRender, aclFailed }
+
+    /// Add or remove the ACL that lets a directory's existing entries be read and removed but no
+    /// new ones be created — the deterministic stand-in for a read-only output/cache folder:
+    /// asymmetric in exactly the way needed to fail a create/park step while leaving removal (and
+    /// hence a promote step that only deletes) unaffected.
+    static func denyingNewEntries(_ deny: Bool, at directory: URL) throws {
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = [deny ? "+a" : "-a", "everyone deny add_file,add_subdirectory",
+                           directory.path]
+        try chmod.run()
+        chmod.waitUntilExit()
+        guard chmod.terminationStatus == 0 else { throw FixtureError.aclFailed }
+    }
 
     /// US Letter at 72 pt/in.
     static let letter = CGRect(x: 0, y: 0, width: 612, height: 792)

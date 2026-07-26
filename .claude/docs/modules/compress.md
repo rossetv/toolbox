@@ -27,11 +27,12 @@ and drives the batch UI.
 | `Sources/Toolbox/Compress/BilevelScan.swift` | `BilevelScan.binarise(_:)` — near-bilevel gate (`isNearBilevel`) + Otsu-threshold reduction to 1-bit `/DeviceGray` |
 | `Sources/Toolbox/Compress/CCITTEncoder.swift` | `CCITTEncoder.encode(_:)` — CCITT Group 4 via an in-memory TIFF (ImageIO), strip lifted back out for `/CCITTFaxDecode` |
 | `Sources/Toolbox/Compress/BilevelPDFComposer.swift` | `BilevelPDFComposer.compose(pages:)` — builds a fresh classic-xref PDF whose pages are CCITT image XObjects |
-| `Sources/Toolbox/Compress/CompressEstimator.swift` | `CompressEstimator.estimate(_:preset:)` — time-boxed, parse-only pre-run size prediction |
-| `Sources/Toolbox/Compress/CompressViewModel.swift` | `@MainActor` state: queue, preset, output folder, per-job estimate overlay, heavy-version switch (`heavyVersions(for:)`, `switchVersion(for:)`, `rerunForSwitch`) |
-| `Sources/Toolbox/Compress/CompressView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel |
-| `Sources/Toolbox/Compress/HeavyCompressionPopover.swift` | The heavy-capsule popover: shows both versions, drives `switchVersion(for:)` |
-| `Sources/Toolbox/Compress/RunnerUpStore.swift` | `RunnerUpStore` — `@MainActor` cache of losing (gs) versions for `.compressedHeavy` jobs (spec R15, documented exception to "no persisted app state"); `sweepStale()` runs once from `CompressViewModel.init` (see [App](app.md) — `RootView` owns the view model as a `@StateObject` under the app's single `Window` scene, so this fires exactly once per run), `removeAllOnDisk()` on quit (`AppDelegate.applicationWillTerminate`, see [App](app.md)) |
+| `Sources/Toolbox/Compress/CompressEstimator.swift` | `CompressEstimator.estimate(_:preset:)` (single preset) and `.analyse(_:)` (every preset from one analysis pass, feeds R16's recompress prediction) — time-boxed, parse-only pre-run size prediction |
+| `Sources/Toolbox/Compress/CompressViewModel.swift` | `@MainActor` state: queue, preset, output folder, per-job estimate overlay, the recompress/arm flow (`recompressState(for:)`, `armedJobs`, `recompressPrediction(for:at:)`, `runRecompressPhase`) and the version switch (`versions(for:)`, `switchVersion(for:)`, `useVersion(_:for:)`) — both drive `VersionStore` |
+| `Sources/Toolbox/Compress/CompressView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel, the armed-recompress `SuccessBanner` (`.accent` tone) |
+| `Sources/Toolbox/Compress/VersionStore.swift` | `VersionStore` — `@MainActor` display authority for every row's versions (R14); `RowVersions` (shipped/runnerUp/previous + `cards`, `capsuleTitle`), `FileVersion`, `EngineVariant` (`.mrc`/`.plain`/`.original`); the only path that discards a parked file (`setSlot`, `discardRow`, `retain(only:)`) |
+| `Sources/Toolbox/Compress/VersionsPopover.swift` | The capsule's popover: every version of a row (shipped/runner-up/previous) as thumbnail cards, "Use this" drives `CompressViewModel.useVersion(_:for:)` |
+| `Sources/Toolbox/Compress/RunnerUpStore.swift` | `RunnerUpStore` — `@MainActor` cache of parked (runner-up and previous) versions on disk (spec R15, documented exception to "no persisted app state"); `sweepStale()` runs once from `CompressViewModel.init` (see [App](app.md) — `RootView` owns the view model as a `@StateObject` under the app's single `Window` scene, so this fires exactly once per run), `removeAllOnDisk()` on quit (`AppDelegate.applicationWillTerminate`, see [App](app.md)) |
 | `Sources/Toolbox/Compress/MRC/MRCClassifier.swift` | `MRCClassifier.structure(of:)` (R2 structural sweep), `.features(of:)` + `.verdict(features:)` (R3 eligibility envelope), `.sourceImageLongEdge(of:)` (the scan's native pixel resolution — caps the MRC render DPI) |
 | `Sources/Toolbox/Compress/MRC/MRCSegmenter.swift` | `MRCSegmenter.binarise(_:)` (Sauvola-class local-threshold text mask) + `.segment(_:)` (fg/bg colour-layer split; `colourLayer(…flatFill:)` fills the other class — spread-fill for the paper background, flat global-mean fill for the ink foreground) |
 | `Sources/Toolbox/Compress/MRC/MRCPageEncoder.swift` | `MRCPageEncoder.encode(_:preset:)` — CCITT mask + JPEG fg/bg layers; **re-emits the foreground at `MRCSegmenter.foregroundLayerScale` of the mask resolution** (`resample`) so the mask soft-mask stays sharp; `.recompose(_:)` rebuilds a page for the verifier |
@@ -134,7 +135,19 @@ and drives the batch UI.
   `alternateOutput` (R7): normally the gs output; when gs itself was not smaller than
   the input, a copy of the untouched original instead (`runnerUpBytes == before` is
   the marker — R6 forbids offering a larger-than-input file, and the UI labels that
-  card "Original"; `CompressViewModel.HeavyVersions.runnerUpIsOriginal`).
+  card "Original"; `CompressViewModel` maps this to `EngineVariant.original`, see
+  `VersionStore.swift`).
+- **A finished row can be recompressed at a different preset without re-adding the
+  file** (`CompressViewModel.recompressState(for:)`): switching the batch preset arms
+  every finished row whose own preset differs — `.futile` if that preset already came
+  back no-gain, `.instantSwitch` if a parked `previous` version already matches it
+  (no re-run), else `.armed`. Pressing run serialises the armed rows through the
+  engine directly, AFTER the normal queue phase finishes (`runRecompressPhase`), so
+  the batch stays within one normal run's process width (R9's arming is disabled for
+  the run's duration). A recompress always reads the ORIGINAL input, never the
+  row's current output (D2). `VersionStore` keeps at most one parked `previous`
+  version per row (D3) — arming a second recompress discards whichever `previous`
+  the row already held.
 - **`RunnerUpStore` is the one documented exception to "no persisted app state"**
   (spec R15): it caches the losing gs version on disk (`caches/Toolbox/runner-ups`) so
   the heavy-capsule popover's switch is instant. `sweepStale()` runs once, from

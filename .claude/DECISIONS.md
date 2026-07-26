@@ -464,3 +464,16 @@ monocratic (fable). The `SegmentedPreset` doc comment that asserted the no-borde
 the code beneath stroked every card was corrected in the same change.
 
 **Affects:** Sources/Toolbox/DesignSystem/Components.swift (PDFThumbnail, DropZone, SegmentedPreset).
+
+## 2026-07-26 — Non-interactive accent uses on the recompress-quality branch recorded as deliberate
+
+Adversarial UI review flagged three new non-interactive uses of the single accent colour as
+divergences from `DESIGN.md` §6 ("reserved exclusively for interactive elements"):
+`SuccessBanner.Tone.accent` (an armed-state disc plus a tinted banner background),
+`FileRow.Lead.accentPill` (a status pill, not a control), and `FileRow.metaAccent` (a caption).
+All three render the human-approved recompress-flow mockups from the spec's UI reference —
+they communicate the armed/will-recompress state the recompress feature exists to show, not a
+clickable affordance — so conforming them would remove the visual signal the feature depends on.
+Recorded here as deliberate, monocratic (review-team minor fixer), per the CODE_GUIDELINES.md §8.4 bar.
+
+**Affects:** Sources/Toolbox/DesignSystem/Components.swift (SuccessBanner.Tone, FileRow.Lead.accentPill, FileRow.metaAccent).

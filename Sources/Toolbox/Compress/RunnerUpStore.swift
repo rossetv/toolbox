@@ -44,10 +44,12 @@ final class RunnerUpStore {
         Self.removeAllOnDisk(root: root)
     }
 
-    /// Reserve a cache URL for a job's runner-up, via the same serial allocator as every
-    /// batch output (C4). Call in the view-model's up-front reservation loop.
-    func reserveURL(for input: URL, reserving reserved: inout Set<String>) -> URL {
-        FileNaming.output(for: input, suffix: "runner-up", folder: root, reserving: &reserved)
+    /// Reserve a cache URL for one of a job's parked versions, via the same serial allocator as
+    /// every batch output (C4). `suffix` keeps a row's runner-up and its parked previous version
+    /// (R14) apart in the shared cache root. Call in the view-model's up-front reservation loop.
+    func reserveURL(for input: URL, suffix: String = "runner-up",
+                    reserving reserved: inout Set<String>) -> URL {
+        FileNaming.output(for: input, suffix: suffix, folder: root, reserving: &reserved)
     }
 
     /// Why a switch could not be completed, in the one shape where the caller cannot simply retry.
@@ -66,25 +68,41 @@ final class RunnerUpStore {
         }
     }
 
-    /// Atomically exchange the shipped file's content with the runner-up's (the UI switch).
+    /// The shared three-step algorithm behind both `switchVersions` and `promote`: park the
+    /// shipped file beside itself under a dot-temp name (never straight into the cache root — see
+    /// `promote`'s doc for why), move `incoming` into the shipped slot, and on success relocate the
+    /// park into `destination`; on failure to promote, restore the park back to `shipped`.
     ///
-    /// Throws only when the switch did not happen, in one of two shapes the caller must tell
-    /// apart: any ordinary throw leaves the shipped file exactly as it was, whereas
-    /// `SwitchError.shippedStranded` means the promotion failed AND the shipped file could not be
-    /// restored — it survives at the park path the error names, and nothing else will look for it.
-    /// A successful switch never throws; if the demoted version cannot take the cache slot it is
-    /// discarded, leaving the runner-up absent — callers already handle a missing runner-up.
-    func switchVersions(shipped: URL, runnerUp: URL) throws {
+    /// `nonisolated` and `async`: the blocking body runs on a GCD queue bridged with a checked
+    /// continuation (CODE_GUIDELINES §6.1's named shape — see `GhostscriptRunner.run`), never
+    /// inline on the caller's executor. Both `switchVersions` (the main actor, one click, one row,
+    /// on an app that is idle by `useVersion`'s `guard !isRunning`) and `promote` (the recompress
+    /// commit, once per row inside phase 2's sliding window) await it off whichever actor called.
+    private nonisolated func performSwap(incoming: URL, shipped: URL, destination: URL) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try self.performSwapBlocking(incoming: incoming, shipped: shipped,
+                                                 destination: destination)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// The straight-line blocking `FileManager` I/O — never called directly; always through
+    /// `performSwap`'s GCD bridge above, which keeps it off both the main actor and the
+    /// cooperative pool.
+    private nonisolated func performSwapBlocking(incoming: URL, shipped: URL,
+                                                  destination: URL) throws {
         let fm = FileManager.default
-        // Parked alongside the shipped file, not in the sweep-on-launch cache dir: a crash in
-        // this window must not destroy the user's already-shipped output. This mirrors the
-        // engine's `.toolbox-<uuid>` dot-temp idiom, so an orphaned park file left after a crash
-        // matches the accepted residual pattern elsewhere in the app.
-        let parked = shipped.deletingLastPathComponent()
-            .appendingPathComponent(".toolbox-swap-\(UUID().uuidString).pdf")
-        try fm.moveItem(at: shipped, to: parked)          // park the shipped version
+        let temp = shipped.deletingLastPathComponent()
+            .appendingPathComponent(".toolbox-\(UUID().uuidString).pdf")
+        try fm.moveItem(at: shipped, to: temp)            // park the shipped version
         do {
-            try fm.moveItem(at: runnerUp, to: shipped)    // promote the runner-up
+            try fm.moveItem(at: incoming, to: shipped)    // promote the incoming version
         } catch {
             // Restore on the documented path for each state: `shipped` is normally absent (we
             // just moved it out), so a plain `moveItem` restores it; if something recreated it
@@ -95,23 +113,75 @@ final class RunnerUpStore {
             // the park path, rather than reporting a mere failed switch.
             do {
                 if fm.fileExists(atPath: shipped.path) {
-                    _ = try fm.replaceItemAt(shipped, withItemAt: parked)
+                    _ = try fm.replaceItemAt(shipped, withItemAt: temp)
                 } else {
-                    try fm.moveItem(at: parked, to: shipped)
+                    try fm.moveItem(at: temp, to: shipped)
                 }
             } catch {
-                throw SwitchError.shippedStranded(parked: parked)
+                throw SwitchError.shippedStranded(parked: temp)
             }
             throw error
         }
         do {
-            try fm.moveItem(at: parked, to: runnerUp)     // demote the old winner into the cache slot
+            try fm.moveItem(at: temp, to: destination)    // relocate the parked version into the slot
         } catch {
             // The switch already succeeded from the user's perspective — shipped holds the new
             // content. Discard the stranded parked file rather than throw; a missing runner-up is
             // already a designed-for state (R10's re-run path).
-            try? fm.removeItem(at: parked)
+            try? fm.removeItem(at: temp)
         }
+    }
+
+    /// Atomically exchange the shipped file's content with the runner-up's (the UI switch).
+    ///
+    /// Throws only when the switch did not happen, in one of two shapes the caller must tell
+    /// apart: any ordinary throw leaves the shipped file exactly as it was, whereas
+    /// `SwitchError.shippedStranded` means the promotion failed AND the shipped file could not be
+    /// restored — it survives at the park path the error names, and nothing else will look for it.
+    /// A successful switch never throws; if the demoted version cannot take the cache slot it is
+    /// discarded, leaving the runner-up absent — callers already handle a missing runner-up.
+    func switchVersions(shipped: URL, runnerUp: URL) async throws {
+        try await performSwap(incoming: runnerUp, shipped: shipped, destination: runnerUp)
+    }
+
+    /// The R12 recompress commit: park the currently-shipped file, promote `fresh` into its place,
+    /// then move the parked version into the cache slot `parked` names.
+    ///
+    /// **Three steps, exactly as `switchVersions` does it, and for the same reason.** The version
+    /// the user currently has is parked into a `.toolbox-<uuid>` dot-temp **beside the shipped
+    /// file** — never straight into `parked`, which lives in the cache root. Two reasons, both
+    /// load-bearing: the cache root is swept at launch, so a crash in this window with the user's
+    /// only delivered copy sitting in it would destroy that copy; and the cache root is frequently
+    /// on a different volume from the output folder, where `moveItem` silently degrades to a
+    /// copy-then-delete and the "atomic" park is no longer atomic. The dot-temp idiom matches the
+    /// engine's, so a crash leftover is the already-accepted residual pattern.
+    ///
+    /// Failure shapes, in the order the steps run:
+    /// 1. **Park fails** — nothing has moved; an ordinary throw, shipped file untouched.
+    /// 2. **Promote fails** — the park is undone by the same documented restore `switchVersions`
+    ///    uses, then the promote's own error is rethrown. If even the restore fails,
+    ///    `SwitchError.shippedStranded` carries the dot-temp path, because the user's file is no
+    ///    longer where they left it and nothing else will ever look for it there.
+    /// 3. **Reaching the cache slot fails** — the commit has ALREADY succeeded from the user's
+    ///    point of view (their file holds the new version), so this **does not throw**: the parked
+    ///    copy is discarded instead of being stranded under a hidden dot-name. The caller therefore
+    ///    must not assume a file exists at `parked` after a successful return — see `commit` in the
+    ///    view model, and `useVersion`'s already-designed-for "that version is no longer available"
+    ///    path (a `previous` slot whose file is gone is an existing, handled state, not a new one).
+    ///
+    /// The old version therefore survives every path on which the promotion did NOT happen, which
+    /// is what lets an armed row keep its result when a recompress fails.
+    ///
+    /// `async`, and off the main actor: step 3 crosses from the output folder into the cache root,
+    /// which is routinely a different volume, where `moveItem` silently degrades to a copy of the
+    /// whole PDF. Run once per row through phase 2's sliding window on the main actor, that copy
+    /// freezes the UI. The caller nevertheless AWAITS the transfer — a fire-and-forget swap would
+    /// leave the parked file's arrival racing the commit that records its slot. `performSwap`'s
+    /// GCD-queue bridge deliberately does not inherit cancellation — a checked continuation never
+    /// does — so a cancel landing mid-swap cannot tear the three steps apart with the user's file
+    /// in the dot-temp.
+    func promote(fresh: URL, to shipped: URL, parking parked: URL) async throws {
+        try await performSwap(incoming: fresh, shipped: shipped, destination: parked)
     }
 
     func discard(_ url: URL) {

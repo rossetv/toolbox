@@ -43,9 +43,13 @@ struct CompressEstimator {
         self.timeBudget = timeBudget
     }
 
-    func estimate(_ input: URL, preset: CompressPreset) async -> SizeEstimate {
-        await estimateAll(input)[preset] ?? Self.fallbackEstimate(
-            inputSize: Self.fileSize(input), preset: preset)
+    /// A single analysis pass's result: the per-preset predictions, and the classification they
+    /// were derived from. The classification is nil when the analysis failed or overran its time
+    /// box — the estimates are then the typical-range fallback, and any caller that reasons about
+    /// the engine path (R16) must not assume one.
+    struct Analysis {
+        let contentType: PDFContentType?
+        let estimates: [CompressPreset: SizeEstimate]
     }
 
     /// Predictions for EVERY preset, from a single analysis pass.
@@ -55,7 +59,7 @@ struct CompressEstimator {
     /// dictionary lookup rather than a fresh analysis — previously each switch re-analysed every
     /// queued file, blanking the rows into their "analysing" state and making the list appear to
     /// reload on every click.
-    func estimateAll(_ input: URL) async -> [CompressPreset: SizeEstimate] {
+    func analyse(_ input: URL) async -> Analysis {
         let inputSize = Self.fileSize(input)
         let analyser = self.analyser
         let measured = await Self.timeBoxed(seconds: timeBudget) {
@@ -69,7 +73,7 @@ struct CompressEstimator {
                 out[preset] = Self.fallbackEstimate(inputSize: inputSize, preset: preset)
             }
         }
-        return out
+        return Analysis(contentType: measured?.contentType, estimates: out)
     }
 
     /// What a single analysis pass yields — preset-independent.

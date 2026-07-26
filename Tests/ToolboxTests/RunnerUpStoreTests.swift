@@ -45,7 +45,7 @@ final class RunnerUpStoreTests: XCTestCase {
         XCTAssertEqual(urlB.lastPathComponent, "scan-runner-up-1.pdf")
     }
 
-    func testSwitchExchangesContents() throws {
+    func testSwitchExchangesContents() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -54,7 +54,7 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         try Data("runner-up-content".utf8).write(to: runnerUp)
 
-        try store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+        try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
 
         XCTAssertEqual(try Data(contentsOf: shipped), Data("runner-up-content".utf8))
         XCTAssertEqual(try Data(contentsOf: runnerUp), Data("shipped-content".utf8))
@@ -62,7 +62,7 @@ final class RunnerUpStoreTests: XCTestCase {
 
     /// If promoting the runner-up fails, the parked shipped file must be restored — the user's
     /// output must survive every failure path.
-    func testSwitchRestoresOnFailure() throws {
+    func testSwitchRestoresOnFailure() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -71,7 +71,10 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         // No runner-up file written — the promote move must fail.
 
-        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+        do {
+            try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+            XCTFail("an absent runner-up must fail the switch")
+        } catch {}
         XCTAssertTrue(FileManager.default.fileExists(atPath: shipped.path))
         XCTAssertEqual(try Data(contentsOf: shipped), Data("shipped-content".utf8))
     }
@@ -80,7 +83,7 @@ final class RunnerUpStoreTests: XCTestCase {
     /// throw with the runner-up untouched. Promoting it into the vacant path would leave the cache
     /// slot empty while the row still claims two versions, which is how the caller ends up shipping
     /// one version under the other's label and byte count.
-    func testSwitchWithAbsentShippedThrowsAndLeavesTheRunnerUpInPlace() throws {
+    func testSwitchWithAbsentShippedThrowsAndLeavesTheRunnerUpInPlace() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -88,21 +91,24 @@ final class RunnerUpStoreTests: XCTestCase {
         let runnerUp = root.appendingPathComponent("runner-up.pdf")
         try Data("runner-up-content".utf8).write(to: runnerUp)
 
-        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+        do {
+            try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+            XCTFail("an absent shipped file must fail the switch")
+        } catch {}
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: shipped.path),
                        "a failed switch must not conjure the deleted file back")
         XCTAssertEqual(try Data(contentsOf: runnerUp), Data("runner-up-content".utf8),
                        "the runner-up must survive a switch that did not happen")
         let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix(".toolbox-swap-") }
+            .filter { $0.hasPrefix(".toolbox-") }
         XCTAssertTrue(leftoverSwapFiles.isEmpty)
     }
 
     /// A promote that fails AFTER the shipped file was parked must restore it — via the
     /// documented `moveItem` path, since the shipped slot is empty at that moment. An absent
     /// runner-up forces exactly that sequence deterministically.
-    func testFailedPromoteRestoresTheShippedFile() throws {
+    func testFailedPromoteRestoresTheShippedFile() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -110,14 +116,17 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         let runnerUp = root.appendingPathComponent("runner-up.pdf")   // never written
 
-        XCTAssertThrowsError(try store.switchVersions(shipped: shipped, runnerUp: runnerUp)) { error in
+        do {
+            try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+            XCTFail("an absent runner-up must fail the promote")
+        } catch {
             XCTAssertFalse(error is RunnerUpStore.SwitchError,
                            "the restore succeeded, so the failure must surface as the promote's own error")
         }
         XCTAssertEqual(try Data(contentsOf: shipped), Data("shipped-content".utf8),
                        "a failed promote must put the user's shipped file back untouched")
         let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix(".toolbox-swap-") }
+            .filter { $0.hasPrefix(".toolbox-") }
         XCTAssertTrue(leftoverSwapFiles.isEmpty, "the park file must not be left behind")
     }
 
@@ -129,7 +138,7 @@ final class RunnerUpStoreTests: XCTestCase {
     /// runner-up's directory while still permitting removal of existing ones — asymmetric in
     /// exactly the way needed: the promote (which removes the runner-up entry) succeeds, and only
     /// the demote (which creates a new entry there) fails.
-    func testDemoteFailureDoesNotThrowAndShippedHoldsNewContent() throws {
+    func testDemoteFailureDoesNotThrowAndShippedHoldsNewContent() async throws {
         let root = try tempRoot()
         let store = RunnerUpStore(rootOverride: root)
 
@@ -141,19 +150,14 @@ final class RunnerUpStoreTests: XCTestCase {
         try Data("shipped-content".utf8).write(to: shipped)
         try Data("runner-up-content".utf8).write(to: runnerUp)
 
-        let acl = Process()
-        acl.executableURL = URL(fileURLWithPath: "/bin/chmod")
-        acl.arguments = ["+a", "everyone deny add_file,add_subdirectory", runDir.path]
-        try acl.run()
-        acl.waitUntilExit()
-        XCTAssertEqual(acl.terminationStatus, 0, "setting up the ACL must succeed for the test to be meaningful")
+        try Fixtures.denyingNewEntries(true, at: runDir)
 
-        XCTAssertNoThrow(try store.switchVersions(shipped: shipped, runnerUp: runnerUp))
+        try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
 
         XCTAssertEqual(try Data(contentsOf: shipped), Data("runner-up-content".utf8))
 
         let leftoverSwapFiles = try FileManager.default.contentsOfDirectory(atPath: root.path)
-            .filter { $0.hasPrefix(".toolbox-swap-") }
+            .filter { $0.hasPrefix(".toolbox-") }
         XCTAssertTrue(leftoverSwapFiles.isEmpty, "the parked file must be discarded, not stranded")
     }
 
@@ -194,5 +198,112 @@ final class RunnerUpStoreTests: XCTestCase {
         store.discard(file)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    // MARK: R12 commit protocol (recompress)
+
+    /// The commit: the previously shipped file ends up in the cache slot `parking` names and the
+    /// fresh result takes its place. Every move lands, and neither the temp path nor the
+    /// beside-the-shipped-file dot-temp is left behind.
+    func testPromoteParksTheShippedFileAndLandsTheFreshOne() async throws {
+        let root = try tempRoot()
+        let delivery = root.appendingPathComponent("delivery", isDirectory: true)
+        try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
+        let store = RunnerUpStore(rootOverride: root)
+
+        // The shipped file lives where the USER's output lives, not in the cache root — the whole
+        // point of the three-step shape is that the two are different places.
+        let shipped = delivery.appendingPathComponent("shipped.pdf")
+        let fresh = delivery.appendingPathComponent(".toolbox-recompress.pdf")
+        let parked = root.appendingPathComponent("shipped-previous.pdf")
+        try Data("old-version".utf8).write(to: shipped)
+        try Data("new-version".utf8).write(to: fresh)
+
+        try await store.promote(fresh: fresh, to: shipped, parking: parked)
+
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("new-version".utf8))
+        XCTAssertEqual(try Data(contentsOf: parked), Data("old-version".utf8),
+                       "the version the user had must reach the cache slot it was reserved, not "
+                     + "merely survive somewhere")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fresh.path))
+        // The intermediate dot-temp is a transient, not a resting place: nothing named
+        // `.toolbox-*` may survive beside the delivered file.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: delivery.path)
+            .filter { $0.hasPrefix(".toolbox-") }
+        XCTAssertTrue(leftovers.isEmpty, "the dot-temp must not outlive the commit: \(leftovers)")
+    }
+
+    /// The third step is best-effort by design: if the parked version cannot reach its cache slot
+    /// the commit still SUCCEEDS (the user has their new file) and the old version is discarded
+    /// rather than stranded under a hidden dot-name nothing will ever look for.
+    func testPromoteSucceedsAndDiscardsWhenTheParkSlotIsUnreachable() async throws {
+        let root = try tempRoot()
+        let delivery = root.appendingPathComponent("delivery", isDirectory: true)
+        try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
+        let store = RunnerUpStore(rootOverride: root)
+
+        let shipped = delivery.appendingPathComponent("shipped.pdf")
+        let fresh = delivery.appendingPathComponent(".toolbox-recompress.pdf")
+        // A park path inside a directory that does not exist: the move to the cache slot cannot
+        // succeed, deterministically.
+        let parked = root.appendingPathComponent("absent-dir/shipped-previous.pdf")
+        try Data("old-version".utf8).write(to: shipped)
+        try Data("new-version".utf8).write(to: fresh)
+
+        // The commit must not throw here — an unreachable park slot is a best-effort third step,
+        // so a throw out of this line is itself the failure the test is looking for.
+        try await store.promote(fresh: fresh, to: shipped, parking: parked)
+
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("new-version".utf8),
+                       "the promotion is what the user pressed the button for; it stands")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: delivery.path)
+            .filter { $0.hasPrefix(".toolbox-") }
+        XCTAssertTrue(leftovers.isEmpty, "a park that cannot land is discarded, never stranded")
+    }
+
+    /// R12's load-bearing guarantee: the old version survives any failure. An absent `fresh` makes
+    /// the promote move fail deterministically, after the shipped file has already been parked.
+    func testPromoteFailureRestoresTheShippedFile() async throws {
+        let root = try tempRoot()
+        let delivery = root.appendingPathComponent("delivery", isDirectory: true)
+        try FileManager.default.createDirectory(at: delivery, withIntermediateDirectories: true)
+        let store = RunnerUpStore(rootOverride: root)
+
+        let shipped = delivery.appendingPathComponent("shipped.pdf")
+        let fresh = delivery.appendingPathComponent(".toolbox-recompress.pdf")   // never written
+        let parked = root.appendingPathComponent("shipped-previous.pdf")
+        try Data("old-version".utf8).write(to: shipped)
+
+        do {
+            try await store.promote(fresh: fresh, to: shipped, parking: parked)
+            XCTFail("an absent fresh file must fail the promotion")
+        } catch {
+            XCTAssertFalse(error is RunnerUpStore.SwitchError,
+                           "the restore succeeded, so the promote's own error must surface")
+        }
+        XCTAssertEqual(try Data(contentsOf: shipped), Data("old-version".utf8),
+                       "a failed commit must put the user's file back untouched")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path),
+                       "the park slot must not keep a copy after the restore")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: delivery.path)
+            .filter { $0.hasPrefix(".toolbox-") }
+        XCTAssertTrue(leftovers.isEmpty,
+                      "the dot-temp must be emptied by the restore: \(leftovers)")
+    }
+
+    /// Parked previous versions and runner-ups share the cache root, so they must not collide: the
+    /// suffix is what keeps a row's two parked files apart under the same serial allocator.
+    func testReserveURLHonoursTheRequestedSuffix() throws {
+        let root = try tempRoot()
+        let store = RunnerUpStore(rootOverride: root)
+        let input = root.appendingPathComponent("scan.pdf")
+
+        var reserved = Set<String>()
+        let runnerUp = store.reserveURL(for: input, reserving: &reserved)
+        let previous = store.reserveURL(for: input, suffix: "previous", reserving: &reserved)
+
+        XCTAssertEqual(runnerUp.lastPathComponent, "scan-runner-up.pdf")
+        XCTAssertEqual(previous.lastPathComponent, "scan-previous.pdf")
     }
 }

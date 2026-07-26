@@ -98,7 +98,10 @@ enum FileNaming {
     /// Canonicalised first (§5.1: identity is compared on canonical paths) so a symlinked
     /// directory (e.g. `~/Docs` → `~/Documents`) can't let two inputs "reserve" what is really
     /// the same on-disk name under two different-looking keys.
-    private static func reservationKey(for url: URL) -> String {
+    ///
+    /// Internal rather than private so a caller holding a path it did not allocate — an existing
+    /// result being recompressed — can seed it into the same reservation set (R11).
+    static func reservationKey(for url: URL) -> String {
         url.canonical.path.precomposedStringWithCanonicalMapping.lowercased()
     }
 }

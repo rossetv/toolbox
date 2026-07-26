@@ -69,7 +69,8 @@ final class EstimatorTests: XCTestCase {
         let input = try Fixtures.imagePDF()
 
         let start = Date()
-        let estimate = await estimator.estimate(input, preset: .balanced)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertLessThan(elapsed, 1.0, "estimate took \(elapsed)s — real per-file analysis should return promptly")
@@ -80,7 +81,8 @@ final class EstimatorTests: XCTestCase {
         let estimator = CompressEstimator(timeBudget: 0.5)
         let input = try Fixtures.bornDigitalPDF()
 
-        let estimate = await estimator.estimate(input, preset: .balanced)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
 
         XCTAssertFalse(estimate.isFallback)
     }
@@ -91,7 +93,8 @@ final class EstimatorTests: XCTestCase {
         let input = try Fixtures.imagePDF()
 
         let start = Date()
-        let estimate = await estimator.estimate(input, preset: .balanced)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
         let elapsed = Date().timeIntervalSince(start)
 
         XCTAssertLessThan(elapsed, 1.0, "the time box should return well before the injected 2s delay")
@@ -103,7 +106,8 @@ final class EstimatorTests: XCTestCase {
         let estimator = CompressEstimator(analyser: FailingAnalyser(), timeBudget: 0.5)
         let input = try Fixtures.imagePDF()
 
-        let estimate = await estimator.estimate(input, preset: .smallestSize)
+        let analysis = await estimator.analyse(input)
+        let estimate = try XCTUnwrap(analysis.estimates[.smallestSize])
 
         XCTAssertTrue(estimate.isFallback)
         XCTAssertGreaterThan(estimate.predictedBytes, 0)
@@ -121,7 +125,7 @@ final class EstimatorTests: XCTestCase {
 
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<(CompressEstimator.maxConcurrentEstimates * 4) {
-                group.addTask { _ = await estimator.estimateAll(input) }
+                group.addTask { _ = await estimator.analyse(input) }
             }
         }
 
@@ -135,8 +139,34 @@ final class EstimatorTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("does-not-exist-\(UUID().uuidString).pdf")
 
-        let estimate = await estimator.estimate(missing, preset: .balanced)
+        let analysis = await estimator.analyse(missing)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
 
         XCTAssertTrue(estimate.isFallback)
+    }
+
+    /// The recompress prediction (R16) can only tell whether the engine path repeats if it knows
+    /// the row's classification, so a successful analysis must surface it alongside the estimates.
+    func testAnalysisSurfacesTheContentTypeAlongsideTheEstimates() async throws {
+        let estimator = CompressEstimator()
+        let input = try Fixtures.bornDigitalPDF()
+
+        let analysis = await estimator.analyse(input)
+
+        XCTAssertEqual(analysis.contentType, .bornDigital)
+        XCTAssertEqual(analysis.estimates.count, CompressPreset.allCases.count)
+    }
+
+    /// A failed or timed-out analysis has no classification to offer, and says so rather than
+    /// guessing — the prediction then falls back to the raw estimate.
+    func testAnalysisReportsNoContentTypeWhenAnalysisFails() async throws {
+        let estimator = CompressEstimator()
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("absent-\(UUID().uuidString).pdf")
+
+        let analysis = await estimator.analyse(missing)
+
+        XCTAssertNil(analysis.contentType)
+        XCTAssertTrue(analysis.estimates[.balanced]?.isFallback == true)
     }
 }
