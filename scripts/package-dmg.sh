@@ -17,9 +17,12 @@ NAME="Toolbox"
 BUILD_DIR="build"
 DIST_DIR="dist"
 SIGN_ID="${DEVELOPER_ID:--}"          # "-" = ad-hoc
-# Optional version override (e.g. "0.1.1", set by CI from the release tag). Empty = keep
-# project.yml's MARKETING_VERSION. Never quoted with spaces — tags are dot-separated numbers.
+# Optional version/build overrides (set by CI: VERSION from the release tag, BUILD_NUMBER
+# from the run number). Empty = keep project.yml's values. Their expansions below are left
+# unquoted as a whole so they vanish when empty — quoting would hand xcodebuild an empty
+# argument; the inner quotes keep each value one word.
 VERSION="${VERSION:-}"
+BUILD_NUMBER="${BUILD_NUMBER:-}"
 
 echo "==> Ensuring bundled Ghostscript is present"
 if [ ! -x "Resources/ghostscript/bin/gs" ]; then
@@ -36,6 +39,7 @@ xcodebuild -project "$NAME.xcodeproj" -scheme "$NAME" \
   -configuration "$CONFIG" -derivedDataPath "$BUILD_DIR" \
   CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
   ${VERSION:+MARKETING_VERSION="$VERSION"} \
+  ${BUILD_NUMBER:+CURRENT_PROJECT_VERSION="$BUILD_NUMBER"} \
   build >/dev/null
 
 APP="$BUILD_DIR/Build/Products/$CONFIG/$NAME.app"

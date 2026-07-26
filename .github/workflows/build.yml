@@ -69,12 +69,14 @@ jobs:
 
       # Tag builds stamp the app with the release's own version — the About panel and
       # UpdateChecker must report the tag the DMG was published under, not whatever
-      # project.yml last hard-coded.
+      # project.yml last hard-coded. The build number gets the run number so successive
+      # releases don't all report build 1.
       - name: Package DMG
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             export VERSION="${GITHUB_REF_NAME#v}"
           fi
+          export BUILD_NUMBER="$GITHUB_RUN_NUMBER"
           scripts/package-dmg.sh
 
       # Kept in step with `gate: packaged-app-compresses` in .claude/GATES.md — a private temp
