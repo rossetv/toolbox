@@ -40,6 +40,9 @@ struct PrimaryButton: View {
                 .foregroundStyle(.white)
                 .padding(.vertical, 10)
                 .padding(.horizontal, 22)
+                // `.plain` hit-tests only opaque content, so without an explicit shape the
+                // padding (and the background applied outside the Button) is dead to clicks.
+                .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
         .buttonStyle(.plain)
         .clearsClickFocus()

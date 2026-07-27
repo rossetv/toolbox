@@ -73,15 +73,20 @@ struct VersionsPopover: View {
                 }
             }
             if let slot {
-                Button("Use this") { onUse(slot) }
-                    .buttonStyle(.plain)
-                    .clearsClickFocus()
-                    .font(Theme.Typography.caption.font).fontWeight(.medium)
-                    .foregroundStyle(.white)
-                    .padding(.vertical, 5).padding(.horizontal, 12)
-                    .background(Theme.Colors.accent,
-                                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-                    .pointingHandCursor()
+                Button { onUse(slot) } label: {
+                    Text("Use this")
+                        .font(Theme.Typography.caption.font).fontWeight(.medium)
+                        .foregroundStyle(.white)
+                        .padding(.vertical, 5).padding(.horizontal, 12)
+                        .background(Theme.Colors.accent,
+                                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                        // `.plain` hit-tests only opaque label content — the shape must sit
+                        // inside the label or the padding is dead to clicks.
+                        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .clearsClickFocus()
+                .pointingHandCursor()
             } else {
                 Text("Current").themeFont(.micro).foregroundStyle(Theme.Colors.link)
                     .padding(.vertical, 5).padding(.horizontal, 12)
