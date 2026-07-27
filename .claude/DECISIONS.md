@@ -562,3 +562,24 @@ so the retry doesn't mask a real regression, only flakiness on an unprimed toolc
 
 **Spec:** none (CI hardening).
 **Affects:** .github/workflows/build.yml (Select latest Xcode 26 step, Package DMG step).
+
+## 2026-07-27 — CI `build` job moves to `macos-26` runners
+
+**Decision:** `.github/workflows/build.yml`'s `build` job (`jobs.build.runs-on`) moves
+from `macos-15` to `macos-26`. The `release` job (`jobs.release.runs-on`) is untouched
+(still `macos-15` — it only signs/notarises and publishes an already-built DMG artefact,
+no `actool` compile happens there).
+**Why:** tag run 30248094516 (v0.0.1) failed 3-of-4 asset-catalog compiles across two
+fresh `macos-15` VMs on 2026-07-27 with `actool`/`AssetCatalogAgent` reporting "tool
+closed the connection" — the same crash class as FB20183399, and content-independent
+(it hit plain `.icon` compiles, not only the standalone `.icns` render the prior
+same-VM retry targeted). The same commit had passed on the same runner image the day
+before, so the trigger is host-OS state, not the commit. Apple Developer Forums thread
+799820 and field reports agree the crash does not reproduce on `macos-26` (Tahoe)
+hosts; moving the host is the fix the retry could only paper over.
+**Supersedes (in part):** 2026-07-26 — CI primes the selected Xcode; Package DMG step
+retries once — that entry's `runFirstLaunch` priming and one-time `package-dmg.sh`
+retry both stay (still belt-and-braces against transient failures), but its "unprimed
+Xcode on the image" hypothesis is superseded: the retry did not stop the failures
+observed on 2026-07-27, and the actual trigger is the macOS 15 host itself.
+**Affects:** .github/workflows/build.yml (build job).
