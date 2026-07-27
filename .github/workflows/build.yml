@@ -16,8 +16,10 @@ jobs:
     name: Build, test, package
     # macos-26, not macos-15: Xcode 26's actool crashes intermittently on macOS 15 hosts
     # when an Icon Composer .icon is present ("tool closed the connection",
-    # AssetCatalogAgent — FB20183399, content-independent). Apple's forum guidance and
-    # field reports agree the crash disappears on macOS 26 Tahoe hosts.
+    # AssetCatalogAgent — FB20183399, content-independent). Forum thread 799820's accepted
+    # answer reports the crash stopped after moving CI to Tahoe; one other poster reports
+    # it persisting there — a mitigation with contested evidence, not a confirmed fix.
+    # Verified locally: macOS 26.5.1 + Xcode 26.6 compiles this .icon cleanly.
     runs-on: macos-26
     timeout-minutes: 60
 
@@ -25,11 +27,14 @@ jobs:
       - uses: actions/checkout@v4
 
       # The app icon is an Icon Composer .icon document (Resources/AppIcon.icon), which only
-      # Xcode 26's actool can compile — the image default (16.4) builds an icon-less bundle
-      # without erroring. Pick the newest 26.x installed on the runner image.
-      - name: Select latest Xcode 26
+      # Xcode 26's actool can compile — older toolchains build an icon-less bundle without
+      # erroring. Pinned to 26.6, not "newest 26.x": actool has regressed on .icon inputs
+      # between point releases (thread 799820), so a new Xcode is adopted deliberately —
+      # after a local .icon compile check — never by an image bump. A dropped 26.6 fails
+      # loud here, which is the correct failure mode.
+      - name: Select Xcode 26.6
         run: |
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          sudo xcode-select -s /Applications/Xcode_26.6.app
           # Prime the freshly selected toolchain: installs first-launch components and
           # initialises the XPC agents ibtoold depends on — the Release .icon standalone
           # icns render crashed with "tool closed the connection" on the unprimed image.
@@ -90,8 +95,10 @@ jobs:
             export VERSION="${GITHUB_REF_NAME#v}"
           fi
           export BUILD_NUMBER="$GITHUB_RUN_NUMBER"
-          # One retry: the asset-catalog agent crash (FB20183399) is reported as
-          # CI-intermittent; a deterministic failure still fails the step on the rerun.
+          # One retry: belt-and-braces for the FB20183399-class asset-catalog agent crash;
+          # a deterministic failure still fails the step on the rerun. The Test step's
+          # catalog compile is deliberately unretried — a blanket test rerun would mask
+          # genuinely flaky tests.
           scripts/package-dmg.sh || { echo "::warning::package-dmg failed once — retrying"; scripts/package-dmg.sh; }
 
       # Kept in step with `gate: packaged-app-compresses` in .claude/GATES.md — a private temp
@@ -145,6 +152,21 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: Toolbox-dmg
+
+      # The build job moved to macos-26, so this is the only place CI still executes the
+      # artefact below macOS 26 — the app targets macOS 14+, and a binary built against
+      # the 26 SDK that fails to launch on older systems would otherwise ship undetected.
+      - name: Smoke on macOS 15 — the shipped DMG runs below macOS 26
+        run: |
+          set -o pipefail
+          D="$(mktemp -d)"
+          MOUNT=""
+          trap '[ -n "$MOUNT" ] && hdiutil detach "$MOUNT" -quiet 2>/dev/null || true; rm -rf "$D"' EXIT
+          MOUNT="$(hdiutil attach Toolbox.dmg -nobrowse -plist | grep -A1 '<key>mount-point</key>' | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -1)"
+          [ -n "$MOUNT" ]
+          [ -d "$MOUNT/Toolbox.app" ]
+          cp -R "$MOUNT/Toolbox.app" "$D/"
+          TOOLBOX_SMOKE=compress "$D/Toolbox.app/Contents/MacOS/Toolbox" | grep -q "SMOKE PASS"
 
       # Distribution signing + notarisation. Skipped until the repo owner adds the secrets;
       # the unsigned DMG still publishes so a tag always produces a downloadable build.
