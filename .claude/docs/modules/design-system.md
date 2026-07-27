@@ -39,6 +39,14 @@ than styling inline.
 
 ## Gotchas
 
+- **`.plain` `buttonStyle` hit-tests only opaque label content** — padding and a
+  `.background` applied *outside* the label (or outside the `Button` entirely) are
+  visually present but dead to clicks. Every padded/filled `.plain` button needs an
+  explicit `.contentShape(...)` covering the full visual rect placed *inside* the
+  label closure (`PrimaryButton`, `VersionsPopover`'s "Use this" button both do this —
+  `VersionsPopover` had to move its padding/background into the label for the same
+  reason). Fixed in both call sites 2026-07-27 after only the label text was
+  clickable in each; check new `.plain` buttons against this pattern before shipping.
 - **`FileRow` is tool-agnostic about the recompress/arm vocabulary it draws**: `lead`
   (`FileRow.Lead` — `.accentPill`/`.neutralPill`/`.link`/`.error`) is the trailing
   cluster's leading item (an armed prediction, a futile/instant-switch note, a

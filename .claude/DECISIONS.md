@@ -607,3 +607,26 @@ this entry didn't originally cover.
 
 **Affects (addendum):** .github/workflows/build.yml (Select Xcode 26.6 step, release job's
 Smoke on macOS 15 step).
+
+## 2026-07-27 — Rung 2 near-bilevel gate tightened: small colour elements no longer waved through
+
+**Decision:** `BilevelScan.chromaCeiling` 40 → 25, `BilevelScan.chromaFraction` 0.02 → 0.005.
+**Why:** the old gate allowed 2% of a page's sampled pixels to carry channel spread up to
+40 and still call the page near-bilevel — enough for one damaged field document's inked
+stamps (~1% of pixels) to sail through and be binarised to 1-bit black-and-white by
+Rung 2 (a field-reported loss). Spread 25–40 was invisible to the gate entirely — the
+same band the MRC classifier's moderate-chroma gate exists for (see 2026-07-24 entry
+above). Measured basis (2026-07-27, aggregates only — corpus never identified), at both
+resolutions the gate runs at (the classifier's 1500px sample and the Rung-2 page loop's
+`bilevelDPI` render, ~3508px for A4 at 300 DPI): the damaged document's pages read
+0.011–0.019 at spread > 25 across both; three genuine B/W scan documents (including
+noisy/JPEG-cast pages) read ≤ 0.0019 at 1500px and ≤ 0.0027 at engine resolution — the
+new gate sits ≥ 1.8× clear of both sides at both resolutions (2.2× colour side, 1.85× B/W side at engine resolution). Calibration basis is one
+separating document (n=1) plus three B/W documents (n=3) and synthetic regression
+fixtures; residual risk is a B/W corpus outlier declining to Rung 1 — costs bytes,
+never quality. A false decline now only costs bytes (Rung 1 keeps the colour); a false
+accept destroyed the page.
+**Spec:** none (field fix).
+**Affects:** `Sources/Toolbox/Compress/BilevelScan.swift` (`chromaCeiling`, `chromaFraction`),
+`Tests/ToolboxTests/BilevelScanTests.swift` (`testSmallColourStampIsNotBinarised`,
+`testSubThresholdChromaStillBinarises`).

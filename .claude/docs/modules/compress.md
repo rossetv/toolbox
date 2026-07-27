@@ -66,9 +66,13 @@ and drives the batch UI.
   gs ships, so a routing change can never regress a document.
 - **Rung 2's near-bilevel gate is deliberately strict** (`BilevelScan`): almost every
   sampled pixel must be near-black or near-white (`extremeFraction`) *and* almost none
-  may carry real chroma (`chromaFraction`) — luminance alone would let a saturated
-  colour on white sail through. `otsuThreshold` (mid-point of the maximal-variance
-  plateau, not the first) picks the black/white cut rather than a fixed 50%.
+  may carry real chroma above `chromaCeiling` (`chromaFraction`) — luminance alone
+  would let a saturated colour on white sail through. `chromaCeiling`/`chromaFraction`
+  were tightened 2026-07-27 (40→25, 0.02→0.005) after the looser gate binarised small
+  colour elements — stamps, signatures — occupying ~1% of a page; see
+  `.claude/DECISIONS.md`, 2026-07-27 entry, for the measured basis. `otsuThreshold`
+  (mid-point of the maximal-variance plateau, not the first) picks the black/white cut
+  rather than a fixed 50%.
 - **`CCITTEncoder` uses no native/bespoke codec** — it asks ImageIO for a TIFF with
   `Compression = 4` and parses just enough of the baseline TIFF structure back out to
   lift the compressed strip; PDF's `/CCITTFaxDecode` with `/K -1` consumes that
