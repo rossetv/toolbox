@@ -72,6 +72,55 @@ final class BilevelScanTests: XCTestCase {
         XCTAssertNil(BilevelScan.binarise(image))
     }
 
+    /// A mostly-B/W scan carrying a small colour element — an inked stamp, a signature, a logo —
+    /// must NOT binarise: the element occupies ~1 % of the page, which the pre-2026-07-27 gate
+    /// (spread > 40, allowance 2 %) waved through, flattening a real document's inked stamps to
+    /// black and white in the field. Two element chromas are exercised: a strong one (spread 45, over even
+    /// the old ceiling but under the old 2 % allowance) and a moderate one (spread 30 — the
+    /// 25–40 band the old ceiling was entirely blind to). Both fixtures are luminance-extreme,
+    /// so the chroma condition is the only thing standing between them and binarisation.
+    func testSmallColourStampIsNotBinarised() throws {
+        for (name, stamp) in [("strong", (255, 210, 210)), ("moderate", (255, 225, 225))] {
+            let image = try TestImages.rgb(width: 200, height: 200) { x, y in
+                // 20×20 stamp block = 1 % of pixels; the rest a plain black-on-white page.
+                if x < 20 && y < 20 { return stamp }
+                return y % 10 == 0 ? (0, 0, 0) : (255, 255, 255)
+            }
+            let stats = try XCTUnwrap(BilevelScan.analyse(image))
+            XCTAssertGreaterThan(Double(stats.extremes) / Double(stats.sampled),
+                                 BilevelScan.extremeFraction,
+                                 "\(name): fixture must be luminance-extreme, or this proves nothing")
+            XCTAssertFalse(stats.isNearBilevel,
+                           "\(name): a page with a ~1 % colour stamp must not be called bilevel")
+            XCTAssertNil(BilevelScan.binarise(image), "\(name): stamp colour must survive")
+        }
+    }
+
+    /// The other side of the tightened gate: legitimate B/W scans with sub-threshold chroma —
+    /// JPEG colour cast (spread below the 25 ceiling) or a trace colour element under the 0.005
+    /// allowance — must STILL binarise, or the tightening trades a colour-destruction bug for a
+    /// silent loss of the CCITT win the rung exists for.
+    func testSubThresholdChromaStillBinarises() throws {
+        // "cast": every non-ink pixel tinted (255,240,235) — spread 20, page-wide, the real
+        // shape of a JPEG colour cast. "trace": a 12×12 element at spread 30, 0.36 % coverage —
+        // over the ceiling but under the allowance.
+        for (name, makePixel) in [
+            ("cast", { (x: Int, y: Int) -> (Int, Int, Int) in
+                y % 10 == 0 ? (0, 0, 0) : (255, 240, 235)
+            }),
+            ("trace", { (x: Int, y: Int) -> (Int, Int, Int) in
+                if x < 12 && y < 12 { return (255, 225, 225) }
+                return y % 10 == 0 ? (0, 0, 0) : (255, 255, 255)
+            }),
+        ] {
+            let image = try TestImages.rgb(width: 200, height: 200, pixel: makePixel)
+            let stats = try XCTUnwrap(BilevelScan.analyse(image))
+            XCTAssertTrue(stats.isNearBilevel,
+                          "\(name): sub-threshold chroma must not cost the page its CCITT rebuild")
+            XCTAssertNotNil(BilevelScan.binarise(image), "\(name): page must still binarise")
+        }
+    }
+
     /// A continuous-tone greyscale page (no colour to fail the chroma test) must still be
     /// rejected: its luminances fill the middle of the range.
     func testGreyGradientPageIsNotBilevel() throws {

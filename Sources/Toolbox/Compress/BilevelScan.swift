@@ -60,10 +60,24 @@ enum BilevelScan {
     static let darkCeiling = 40
     /// Luminance at or above which a pixel counts as near-white.
     static let lightFloor = 215
-    /// Largest channel spread (max − min) a pixel may have and still count as grey.
-    static let chromaCeiling = 40
-    /// Fraction of pixels allowed to carry real colour.
-    static let chromaFraction = 0.02
+    /// Largest channel spread (max − min) a pixel may have and still count as grey. 25, not 40:
+    /// inked stamps and pale security patterns live in the 25–40 band (the same band the MRC
+    /// classifier's moderate-chroma gate exists for — DECISIONS.md 2026-07-24), and a ceiling of
+    /// 40 was blind to them.
+    static let chromaCeiling = 25
+    /// Fraction of pixels allowed to carry real colour. A stamp, signature or logo occupies well
+    /// under 2 % of a page's pixels, so the old 0.02 allowance binarised pages that visibly carry
+    /// colour. Measured basis (2026-07-27), at both resolutions the gate runs at — the
+    /// classifier's 1500 px sample and the Rung-2 page loop's `bilevelDPI` render (~3508 px for
+    /// A4 at 300 DPI): one damaged field document whose inked stamps were flattened reads
+    /// 0.011–0.019 at spread > 25 across both; three genuine B/W scan documents (including
+    /// noisy/JPEG-cast pages) read ≤ 0.0019 at 1500 px and ≤ 0.0027 at engine resolution — so
+    /// 0.005 sits ≥ 1.8× clear of both sides at both resolutions (2.2× on the colour side,
+    /// 1.85× on the B/W side at engine resolution). Calibration basis is one
+    /// separating document (n=1) plus three B/W documents (n=3) and the synthetic regression
+    /// fixture; the residual risk is a B/W corpus outlier declining to Rung 1, which costs
+    /// bytes, never quality.
+    static let chromaFraction = 0.005
 
     /// What one pass over a rendered page measures.
     struct PageStatistics: Equatable {
