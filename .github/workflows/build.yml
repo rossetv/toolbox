@@ -14,7 +14,11 @@ concurrency:
 jobs:
   build:
     name: Build, test, package
-    runs-on: macos-15
+    # macos-26, not macos-15: Xcode 26's actool crashes intermittently on macOS 15 hosts
+    # when an Icon Composer .icon is present ("tool closed the connection",
+    # AssetCatalogAgent — FB20183399, content-independent). Apple's forum guidance and
+    # field reports agree the crash disappears on macOS 26 Tahoe hosts.
+    runs-on: macos-26
     timeout-minutes: 60
 
     steps:
