@@ -154,7 +154,7 @@ jobs:
           name: Toolbox-dmg
 
       # The build job moved to macos-26, so this is the only place CI still executes the
-      # artefact below macOS 26 — the app targets macOS 14+, and a binary built against
+      # artefact below macOS 26 (on tag builds only) — the app targets macOS 14+, and a binary built against
       # the 26 SDK that fails to launch on older systems would otherwise ship undetected.
       - name: Smoke on macOS 15 — the shipped DMG runs below macOS 26
         run: |
