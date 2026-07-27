@@ -583,3 +583,27 @@ retry both stay (still belt-and-braces against transient failures), but its "unp
 Xcode on the image" hypothesis is superseded: the retry did not stop the failures
 observed on 2026-07-27, and the actual trigger is the macOS 15 host itself.
 **Affects:** .github/workflows/build.yml (build job).
+
+Addendum (same day, delta review): the runner move landed with two behavioural changes
+this entry didn't originally cover.
+
+1. **Xcode selection is now a hard pin, not "newest 26.x".** The `Select Xcode 26.6` step
+   runs `xcode-select -s /Applications/Xcode_26.6.app` — a fixed path, not a `find`-the-
+   newest-installed-26 glob. `actool` has regressed on `.icon` inputs between 26.x point
+   releases (forum thread 799820), so a new Xcode is adopted deliberately, after a local
+   `.icon` compile check, never by an automatic image bump. This supersedes the prior
+   same-day entry's implicit "pick whatever 26.x the image carries" framing. A dropped
+   26.6 on a future image fails loud and fast: `xcode-select -s` on a missing path errors
+   before any privilege/first-launch work runs (probe-verified locally).
+2. **The `release` job gained a second smoke test.** `Smoke on macOS 15 — the shipped DMG
+   runs below macOS 26` mounts the downloaded `dist/Toolbox.dmg` on the `release` job's
+   `macos-15` runner (tag builds only, gated by `needs: build` + the tag-ref `if`) and runs
+   `TOOLBOX_SMOKE=compress` against the extracted `Toolbox.app` — the same smoke assertion
+   the `build` job's own `Smoke — the packaged app really compresses a PDF` step already
+   makes there. Reason: the app targets macOS 14+, but the `build` job's move to `macos-26`
+   means nothing else in CI still executes the artefact on a pre-26 host; without this
+   step a binary that builds against the 26 SDK but fails to *launch* below 26 would ship
+   undetected.
+
+**Affects (addendum):** .github/workflows/build.yml (Select Xcode 26.6 step, release job's
+Smoke on macOS 15 step).
