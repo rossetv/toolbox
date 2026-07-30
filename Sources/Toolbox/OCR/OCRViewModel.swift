@@ -90,9 +90,10 @@ final class OCRViewModel: ObservableObject {
                 }
                 let outcome = try await self.engine.ocr(job.url, to: output, options: chosen) { report($0) }
                 // Two outcomes write no file: `.alreadySearchable`, and a run that recognised no
-                // text on any page (`pages == 0`). Neither has anything to reveal.
-                if case .alreadySearchable = outcome { return JobResult(outcome) }
-                if case .ocrAdded(let pages, _) = outcome, pages == 0 { return JobResult(outcome) }
+                // usable text anywhere (`.tooFaint`). Neither has anything to reveal.
+                if outcome.ocr == .alreadySearchable || outcome.ocr == .tooFaint {
+                    return JobResult(outcome)
+                }
                 return JobResult(outcome, outputURL: output)
             }, maxConcurrent: 2)
             isRunning = false

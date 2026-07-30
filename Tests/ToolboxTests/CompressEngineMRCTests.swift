@@ -189,7 +189,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
     /// The hybrid beats a gs candidate that is itself a valid (smaller-than-input) compression:
     /// shipped output is the MRC hybrid, the gs version is parked in `alternateOutput`, and the
-    /// outcome is `.compressedHeavy` carrying the gs bytes as the runner-up (spec R7). gs is
+    /// outcome ships `.mrc` with a runner-up descriptor carrying the gs bytes (spec R7). gs is
     /// stubbed to the input trimmed by one byte — strictly smaller than the input (R6) while still
     /// larger than the real MRC output — a compressed text scan — which comes in below it.
     func testHybridSmallerThanGsShipsHybridWithRunnerUp() async throws {
@@ -204,10 +204,14 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
 
-        guard case let .compressedHeavy(before, after, runnerUpBytes) = outcome else {
-            return XCTFail("expected .compressedHeavy when the hybrid wins, got \(outcome)")
+        guard case let .compressed(before, after) = outcome.compress,
+              outcome.shippedVariant == .mrc,
+              let retained = outcome.runnerUp else {
+            return XCTFail("expected an MRC winner with a retained runner-up, got \(outcome)")
         }
+        let runnerUpBytes = retained.bytes
         XCTAssertEqual(before, inputBytes.count, "`before` is the input size")
+        XCTAssertEqual(retained.kind, .plain, "the PARKED variant is the gs output, not the winner")
         XCTAssertEqual(runnerUpBytes, gsBytes.count, "the runner-up is the gs candidate")
         XCTAssertLessThan(after, before, "the hybrid must be smaller than the input: \(after) vs \(before)")
 
@@ -240,8 +244,8 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
 
-        guard case let .compressed(_, after) = outcome else {
-            return XCTFail("expected a plain .compressed when gs wins, got \(outcome)")
+        guard case let .compressed(_, after) = outcome.compress else {
+            return XCTFail("expected a plain compressed leg when gs wins, got \(outcome)")
         }
         XCTAssertEqual(after, tiny.count, "the shipped output is the gs candidate")
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
@@ -268,12 +272,15 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
 
-        guard case let .compressedHeavy(before, after, runnerUpBytes) = outcome else {
-            return XCTFail("expected .compressedHeavy with the original parked, got \(outcome)")
+        guard case let .compressed(before, after) = outcome.compress,
+              outcome.shippedVariant == .mrc,
+              let retained = outcome.runnerUp else {
+            return XCTFail("expected an MRC winner with the original parked, got \(outcome)")
         }
         XCTAssertEqual(before, inputBytes.count, "`before` is the input size")
         XCTAssertLessThan(after, before, "the hybrid must still be smaller than the input: \(after) vs \(before)")
-        XCTAssertEqual(runnerUpBytes, before, "the parked runner-up is the original (its marker)")
+        XCTAssertEqual(retained.kind, .original, "gs bloated, so the untouched input is what is parked")
+        XCTAssertEqual(retained.bytes, before, "the parked runner-up is the original (its marker)")
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path), "the hybrid must still be shipped")
         XCTAssertEqual(TestSupport.fileSize(output), after, "the shipped file is the hybrid (its bytes)")
         XCTAssertEqual(try Data(contentsOf: alternate), inputBytes,
@@ -296,9 +303,8 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 mrcReport: { _ in spy.fired = true }) { _ in }
 
         XCTAssertFalse(spy.fired, "maximumQuality must never attempt or ship a hybrid (D3)")
-        if case .compressedHeavy = outcome {
-            XCTFail("maximumQuality must not ship a hybrid, got \(outcome)")
-        }
+        XCTAssertNotEqual(outcome.shippedVariant, .mrc,
+                          "maximumQuality must not ship a hybrid, got \(outcome)")
         XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
                        "no runner-up when MRC is never attempted")
     }
@@ -318,7 +324,7 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { _ in spy.fired = true }) { _ in }
 
-        guard case let .compressed(before, after) = outcome else {
+        guard case let .compressed(before, after) = outcome.compress else {
             return XCTFail("a bilevel scan must be compressed by Rung 2, got \(outcome)")
         }
         XCTAssertEqual(before, inputBytes.count, "`before` is the input size")
@@ -345,7 +351,7 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { _ in spy.fired = true }) { _ in }
 
-        guard case .compressed = outcome else {
+        guard case .compressed = outcome.compress else {
             return XCTFail("an MRC decline must ship the gs output, got \(outcome)")
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
@@ -368,8 +374,8 @@ final class CompressEngineRoutingTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { _ in spy.fired = true }) { _ in }
 
-        guard case let .noGain(bytes) = outcome else {
-            return XCTFail("expected .noGain when neither leg beats the input, got \(outcome)")
+        guard case let .noGain(bytes) = outcome.compress else {
+            return XCTFail("expected a no-gain leg when neither beats the input, got \(outcome)")
         }
         XCTAssertEqual(bytes, inputBytes.count)
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path), "no file on no-gain")
@@ -380,7 +386,7 @@ final class CompressEngineRoutingTests: XCTestCase {
     /// Mutable state shared with the cancelled job's callbacks. A class rather than a captured
     /// `var` because the progress callback runs inside the `Task` under test.
     private final class CancelHook: @unchecked Sendable {
-        var task: Task<JobOutcome, Error>?
+        var task: Task<RowOutcome, Error>?
         var reachedRungThree = false
     }
 

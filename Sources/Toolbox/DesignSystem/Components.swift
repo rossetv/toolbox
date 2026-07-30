@@ -367,7 +367,7 @@ private let previewPresetOptions = [
 // MARK: - FileRow
 
 /// One file in a batch queue (DESIGN.md handover §5 "File-queue row"). Covers every state
-/// `JobState`/`JobOutcome` can reach in either tool — inline, so a failing file in a batch
+/// `JobState`/`RowOutcome` can reach in either tool — inline, so a failing file in a batch
 /// doesn't disrupt the rest of the list. Purely presentational: the consuming view maps its
 /// job state onto a `Status` and supplies any wording that varies by tool.
 struct FileRow: View {

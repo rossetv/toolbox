@@ -87,12 +87,17 @@ final class CompressViewModelTests: XCTestCase {
         // Every job reached a terminal, real (queue-driven) outcome — not a leftover estimate.
         for job in model.jobs {
             switch job.state {
-            case .done(.compressed(let before, let after)):
-                XCTAssertGreaterThan(before, 0)
-                XCTAssertGreaterThan(after, 0)
-                XCTAssertLessThan(after, before)
-            case .done(.noGain):
-                break   // the tiny born-digital fixture may legitimately not shrink
+            case .done(let outcome):
+                switch outcome.compress {
+                case .compressed(let before, let after):
+                    XCTAssertGreaterThan(before, 0)
+                    XCTAssertGreaterThan(after, 0)
+                    XCTAssertLessThan(after, before)
+                case .noGain:
+                    break   // the tiny born-digital fixture may legitimately not shrink
+                default:
+                    XCTFail("expected a compressed or no-gain leg, got \(outcome)")
+                }
             case .failed(let message):
                 XCTFail("job for \(job.url.lastPathComponent) failed: \(message)")
             default:
@@ -105,7 +110,7 @@ final class CompressViewModelTests: XCTestCase {
             let expected = outputFolder.appendingPathComponent(
                 "\(input.deletingPathExtension().lastPathComponent)-compressed.pdf")
             let job = try XCTUnwrap(model.jobs.first { $0.url == input })
-            if case .done(.compressed) = job.state {
+            if case .done(let outcome) = job.state, case .compressed = outcome.compress {
                 XCTAssertTrue(FileManager.default.fileExists(atPath: expected.path),
                               "expected compressed output at \(expected.path)")
             }
@@ -1841,12 +1846,17 @@ final class CompressViewModelTests: XCTestCase {
             func classify(_ url: URL) throws -> PDFContentType { contentType }
         }
 
-        /// The single job once it has reached `.done(.compressedHeavy)`.
+        /// The single job once it has reached a done state carrying the heavy pair.
         func doneHeavyJob(_ model: CompressViewModel) -> ToolJob? {
-            model.jobs.first { if case .done(.compressedHeavy) = $0.state { return true }; return false }
+            model.jobs.first {
+                if case .done(let outcome) = $0.state {
+                    return outcome.shippedVariant == .mrc && outcome.runnerUp != nil
+                }
+                return false
+            }
         }
 
-        /// Runs the input through to `.done(.compressedHeavy)` — the add/wait/compress/wait
+        /// Runs the input through to the done heavy pair — the add/wait/compress/wait
         /// preamble nearly every test in this file starts with.
         @discardableResult
         func runToDone() async throws -> ToolJob {
@@ -1861,13 +1871,13 @@ final class CompressViewModelTests: XCTestCase {
     /// Stub `Compressing`: writes the shipped (and, when given, the runner-up) file, optionally
     /// suspends on a `Gate`, then returns a fixed outcome. Never touches the real MRC pipeline.
     private final class StubEngine: Compressing, @unchecked Sendable {
-        let outcome: JobOutcome
+        let outcome: RowOutcome
         let shippedBytes: Int
         let runnerUpBytes: Int
         /// What one scripted call writes and returns, so a recompress can differ from the run that
         /// produced the row.
         struct Response {
-            let outcome: JobOutcome
+            let outcome: RowOutcome
             /// Bytes to write at the primary output, or nil to write nothing (a no-gain run).
             let shippedBytes: Int?
             /// Bytes to write at the alternate output, or nil to leave that slot empty.
@@ -1912,7 +1922,7 @@ final class CompressViewModelTests: XCTestCase {
             set { lock.lock(); defer { lock.unlock() }; _gate = newValue }
         }
 
-        init(outcome: JobOutcome, shippedBytes: Int, runnerUpBytes: Int) {
+        init(outcome: RowOutcome, shippedBytes: Int, runnerUpBytes: Int) {
             self.outcome = outcome
             self.shippedBytes = shippedBytes
             self.runnerUpBytes = runnerUpBytes
@@ -1920,7 +1930,7 @@ final class CompressViewModelTests: XCTestCase {
 
         func compress(_ input: URL, preset: CompressPreset, to output: URL,
                       alternateOutput: URL?, mrcReport: ((MRCDocumentReport) -> Void)?,
-                      progress: @escaping (Double) -> Void) async throws -> JobOutcome {
+                      progress: @escaping (Double) -> Void) async throws -> RowOutcome {
             // Increment, append and decide the throw/script outcome atomically, capturing locals so
             // no other concurrent call can observe or mutate state mid-decision.
             let call: Int

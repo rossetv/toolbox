@@ -174,9 +174,9 @@ struct OCRView: View {
 
     // MARK: job → row state
 
-    /// Maps the queue's `JobState`/`JobOutcome` onto the presentational `FileRow.Status`.
-    /// Compress-shaped outcomes can't arise from an OCR run, but the enum is shared, so they
-    /// fall back to a plain "Done" rather than claiming something untrue about the file.
+    /// Maps the queue's `JobState`/`RowOutcome` onto the presentational `FileRow.Status`.
+    /// Outcomes this tool's engine never produces fall back to a plain "Done" rather than claiming
+    /// something untrue about the file.
     private func status(for job: ToolJob) -> FileRow.Status {
         switch job.state {
         case .queued:
@@ -186,18 +186,18 @@ struct OCRView: View {
         case .running(let fraction):
             return .inProgress(fraction: fraction > 0 ? fraction : nil)
         case .done(let outcome):
-            switch outcome {
-            // Zero pages means the run recognised nothing and wrote no file — a green
-            // "Searchable — 0 pages" would claim a success that never happened (§7.1).
-            case .ocrAdded(0, let skipped):
-                let suffix = skipped > 0 ? " · \(skipped) already had text" : ""
-                return .unchanged("No text recognised\(suffix)")
-            case .ocrAdded(let pages, let skipped):
+            switch outcome.ocr {
+            // Too faint means the run recognised nothing and wrote no file — a green
+            // "Searchable — 0 pages" would claim a success that never happened (§7.1). The
+            // already-had-text tally is not a fact this outcome carries, so it is not repeated.
+            case .tooFaint:
+                return .unchanged("No text recognised")
+            case .added(let pages, let skipped):
                 let suffix = skipped > 0 ? " · \(skipped) already had text" : ""
                 return .succeeded("Searchable — \(pages) page\(pages == 1 ? "" : "s")\(suffix)")
             case .alreadySearchable:
                 return .unchanged("Already searchable")
-            case .compressed, .compressedHeavy, .noGain:
+            case .cancelled, .failed, nil:
                 return .succeeded("Done")
             }
         case .failed(let message):
@@ -260,7 +260,11 @@ struct OCRView: View {
         }
         // Zero-page runs wrote no file, so they must not count towards "now searchable".
         let searchable = model.jobs.filter { job in
-            if case .done(.ocrAdded(let pages, _)) = job.state { return pages > 0 } else { return false }
+            if case .done(let outcome) = job.state, case .added(let pages, _) = outcome.ocr {
+                return pages > 0
+            } else {
+                return false
+            }
         }.count
         if searchable > 0 {
             return "\(searchable) PDF\(searchable == 1 ? " is" : "s are") now searchable."

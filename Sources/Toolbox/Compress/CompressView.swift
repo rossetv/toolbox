@@ -391,7 +391,7 @@ struct CompressView: View {
 
     // MARK: job → row state
 
-    /// Maps the queue's `JobState`/`JobOutcome` onto the presentational `FileRow.Status`.
+    /// Maps the queue's `JobState`/`RowOutcome` onto the presentational `FileRow.Status`.
     private func status(for job: ToolJob) -> FileRow.Status {
         switch job.state {
         case .queued:

@@ -65,10 +65,11 @@ final class CompressViewModel: ObservableObject {
     /// published job since the re-run bypasses `ToolQueue.run` and never touches `queue.jobs`.
     private var rerunReports: [ToolJob.ID: MRCDocumentReport] = [:]
     /// Rows whose switch could not be honoured, with the message the row shows in place of its
-    /// outcome. A `.compressedHeavy` row's capsule states which version is on disk and how big it
-    /// is; when that claim can no longer be backed — the delivered file is gone, or the swap left
-    /// it parked under a hidden name — the row must say so rather than keep labelling a file that
-    /// is not there (the F6 mislabel: heavy content under "Normal compression" and gs's bytes).
+    /// outcome. A row with a retained runner-up states in its capsule which version is on disk and
+    /// how big it is; when that claim can no longer be backed — the delivered file is gone, or the
+    /// swap left it parked under a hidden name — the row must say so rather than keep labelling a
+    /// file that is not there (the F6 mislabel: heavy content under "Normal compression" and gs's
+    /// bytes).
     private var switchFailures: [ToolJob.ID: String] = [:]
     /// Runner-up cache names reserved for the in-flight batch. A run-scoped RESERVATION ledger, not
     /// a version record: a reservation whose job never shipped a runner-up is discarded by `cancel`
@@ -217,28 +218,31 @@ final class CompressViewModel: ObservableObject {
             guard case .done(let outcome) = job.state,
                   let preset = pendingPresets[job.id] else { continue }
             pendingPresets[job.id] = nil
-            switch outcome {
+            switch outcome.compress {
             case .compressed(let before, let after):
                 guard let url = job.resultURL else { continue }
-                versionStore.record(RowVersions(originalBytes: before, lastAttemptPreset: preset,
-                                                shipped: FileVersion(url: url, bytes: after,
-                                                                     preset: preset, variant: .plain),
-                                                runnerUp: nil, previous: nil),
-                                    for: job.id)
-            case .compressedHeavy(let before, let after, let runnerUpBytes):
-                guard let url = job.resultURL, let alternate = job.alternateURL else { continue }
-                // The engine parks a gs runner-up only when it is strictly smaller than the input,
-                // so equality is the unambiguous "the original was parked instead" marker (R6/R7).
-                versionStore.record(RowVersions(originalBytes: before, lastAttemptPreset: preset,
-                                                shipped: FileVersion(url: url, bytes: after,
-                                                                     preset: preset, variant: .mrc),
-                                                runnerUp: FileVersion(url: alternate,
-                                                                      bytes: runnerUpBytes,
-                                                                      preset: preset,
-                                                                      variant: runnerUpBytes == before
-                                                                          ? .original : .plain),
-                                                previous: nil),
-                                    for: job.id)
+                let shipped = FileVersion(url: url, bytes: after, preset: preset,
+                                          variant: outcome.shippedVariant ?? .plain)
+                // Whether a second version exists is the DESCRIPTOR's answer, never the winner's
+                // (spec §5's R7 reversal: keying on which variant shipped is the asymmetry the
+                // redesign removes). The parked file's kind comes from the descriptor too — the
+                // engine already decided whether it parked the gs output or the untouched input.
+                if let retained = outcome.runnerUp {
+                    guard let alternate = job.alternateURL else { continue }
+                    versionStore.record(RowVersions(originalBytes: before, lastAttemptPreset: preset,
+                                                    shipped: shipped,
+                                                    runnerUp: FileVersion(url: alternate,
+                                                                          bytes: retained.bytes,
+                                                                          preset: preset,
+                                                                          variant: retained.kind),
+                                                    previous: nil),
+                                        for: job.id)
+                } else {
+                    versionStore.record(RowVersions(originalBytes: before, lastAttemptPreset: preset,
+                                                    shipped: shipped,
+                                                    runnerUp: nil, previous: nil),
+                                        for: job.id)
+                }
             case .noGain(let bytes):
                 // Nothing shipped, but the attempt still fixes the row's preset (R1). A wholesale
                 // `record` is safe here: only `.queued` rows ever reach this path, and a row
@@ -249,8 +253,10 @@ final class CompressViewModel: ObservableObject {
                 // R6: a first-run no-gain at P0 records (job, P0) as futile exactly as a
                 // recompress no-gain does.
                 futileAttempts.insert(FutileAttempt(id: job.id, preset: preset))
-            case .ocrAdded, .alreadySearchable:
-                continue        // never produced by CompressEngine
+            case .skipped:
+                continue        // the compress leg never runs alone here; the rescue is spec §6.5's
+            case nil:
+                continue        // no compress leg — never produced by CompressEngine
             }
         }
     }
@@ -419,7 +425,8 @@ final class CompressViewModel: ObservableObject {
             outputs[job.id] = FileNaming.output(for: job.url, suffix: "compressed",
                                                 folder: folder, reserving: &reserved)
             // Runner-up name from the same serial allocator, into the cache root (C4/R15). Only a
-            // `.compressedHeavy` job actually writes this file; the rest just hold the reservation.
+            // job that RETAINS a second variant actually writes this file; the rest just hold the
+            // reservation.
             alternates[job.id] = store.reserveURL(for: job.url, reserving: &reserved)
             // Only for the rows this batch will actually run: `ToolQueue.execute` picks up
             // `.queued` jobs only, so recording the current preset against a finished row from an
@@ -480,17 +487,17 @@ final class CompressViewModel: ObservableObject {
                 let outcome = try await engine.compress(job.url, preset: chosen, to: output,
                                                         alternateOutput: alternate,
                                                         mrcReport: { capturedReport = $0 }) { report($0) }
-                switch outcome {
                 // `.noGain` deliberately writes nothing, so there is no output file to point at.
-                case .noGain:
+                if case .noGain = outcome.compress {
                     return JobResult(outcome, mrcReport: capturedReport)
-                // The heavy result retains the plain-gs version as the runner-up for the switch.
-                case .compressedHeavy:
+                }
+                // The alternate is attached whenever a second variant was RETAINED — keyed on the
+                // descriptor, never on which variant won the gate (spec §5's R7 reversal).
+                if outcome.runnerUp != nil {
                     return JobResult(outcome, outputURL: output, alternateURL: alternate,
                                      mrcReport: capturedReport)
-                default:
-                    return JobResult(outcome, outputURL: output, mrcReport: capturedReport)
                 }
+                return JobResult(outcome, outputURL: output, mrcReport: capturedReport)
             }
             // Phase 2 — the armed rows, through the engine directly. SERIALISED after phase 1, not
             // alongside it: running both mechanisms at once would put 2 × the batch width of gs
@@ -649,16 +656,15 @@ final class CompressViewModel: ObservableObject {
     /// cancellation — that guarantee does not extend to a crash or quit mid-swap, which can still
     /// strand the shipped file at `performSwap`'s dot-temp, the same accepted residual the engine's
     /// own `destTemp` carries.
-    private func commit(_ outcome: JobOutcome, plan: RecompressPlan,
+    private func commit(_ outcome: RowOutcome, plan: RecompressPlan,
                         report: MRCDocumentReport?) async throws {
         let fm = FileManager.default
         // Both early returns below are unreachable by construction — a plan is only built for an
         // ARMED row, and `recompressState`'s own `guard let row = versions(for: job)` means a row
         // with no store entry never arms (a no-gain row DOES get an entry, with `shipped: nil`);
-        // and `CompressEngine` never returns an OCR outcome — and both clean up anyway: an early
-        // return that leaves the temp file and the runner-up
-        // reservation behind would leak them for the session, and a "can't happen" is not a
-        // reason to leak.
+        // and `CompressEngine` never returns an outcome without a compress leg — and both clean up
+        // anyway: an early return that leaves the temp file and the runner-up reservation behind
+        // would leak them for the session, and a "can't happen" is not a reason to leak.
         guard let row = versionStore.versions(for: plan.id) else {
             discardArtefacts(of: plan)
             return
@@ -666,15 +672,17 @@ final class CompressViewModel: ObservableObject {
         let shippedBytes: Int
         let variant: EngineVariant
         var runnerUp: FileVersion?
-        switch outcome {
+        switch outcome.compress {
         case .compressed(_, let after):
             shippedBytes = after
-            variant = .plain
-        case .compressedHeavy(let before, let after, let runnerUpBytes):
-            shippedBytes = after
-            variant = .mrc
-            runnerUp = FileVersion(url: plan.runnerUp, bytes: runnerUpBytes, preset: plan.target,
-                                   variant: runnerUpBytes == before ? .original : .plain)
+            // Both facts come from the outcome itself: the winner from `shippedVariant`, and
+            // whether anything was parked from the DESCRIPTOR — re-deriving the parked file's kind
+            // from its byte count here is how the R7 asymmetry creeps back in (spec §5).
+            variant = outcome.shippedVariant ?? .plain
+            if let retained = outcome.runnerUp {
+                runnerUp = FileVersion(url: plan.runnerUp, bytes: retained.bytes,
+                                       preset: plan.target, variant: retained.kind)
+            }
         case .noGain:
             // Nothing was written, so there is nothing to commit — and nothing to clear. The
             // shipped version, its URL and its parked versions all stay (R12); the attempt is
@@ -684,8 +692,9 @@ final class CompressViewModel: ObservableObject {
             futileAttempts.insert(FutileAttempt(id: plan.id, preset: plan.target))
             versionStore.recordAttempt(plan.target, for: plan.id)
             return
-        case .ocrAdded, .alreadySearchable:
-            // Never produced by CompressEngine — cleaned up regardless, as above.
+        case .skipped, nil:
+            // A recompress always runs the compress leg, so neither a skipped leg nor an absent
+            // one can reach here — cleaned up regardless, as above.
             discardArtefacts(of: plan)
             return
         }
@@ -842,11 +851,11 @@ final class CompressViewModel: ObservableObject {
         // whose file is being rewritten underneath it would be describing a moving target.
         guard !isRunning else { return .none }
         guard case .done(let outcome) = job.state else { return .none }
-        switch outcome {
-        // A `.failed` row never arms (its recourse is re-adding the file); OCR outcomes never
-        // reach this view model's rows.
-        case .ocrAdded, .alreadySearchable: return .none
-        case .compressed, .compressedHeavy, .noGain: break
+        switch outcome.compress {
+        // A `.failed` row never arms (its recourse is re-adding the file), and neither does a row
+        // whose compress leg never ran or was skipped — there is nothing to recompress from.
+        case nil, .skipped: return .none
+        case .compressed, .noGain: break
         }
         // A row whose delivered file could not be backed any more has nothing to recompress from.
         guard let row = versions(for: job) else { return .none }
@@ -1125,12 +1134,14 @@ final class CompressViewModel: ObservableObject {
                                                          alternateOutput: runnerUp,
                                                          mrcReport: { capturedReport = $0 },
                                                          progress: report)
-                // The switch's post-regeneration step assumes the re-run reproduces
-                // `.compressedHeavy` with both the shipped and runner-up files written — that's an
-                // assumption about engine determinism, not a guarantee the type gives us. Guard on
-                // the actual outcome: anything else (e.g. `.noGain`) means there is no runner-up to
-                // switch to, so leave the row exactly as the engine left it.
-                if case .compressedHeavy = outcome {
+                // The switch's post-regeneration step assumes the re-run reproduces the heavy
+                // PAIR — an MRC winner with a runner-up parked beside it — with both files
+                // written; that's an assumption about engine determinism, not a guarantee the type
+                // gives us. Guard on the actual outcome: anything else (e.g. `.noGain`, or a
+                // regeneration that retained nothing) means there is no runner-up to switch to, so
+                // leave the row exactly as the engine left it. This is the one site that needs
+                // BOTH facts — elsewhere the descriptor alone decides (spec §5's R7 reversal).
+                if outcome.shippedVariant == .mrc, outcome.runnerUp != nil {
                     do {
                         // Land the regenerated heavy version atomically into the real shipped slot
                         // — the winner was never routed through `shipped` directly (see above).
@@ -1196,7 +1207,7 @@ protocol Compressing: Sendable {
                   to output: URL,
                   alternateOutput: URL?,
                   mrcReport: ((MRCDocumentReport) -> Void)?,
-                  progress: @escaping (Double) -> Void) async throws -> JobOutcome
+                  progress: @escaping (Double) -> Void) async throws -> RowOutcome
 }
 
 extension CompressEngine: Compressing {}

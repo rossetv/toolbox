@@ -10,14 +10,14 @@ import Foundation
 /// What a job produced: its outcome, and where the output landed (nil when nothing was written —
 /// a no-gain compress keeps the original, so there is no new file to reveal or open).
 struct JobResult {
-    let outcome: JobOutcome
+    let outcome: RowOutcome
     let outputURL: URL?
     /// The retained runner-up output (Rung-3's plain-gs alternative), if the body produced one.
     let alternateURL: URL?
     /// The MRC per-page report (spec §6's debugging record), if the body produced one.
     let mrcReport: MRCDocumentReport?
 
-    init(_ outcome: JobOutcome, outputURL: URL? = nil, alternateURL: URL? = nil,
+    init(_ outcome: RowOutcome, outputURL: URL? = nil, alternateURL: URL? = nil,
          mrcReport: MRCDocumentReport? = nil) {
         self.outcome = outcome
         self.outputURL = outputURL

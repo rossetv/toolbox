@@ -304,7 +304,7 @@ enum Fixtures {
 
     /// `pages` empty white pages. Two uses: the `OutputValidator` blank-page check, and the
     /// no-gain path — gs's `pdfwrite` structure/metadata makes a blank page *larger* than the
-    /// compact CoreGraphics original (verified), so compressing it yields `.noGain`.
+    /// compact CoreGraphics original (verified), so compressing it yields a `.noGain` compress leg.
     /// An 8-bit GREYSCALE page whose content is visually black-and-white — the case Ghostscript
     /// cannot serve, because its mono settings only apply to images that are already 1-bit.
     static func greyscaleBilevelScanPDF() throws -> URL {
@@ -872,5 +872,31 @@ enum Fixtures {
         ctx.endPDFPage()
         ctx.closePDF()
         return url.canonical
+    }
+}
+
+/// Test-only shorthand for the flat outcome cases this suite predates `RowOutcome` with. These are
+/// NOT engine cases — a row's result is compound now (spec §6.3) — and each helper builds the exact
+/// compound value the old case stood for, so a stubbed job body and the assertion that checks it
+/// can never drift apart. Tests that pin the compound SHAPE construct their values field by field
+/// instead (see `RowOutcomeTests`).
+extension RowOutcome {
+    static func compressed(before: Int, after: Int) -> RowOutcome {
+        RowOutcome(originalBytes: before, finalBytes: after,
+                   compress: .compressed(before: before, after: after))
+    }
+
+    static func noGain(bytes: Int) -> RowOutcome {
+        RowOutcome(originalBytes: bytes, finalBytes: bytes, compress: .noGain(bytes: bytes))
+    }
+
+    /// The heavy pair: an MRC winner with the losing variant parked beside it — the plain-gs output,
+    /// or the untouched input when gs bloated (`runnerUpBytes == before`, the R6/R7 marker).
+    static func compressedHeavy(before: Int, after: Int, runnerUpBytes: Int) -> RowOutcome {
+        RowOutcome(originalBytes: before, finalBytes: after,
+                   compress: .compressed(before: before, after: after),
+                   shippedVariant: .mrc,
+                   runnerUp: RetainedVariant(kind: runnerUpBytes == before ? .original : .plain,
+                                             bytes: runnerUpBytes, searchable: false))
     }
 }

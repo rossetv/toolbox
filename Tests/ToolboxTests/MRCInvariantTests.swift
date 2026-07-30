@@ -126,7 +126,7 @@ final class MRCInvariantTests: XCTestCase {
         let ocrOutput = hybrid.url.deletingLastPathComponent().appendingPathComponent("hybrid-ocr.pdf")
         let outcome = try await ocrEngine.ocr(hybrid.url, to: ocrOutput, options: OCROptions()) { _ in }
 
-        guard case let .ocrAdded(pages, skipped) = outcome else {
+        guard case let .added(pages, skipped) = outcome.ocr else {
             return XCTFail("expected the image-only hybrid to be OCR'd, got \(outcome)")
         }
         XCTAssertEqual(skipped, 0, "the hybrid carries no text layer on either page")
@@ -157,9 +157,13 @@ final class MRCInvariantTests: XCTestCase {
                                                 alternateOutput: alternate,
                                                 mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
 
-        guard case let .compressedHeavy(before, after, runnerUpBytes) = outcome else {
+        guard case let .compressed(before, after) = outcome.compress,
+              outcome.shippedVariant == .mrc,
+              let retained = outcome.runnerUp else {
             return XCTFail("expected the hybrid to beat real gs, got \(outcome)")
         }
+        let runnerUpBytes = retained.bytes
+        XCTAssertEqual(retained.kind, .plain, "the PARKED variant is the real gs output")
         XCTAssertEqual(before, inputBytes.count)
         XCTAssertLessThan(after, before, "the hybrid must be smaller than the input")
         XCTAssertGreaterThan(runnerUpBytes, 0, "the real gs candidate must have shipped some bytes")

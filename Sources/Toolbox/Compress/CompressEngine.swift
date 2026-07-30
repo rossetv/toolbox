@@ -84,7 +84,7 @@ struct CompressEngine {
                   to output: URL,
                   alternateOutput: URL? = nil,
                   mrcReport: ((MRCDocumentReport) -> Void)? = nil,
-                  progress: @escaping (Double) -> Void) async throws -> JobOutcome {
+                  progress: @escaping (Double) -> Void) async throws -> RowOutcome {
         let fm = FileManager.default
         let input = input.canonical
         let output = output.canonical
@@ -208,7 +208,8 @@ struct CompressEngine {
                 try fm.moveItem(at: destTemp, to: output)
                 placed = true
                 reportProgress(1.0)
-                return .compressed(before: inputSize, after: bytes)
+                return RowOutcome(originalBytes: inputSize, finalBytes: bytes,
+                                  compress: .compressed(before: inputSize, after: bytes))
             }
             // Rung 2 lost the race or declined — fall through to the gs delivery below.
         }
@@ -257,8 +258,15 @@ struct CompressEngine {
                 if let alternateOutput {
                     try? fm.copyItem(at: gsIsLegitimate ? workOut : workIn, to: alternateOutput)
                 }
-                return .compressedHeavy(before: inputSize, after: mrcBytes,
-                                        runnerUpBytes: gsIsLegitimate ? outputSize : inputSize)
+                // The descriptor names the PARKED loser, never the winner: `.mrc` shipped, so the
+                // retained variant is the gs output, or the untouched original when gs bloated.
+                // Its presence — not which variant won — is what the UI keys the switch on.
+                let parked = RetainedVariant(kind: gsIsLegitimate ? .plain : .original,
+                                             bytes: gsIsLegitimate ? outputSize : inputSize,
+                                             searchable: false)
+                return RowOutcome(originalBytes: inputSize, finalBytes: mrcBytes,
+                                  compress: .compressed(before: inputSize, after: mrcBytes),
+                                  shippedVariant: .mrc, runnerUp: parked)
             }
             // The hybrid lost (nil, larger or invalid) — fall through to the gs delivery below,
             // exactly as any non-MRC document; `alternateOutput` is never written (R7). The
@@ -276,7 +284,8 @@ struct CompressEngine {
             guard let outDoc = PDFDocument(url: workOut), outDoc.pageCount == pageCount else {
                 throw CompressError.ghostscriptFailed("Ghostscript produced an invalid output.")
             }
-            return .noGain(bytes: inputSize)
+            return RowOutcome(originalBytes: inputSize, finalBytes: inputSize,
+                              compress: .noGain(bytes: inputSize))
         }
 
         // 6. Re-validate the smaller output before it is delivered. Validation renders pages —
@@ -300,7 +309,8 @@ struct CompressEngine {
         placed = true
 
         reportProgress(1.0)
-        return .compressed(before: inputSize, after: outputSize)
+        return RowOutcome(originalBytes: inputSize, finalBytes: outputSize,
+                          compress: .compressed(before: inputSize, after: outputSize))
     }
 
     /// What the user is shown — and what the job list retains — when gs fails.

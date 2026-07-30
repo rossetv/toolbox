@@ -110,7 +110,7 @@ struct OCREngine {
     func ocr(_ input: URL,
              to output: URL,
              options: OCROptions,
-             progress: @escaping (Double) -> Void) async throws -> JobOutcome {
+             progress: @escaping (Double) -> Void) async throws -> RowOutcome {
         let input = input.canonical
         let output = output.canonical
         // Compared the way the filesystem compares, not the way `String` does (§5.2): APFS is
@@ -130,6 +130,11 @@ struct OCREngine {
         guard let doc = PDFDocument(url: input) else { throw OCRError.corrupt }
         let count = doc.pageCount
         guard count > 0 else { throw OCRError.corrupt }
+
+        // The row's size facts. This leg compresses nothing, so both start at the input's size —
+        // the append genuinely grows the delivered file, and the queue's commit step re-stats it
+        // (`RowOutcome.finalBytes`' ownership note) rather than the engine guessing here.
+        let inputSize = (try? input.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
 
         var pageText: [Int: [PositionedText]] = [:]
         var geometry: [Int: PageGeometry] = [:]
@@ -163,11 +168,18 @@ struct OCREngine {
         }
 
         // Every page already had text → nothing to do.
-        guard ocrPages > 0 else { return .alreadySearchable }
+        guard ocrPages > 0 else {
+            return RowOutcome(originalBytes: inputSize, finalBytes: inputSize,
+                              ocr: .alreadySearchable)
+        }
         // Recognition found nothing anywhere (a blank or unreadable scan). The writer's no-op path
-        // would emit a byte-identical duplicate of the input, so nothing is written and the tally
-        // says what actually happened: no page gained text.
-        guard !pageText.isEmpty else { return .ocrAdded(pages: 0, skipped: skipped) }
+        // would emit a byte-identical duplicate of the input, so nothing is written and the row
+        // says what actually happened: the pages that lacked text are too faint to read. This is
+        // the zero-usable-runs fact `OCROutcome.tooFaint` is defined as (spec §6.3) — the pages
+        // that already had text are not a claim this outcome makes.
+        guard !pageText.isEmpty else {
+            return RowOutcome(originalBytes: inputSize, finalBytes: inputSize, ocr: .tooFaint)
+        }
 
         // Temp file in the OUTPUT directory (same volume → atomic rename can't cross-device fail).
         let outputDir = output.deletingLastPathComponent().canonical
@@ -197,7 +209,8 @@ struct OCREngine {
         try FileManager.default.moveItem(at: tempURL, to: output)
         renamed = true
         progress(1.0)
-        return .ocrAdded(pages: ocrPages, skipped: skipped)
+        return RowOutcome(originalBytes: inputSize, finalBytes: inputSize,
+                          ocr: .added(pages: ocrPages, skipped: skipped))
     }
 
 

@@ -20,8 +20,8 @@ final class OCREngineTests: XCTestCase {
 
         let outcome = try await engine.ocr(input, to: output, options: OCROptions()) { _ in }
 
-        guard case let .ocrAdded(pages, skipped) = outcome else {
-            return XCTFail("expected .ocrAdded, got \(outcome)")
+        guard case let .added(pages, skipped) = outcome.ocr else {
+            return XCTFail("expected an added-text leg, got \(outcome)")
         }
         XCTAssertEqual(pages, 1)
         XCTAssertEqual(skipped, 0)
@@ -40,7 +40,7 @@ final class OCREngineTests: XCTestCase {
 
         let outcome = try await engine.ocr(input, to: output, options: OCROptions()) { _ in }
 
-        XCTAssertEqual(outcome, .alreadySearchable)
+        XCTAssertEqual(outcome.ocr, .alreadySearchable)
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
                        "an already-searchable doc writes no output")
     }
@@ -62,8 +62,8 @@ final class OCREngineTests: XCTestCase {
         let output = mixedURL.deletingLastPathComponent().appendingPathComponent("mixed-ocr.pdf")
         let outcome = try await engine.ocr(mixedURL, to: output, options: OCROptions()) { _ in }
 
-        guard case let .ocrAdded(pages, skipped) = outcome else {
-            return XCTFail("expected .ocrAdded, got \(outcome)")
+        guard case let .added(pages, skipped) = outcome.ocr else {
+            return XCTFail("expected an added-text leg, got \(outcome)")
         }
         XCTAssertEqual(skipped, 1, "the born-digital page should be skipped")
         XCTAssertEqual(pages, 1, "the image page should be OCR'd")
@@ -145,7 +145,8 @@ final class OCREngineTests: XCTestCase {
     }
 
     /// m9 — a blank scan is recognised, yields nothing, and must not be handed back as a
-    /// byte-identical copy reported as searchable: no file, and a tally of zero pages.
+    /// byte-identical copy reported as searchable: no file, and the too-faint verdict — recognition
+    /// completed with zero usable runs on the pages that lacked a layer (spec §6.3).
     func testScanWithNothingToRecogniseWritesNoFile() async throws {
         let engine = OCREngine()
         let input = try Fixtures.blankPDF(pages: 1)
@@ -153,8 +154,8 @@ final class OCREngineTests: XCTestCase {
 
         let outcome = try await engine.ocr(input, to: output, options: OCROptions()) { _ in }
 
-        XCTAssertEqual(outcome, .ocrAdded(pages: 0, skipped: 0),
-                       "no page gained text, and the tally must say so")
+        XCTAssertEqual(outcome.ocr, .tooFaint,
+                       "no page gained text, and the outcome must say so")
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
                        "a duplicate of the input is not an OCR result")
     }

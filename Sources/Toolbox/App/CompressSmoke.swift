@@ -43,8 +43,8 @@ enum CompressSmoke {
             let before = fileSize(input)
             let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
 
-            switch outcome {
-            case .compressed(let b, let a):
+            switch outcome.compress {
+            case .compressed(let b, let a) where outcome.runnerUp == nil:
                 let inPages = PDFDocument(url: input)?.pageCount ?? -1
                 let outPages = PDFDocument(url: output)?.pageCount ?? -2
                 guard a < b, inPages == outPages, outPages > 0 else {
@@ -53,10 +53,10 @@ enum CompressSmoke {
                 }
                 print("SMOKE PASS: app-spawned gs under sandbox compressed \(b) -> \(a) bytes, \(outPages) page(s) preserved")
                 return 0
-            // `.compressedHeavy` is not compiler-forced here (this `default:` already absorbs it),
-            // but the smoke's synthetic gradient input is Rung-1-only, so the engine's Task-4
-            // pass-through body never produces it — the smoke deliberately treats it as the same
-            // unexpected-outcome failure as any other case it doesn't test for.
+            // A result that RETAINED a second variant is not compiler-forced here (this `default:`
+            // already absorbs it), but the smoke's synthetic gradient input is Rung-1-only, so the
+            // engine's Task-4 pass-through body never produces one — the smoke deliberately treats
+            // it as the same unexpected-outcome failure as any other case it doesn't test for.
             default:
                 FileHandle.standardError.write(Data("SMOKE FAIL: unexpected outcome \(outcome) (input was \(before) bytes)\n".utf8))
                 return 1
