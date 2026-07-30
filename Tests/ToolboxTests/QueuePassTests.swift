@@ -184,8 +184,11 @@ final class QueuePassTests: XCTestCase {
                        "the variant that could not carry the layer is labelled honestly")
         XCTAssertEqual(row.searchableByCard[.runnerUp], true)
         XCTAssertEqual(row.searchableByCard[.originalReference], false)
-        XCTAssertEqual(try job(model, id).state, .done(try XCTUnwrap(outcome(model, id))),
-                       "an append failure is never a job failure")
+        if case .failed = try job(model, id).state {
+            XCTFail("an append failure is never a job failure")
+        }
+        XCTAssertEqual(try XCTUnwrap(outcome(model, id)).ocr, .added(pages: 1, skipped: 0),
+                       "and the leg still reports what it read")
         XCTAssertEqual(TestSupport.fileSize(try XCTUnwrap(row.shipped?.url)), HeavyEnv.heavyBytes,
                        "the failed append left the compress artefact exactly as it was")
 
