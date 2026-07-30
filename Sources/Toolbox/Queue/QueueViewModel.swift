@@ -1017,21 +1017,22 @@ final class QueueViewModel: ObservableObject {
         // rescue), found nothing to gain (its sibling), or was never on. Such a file carries no
         // compression, so it ships as `<name>-ocr.pdf` — naming it `-compressed` would be the lie
         // (spec §6.5).
-        let ocrDelivers = state.delivered == nil
         let destination: URL
-        if ocrDelivers {
-            if state.outcome.compress == nil {
-                // An OCR-only run reserved `<name>-ocr.pdf` at add time already.
-                guard let reserved = reservedDelivery(for: job.id) else {
-                    throw MissingOutputReservationError()
-                }
-                destination = reserved
-            } else {
-                destination = try switchedDelivery(for: job.id)
+        if let compressed = state.delivered {
+            destination = compressed
+        } else if state.outcome.compress == nil {
+            // An OCR-only run reserved `<name>-ocr.pdf` at add time already.
+            guard let reserved = reservedDelivery(for: job.id) else {
+                throw MissingOutputReservationError()
             }
+            destination = reserved
         } else {
-            destination = state.delivered ?? job.url
+            destination = try switchedDelivery(for: job.id)
         }
+        // Deliberately derived from the binding above rather than re-tested later: `state.delivered`
+        // is assigned as soon as this leg lands its own file, so a second read of it would answer
+        // differently half way through.
+        let ocrDelivers = state.delivered == nil
 
         // Two files read at once, whatever the batch width: in-flight 300-DPI rasters plus the
         // recognised runs they produce are already hundreds of megabytes at width 2 (the bound
