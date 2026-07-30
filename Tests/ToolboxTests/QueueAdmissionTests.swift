@@ -59,7 +59,7 @@ final class QueueAdmissionTests: XCTestCase {
         model.compress()
         // The first job is inside the engine, suspended — so the batch is genuinely live and the
         // launch window still has a slot to re-poll into.
-        try await waitUntil(timeout: 5) { env.stub.callCount == 1 }
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
 
         let latecomerID = try await addOne(env, try Fixtures.textImagePDF())
         XCTAssertEqual(model.jobs.count, 2, "a drop during a run must be admitted (spec §6.5)")
@@ -86,7 +86,7 @@ final class QueueAdmissionTests: XCTestCase {
         env.stub.gate = gate
         _ = try await addOne(env)
         model.compress()
-        try await waitUntil(timeout: 5) { env.stub.callCount == 1 }
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
 
         // The settings move under the live run.
         model.outputFolder = try elsewhere(env)
@@ -260,7 +260,7 @@ final class QueueAdmissionTests: XCTestCase {
     /// "Find it…" is a FULL state reset: the problem goes, the row re-enters `canStart`'s healthy
     /// count, and the estimate is re-derived from the new file rather than left stale.
     func testRebindClearsProblemAndRequeuesRow() async throws {
-        let env = try HeavyEnv()
+        let env = try HeavyEnv(timeBudget: 5)
         let model = env.model
         let id = try await addOne(env, try Fixtures.corruptPDF())
         try await waitUntil(timeout: 5) { model.inspections[id]?.problem != nil }
@@ -404,7 +404,7 @@ final class QueueAdmissionTests: XCTestCase {
     /// The row's displayed estimate is keyed by the row's own preset — showing the batch preset's
     /// number on an overridden row is two different figures for one file.
     func testOverriddenRowEstimateUsesRowPreset() async throws {
-        let env = try HeavyEnv()
+        let env = try HeavyEnv(timeBudget: 5)
         let model = env.model
         model.preset = .maximumQuality
         let id = try await addOne(env)
@@ -444,7 +444,7 @@ final class QueueAdmissionTests: XCTestCase {
     // MARK: add-time inspection (spec §6.6)
 
     func testInspectionProducesTheReadyScreenMetaLine() async throws {
-        let env = try HeavyEnv()
+        let env = try HeavyEnv(timeBudget: 5)
         let model = env.model
         let id = try await addOne(env, try Fixtures.bornDigitalPDF(pages: 3))
         try await waitUntil(timeout: 5) {

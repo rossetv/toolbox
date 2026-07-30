@@ -318,7 +318,8 @@ struct HeavyEnv {
     let input: URL
     let storeRoot: URL
 
-    init(before: Int = 9000, contentType: PDFContentType? = nil) throws {
+    init(before: Int = 9000, contentType: PDFContentType? = nil,
+         timeBudget: TimeInterval = 0.5) throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -333,12 +334,14 @@ struct HeavyEnv {
                                                     runnerUpBytes: HeavyEnv.normalBytes),
                           shippedBytes: HeavyEnv.heavyBytes,
                           runnerUpBytes: HeavyEnv.normalBytes)
-        // The ONLY change to the existing body: the estimator is injected when a caller pins
-        // the classification, and is the default otherwise, so every existing `HeavyEnv()`
-        // call site behaves exactly as before.
+        // The estimator is injected when a caller pins the classification, and is the default
+        // otherwise, so every existing `HeavyEnv()` call site behaves exactly as before.
+        // `timeBudget` is raised only by tests that ASSERT on a non-fallback analysis: the
+        // production 0.5 s box legitimately overruns under the gate's 8 parallel workers, and a
+        // fallback estimate arrives exactly once, so no amount of waiting can recover it.
         let estimator = contentType.map {
-            CompressEstimator(analyser: FixedAnalyser(contentType: $0))
-        } ?? CompressEstimator()
+            CompressEstimator(analyser: FixedAnalyser(contentType: $0), timeBudget: timeBudget)
+        } ?? CompressEstimator(timeBudget: timeBudget)
         model = QueueViewModel(engine: stub, estimator: estimator,
                                   store: RunnerUpStore(rootOverride: storeRoot))
         model.outputFolder = outputFolder
