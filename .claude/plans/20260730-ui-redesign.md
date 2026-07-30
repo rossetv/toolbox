@@ -335,10 +335,13 @@ struct QueueView: View {
          changeQuality: @escaping () -> AnyView,           // Change-quality sheet content
          scanConsent: @escaping (ToolJob.ID) -> AnyView,   // Scan-choice consent sheet content
          recentBatches: @escaping () -> AnyView,           // Recent-batches sheet content
-         about: @escaping () -> AnyView)                   // About sheet content (⋯ menu + app menu)
+         about: @escaping () -> AnyView,                   // About sheet content (⋯ menu + app menu)
+         showAbout: Binding<Bool>)                         // ONE About presentation state — QueueView presents
+                                                           // the sheet off this binding; the ⋯ item toggles it;
+                                                           // ToolboxApp's CommandGroup toggles the SAME binding
 }
 ```
-P-A owns the `⋯` button AND its menu (Recent batches… → `recentBatches` slot; Where files are saved… → `FilePicker.chooseFolder()` directly, no view; About Toolbox → `about` slot). EIGHT slots total — the freeze claim covers all of them; no other cross-track reference exists.
+P-A owns the `⋯` button AND its menu (Recent batches… → `recentBatches` slot; Where files are saved… → `FilePicker.chooseFolder()` directly, no view; About Toolbox → sets `showAbout`). NINE slots total (eight content closures + the About binding) — the freeze claim covers all of them; no other cross-track reference exists.
 Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sections. Divergences per spec (multi-active rows; truthful footer copy; "grew" meta; Skip/Remove/Find-it only).
 
 - [ ] 1. `QueueViewStateTests`: state selection (empty/ready/working/finished derivation), drop accepted in every state, Return on focused row invokes onOpen. FAIL → implement → PASS.
@@ -405,7 +408,7 @@ struct UpdateBannerView: View {
     static func isDismissed(version: String, in store: UserDefaults) -> Bool  // test seam, same key + store
 }
 ```
-body renders nothing when `dismissedVersion == release.version`; the × sets `dismissedVersion = release.version` (wrapper write → view invalidates → banner hides immediately); re-shows for a newer version. Tests `testBannerDismissalPersistsPerVersion` + `testNewerVersionReShowsBanner` drive the predicate through a per-test suite with teardown — `let store = try XCTUnwrap(UserDefaults(suiteName: "toolbox.tests.\(UUID().uuidString)"))` (the initialiser is failable) + `addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }` so no state leaks across runs. I1a mounts the view.
+body renders nothing when `dismissedVersion == release.version`; the × sets `dismissedVersion = release.version` (wrapper write → view invalidates → banner hides immediately); re-shows for a newer version. Tests `testBannerDismissalPersistsPerVersion` + `testNewerVersionReShowsBanner` drive the predicate through a per-test suite with teardown — `let suite = "toolbox.tests.\(UUID().uuidString)"; let store = try XCTUnwrap(UserDefaults(suiteName: suite))` (the initialiser is failable) + `addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }` so no state leaks across runs. I1a mounts the view.
 - [ ] 3. Commits: `feat(update): release asset parsing`, `feat(update): self-updater state machine`, `feat(update): banner view` (banner shows `blockedByRun` as disabled button + caption "after the current batch finishes").
 
 ### Task P-D: R-net test re-derivation — Opus, track D (worktree `…-d`)
@@ -430,13 +433,14 @@ Protocol (spec §11, widened): enumerate all **62** existing `QueueViewModelTest
 
 **Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL EIGHT frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about; `SelfUpdater` wired with `isBusy: { model.isRunning }`; `UpdateBannerView(release:updater:)` mounted above the queue content (the file-private incumbent `UpdateBanner` struct, its call site and its stale never-self-updates doc comment DELETED in this rewrite), sliding per the handoff's banner motion; `SelfUpdater` lifetime wired EXACTLY thus (the naive property-initialiser closure over a sibling property does not compile, and the cheapest escape — `isBusy: { false }` — would silently kill spec §6.10's busy block):
 ```swift
-init() {
+init(showAbout: Binding<Bool>) {
+    _showAbout = showAbout
     let m = QueueViewModel()
     _model   = StateObject(wrappedValue: m)
     _updater = StateObject(wrappedValue: SelfUpdater(isBusy: { m.isRunning }))
 }
 ```
-window-level drop), `ToolboxApp.swift` (app-menu About via `CommandGroup(replacing: .appInfo)` toggling an `@State` hoisted to `ToolboxApp` and passed into `RootView` — ONE presentation state shared with the `⋯` menu item, so the two entry points cannot both present), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
+`showAbout` is the `@State` hoisted to `ToolboxApp`, passed down and handed to `QueueView`'s ninth seam slot — ONE presentation state, three togglers (⋯ item, app menu, ×), one sheet; window-level drop), `ToolboxApp.swift` (app-menu About via `CommandGroup(replacing: .appInfo)` toggling an `@State` hoisted to `ToolboxApp` and passed into `RootView` — ONE presentation state shared with the `⋯` menu item, so the two entry points cannot both present), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
 
 - [ ] 1. Wire, build, full suite PASS. Commit: `feat(app): single-window unified-queue shell`.
 
@@ -467,7 +471,7 @@ Owner: the LCW orchestrator (not a track). Protocol: build, drive with computer-
 ## Self-review notes
 
 - Spec coverage re-walked after revision: §6.1→F4, §6.2→F5a, §6.3→F1, §6.4→F3+F5a+F1b, §6.5→F4+F5a, §6.6→F4, §6.7→F5d, §6.8→F5c+F5a(semaphore), §6.9→F6, §6.10→P-C(+I1a busy-wire, I3 functional), §6.11→I1b, §7 screens→P-A/P-B+F5b(consent), §8→F7/P-E/I2, §9→F7+P-A/P-B a11y steps+I2 step 4+V1, §11→P-D/I3/V1, §13 acceptance 1→V1 (owner + budget).
-- Type-consistency pass: `RowProblem` defined in F1 (Models) and consumed by F4's `RowInspection` and F1's `CompressOutcome.skipped`; `OCRing`/`StubOCREngine` defined F3/F4 before F5a consumes; seam signatures in P-A's Produces match P-B's Produces one-for-one (eight slots, `(ToolJob.ID) -> AnyView` where a row id is needed); `measuredPageRate` produced F5c, consumed P-B.
+- Type-consistency pass: `RowProblem` defined in F1 (Models) and consumed by F4's `RowInspection` and F1's `CompressOutcome.skipped`; `OCRing`/`StubOCREngine` defined F3/F4 before F5a consumes; seam signatures in P-A's Produces match P-B's Produces one-for-one (nine slots — eight content closures + the About binding, `(ToolJob.ID) -> AnyView` where a row id is needed); `measuredPageRate` produced F5c, consumed P-B.
 - Topological order: F1→F1b→F2→F3→F4→F5a→F5b→F5c→F5d→F6→F7 all serial; every P-track consumes only F-phase symbols; I1a consumes P-A+P-B+P-C merges.
 - File-list completeness derived by grep (F1's ~82 test sites; I1b's orphan list), not recall.
 
