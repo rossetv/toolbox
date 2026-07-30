@@ -324,7 +324,7 @@ Every interactive component: `.clearsClickFocus()` (standing invariant) + hover 
 
 **Files (create only):** `Sources/Toolbox/Queue/QueueView.swift`, `EmptyStateView.swift`, `DragOverlayView.swift`, `QueueHeaderView.swift`, `QueueRowsView.swift`, `QueueFooterView.swift`. Test: `Tests/ToolboxTests/QueueViewStateTests.swift` (new). Footer sums render VM aggregates ONLY (`BatchProgress.savedSoFarBytes` etc.) — the OCR-only/rescued exclusion is F5c's rule; the footer never recomputes sums. Degraded rows render `StatusIndicator.Kind.warn`. Label tests include one ABSENCE assertion: a compress-only row has no searchability subtitle in either direction.
 
-**Interfaces — Consumes:** `QueueViewModel` (F4/F5 surface), `HistoryStore` (F6), `QueueComponents` (F7), `FilePicker`, `RowVersions` read-only. **Produces — the FROZEN injection seam (I1 plugs P-B's views into exactly these EIGHT slots; no other cross-track reference exists):**
+**Interfaces — Consumes:** `QueueViewModel` (F4/F5 surface), `HistoryStore` (F6), `QueueComponents` (F7), `FilePicker`, `RowVersions` read-only. **Produces — the FROZEN injection seam (I1 plugs P-B's views into exactly these NINE slots; no other cross-track reference exists):**
 ```swift
 struct QueueView: View {
     init(model: QueueViewModel, history: HistoryStore,
@@ -431,7 +431,7 @@ Protocol (spec §11, widened): enumerate all **62** existing `QueueViewModelTest
 
 ### Task I1a: Wire the shell — Opus
 
-**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL EIGHT frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about; `SelfUpdater` wired with `isBusy: { model.isRunning }`; `UpdateBannerView(release:updater:)` mounted above the queue content (the file-private incumbent `UpdateBanner` struct, its call site and its stale never-self-updates doc comment DELETED in this rewrite), sliding per the handoff's banner motion; `SelfUpdater` lifetime wired EXACTLY thus (the naive property-initialiser closure over a sibling property does not compile, and the cheapest escape — `isBusy: { false }` — would silently kill spec §6.10's busy block):
+**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL NINE frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about + the `showAbout` binding; `SelfUpdater` wired with `isBusy: { model.isRunning }`; `UpdateBannerView(release:updater:)` mounted above the queue content (the file-private incumbent `UpdateBanner` struct, its call site and its stale never-self-updates doc comment DELETED in this rewrite), sliding per the handoff's banner motion; `SelfUpdater` lifetime wired EXACTLY thus (the naive property-initialiser closure over a sibling property does not compile, and the cheapest escape — `isBusy: { false }` — would silently kill spec §6.10's busy block):
 ```swift
 init(showAbout: Binding<Bool>) {
     _showAbout = showAbout
