@@ -514,6 +514,33 @@ final class QueuePassTests: XCTestCase {
         XCTAssertTrue(result.isDegraded)
     }
 
+    /// The same boundary on a row that delivered NOTHING: there is nothing to bank, so it takes the
+    /// queue's own cancel semantics and returns to `.queued`. Marking it finished would report a
+    /// file the batch never touched as done, under a caveat about a leg that never ran.
+    func testCancelBetweenLegsRequeuesARowThatDeliveredNothing() async throws {
+        let (env, ocr) = try env(added)
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in
+            .init(outcome: .noGain(bytes: 9_000), shippedBytes: nil, runnerUpBytes: nil)
+        }
+        let model = env.model
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
+        model.cancel()
+        await gate.open()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertEqual(ocr.recogniseCallCount, 0)
+        switch try job(model, id).state {
+        case .queued, .analysing: break
+        case let other: XCTFail("a row that delivered nothing must go back to the queue, got \(other)")
+        }
+        XCTAssertNotNil(model.reservedDelivery(for: id), "and it keeps the name it reserved")
+    }
+
     /// The same boundary with the OCR verb OFF: the row completes normally and keeps its file —
     /// a cancel landing between the engine's return and the commit must never discard delivered
     /// work, nor invent a cancelled OCR leg that was never going to run.

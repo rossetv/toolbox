@@ -967,9 +967,13 @@ final class QueueViewModel: ObservableObject {
                                                         rebuildScan: overrides[job.id]?.rebuildScan,
                                                         mrcReport: { mrcReport = $0 }) { report($0) }
                 state = PassState(outcome: outcome, mrcReport: mrcReport)
-                // `.noGain` deliberately writes nothing, so there is no output file to point at.
-                if case .noGain = outcome.compress {} else {
+                switch outcome.compress {
+                case .noGain:
+                    break       // writes nothing, so there is no output file to point at
+                default:
                     state.delivered = output
+                    // Attached whenever the DESCRIPTOR says a second variant was retained, never
+                    // keyed on which one won the gate (spec §5's R7 reversal).
                     if outcome.runnerUp != nil { state.runnerUpFile = alternate }
                 }
             } catch let error as CompressError {
@@ -999,7 +1003,11 @@ final class QueueViewModel: ObservableObject {
         // The leg boundary. A compress delivery is atomic and complete, so a cancel landing here
         // keeps and banks it — "no partial output" binds WITHIN a leg, never across them — and the
         // row records why it is not searchable rather than reporting no OCR leg at all (spec §6.5).
+        // A row that delivered NOTHING has nothing to bank, so it takes the queue's own cancel
+        // semantics instead and returns to `.queued`: reporting it finished would mark a file the
+        // batch never touched as done, under a caveat about a leg that never ran.
         if Task.isCancelled {
+            guard state.delivered != nil else { throw CancellationError() }
             state.outcome.ocr = .cancelled
             return state.result
         }
