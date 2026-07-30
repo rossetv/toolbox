@@ -132,8 +132,9 @@ func compress(_ input: URL, preset: CompressPreset, to output: URL,
               alternateOutput: URL? = nil,
               rebuildScan: Bool? = nil,          // nil = derive as today; false = never MRC; true = MRC when ELIGIBLE
               mrcReport: ((MRCDocumentReport) -> Void)? = nil,
-              progress: @escaping (Double) -> Void) async throws -> JobResult
+              progress: @escaping (Double) -> Void) async throws -> RowOutcome
 ```
+(The ENGINE returns `RowOutcome` — `JobResult` stays the queue body's wrapper, exactly as today's shapes map; the withhold/retention signal is `RowOutcome.runnerUp`; URLs stay caller-owned. `Compressing` re-types identically; `CompressSmoke` switches on the returned outcome.)
 Rules (spec §7 Per-file settings): `rebuildScan == true` never overrides classification eligibility (`.scanColour` only, complex-page rules stand — MRC R2); `preset == .maximumQuality` forces the MRC leg off regardless (MRC D3). Withhold rule, scoped VERBATIM to spec §6.3: a would-be runner-up that is a **COMPRESS variant** ≥ input is withheld (no `alternateOutput` write, no descriptor); the **untouched-original park** (`runnerUpBytes == inputSize`, gs bloated — DECISIONS 2026-07-24's marker) is NOT a compress artefact and is RETAINED, spec §6.4. Winner ≥ input → `.noGain` (as today). `finalBytes` in the returned outcome = compress artefact size (F1's ownership note — F5a re-stats after OCR).
 
 **Steps:**
@@ -203,6 +204,8 @@ func setOverride(_ o: RowOverride?, for id: ToolJob.ID)
 func effectivePreset(for id: ToolJob.ID) -> CompressPreset
 func effectiveVerbs(for id: ToolJob.ID) -> (compress: Bool, ocr: Bool)   // floor: never both false (spec §6.1)
 func rebind(_ id: ToolJob.ID, to url: URL)
+func setSkipped(_ skipped: Bool, for id: ToolJob.ID)   // Problems-screen Skip: excluded from the run and from canStart's healthy count
+var armedExclusions: Set<ToolJob.ID>                    // Change-quality "Choose which files…": excluded rows report .none from recompressState
 var canStart: Bool
 // The reservation ledger's ONLY mid-run mutation surface (F5a's contingency is its one sanctioned caller):
 func reserveDelivery(suffix: String, for id: ToolJob.ID) -> URL
@@ -216,11 +219,12 @@ Reservation moves to `add(_:)` (delivered suffix per spec §6.5: compress-inclus
 - [ ] 2. Lift doubles into `TestSupport.swift` (internal), re-derive width>1 arity, delete the three private duplicates; suite PASS. Commit: `test(support): shared width-aware engine doubles`.
 - [ ] 3. Write `QueueAdmissionTests`: `testAddDuringRunJoinsBatch`, `testAddDuringRunReservesAgainstLockedSettings`, `testReservationReleasedOnRemove`, `testClearReleasesReservationsAndReAddDoesNotSuffix`, `testFolderChangeReReservesWhileIdle`, `testVerbSetChangeFlipsSuffix` (compress-on → `-compressed.pdf`; toggle to OCR-only while idle → re-reserved `-ocr.pdf`), `testPerRowOCROverrideFlipsSuffix`, `testRebuildScanFlipAddsAndRemovesAlternateReservation`, `testRebindReReservesWhileIdle`, `testOverrideVerbFloorBlocksLastVerbOff`, `testZeroVerbsDisablesStart`, `testProblemRowExcludedFromCanStart`. Run: FAIL.
 - [ ] 4. Implement part-1 surface. Run: PASS. Full suite: PASS.
-- [ ] 5. Commit: `feat(queue): verbs, overrides, add-time inspection and reservation`.
+- [ ] 5. **Row-scope the preset-keyed state (spec §6.1, binding)**: re-key `FutileAttempt` to `(id, effectivePreset, verbSet)`; point `recompressState(for:)`, `armedJobs`, `recompressPrediction(for:at:)` and the armed banner's arithmetic at `effectivePreset(for:)` — never the batch preset. Tests `testArmingUsesRowEffectivePreset` (overridden row arms against ITS preset), `testFutilityKeyIncludesVerbSet` (compress-futile row is not futile after an OCR-verb change). Existing arming/futility tests in `QueueViewModelTests` whose premise is batch-keyed get stated dispositions in this task (adapt — same invariant through `effectivePreset`, which equals the batch preset when no override exists). Run: PASS. Full suite: PASS.
+- [ ] 6. Commit: `feat(queue): verbs, overrides, add-time inspection and reservation`.
 
 ### Task F5a: Single-pass job body — Opus, foundation
 
-**Files:** Modify `Sources/Toolbox/Queue/QueueViewModel.swift` (`RowProblem.compressFailed` is F1's definition — F5a only PRODUCES it). Tests: `Tests/ToolboxTests/QueuePassTests.swift` (new) + `Tests/ToolboxTests/QueueViewModelTests.swift` (re-baseline: `row.count` 2 → 3 where the Original reference row now appears — `originalURL` is populated from this task on; `VersionStoreTests`' own `count == 3` stays 3, that test constructs `RowVersions` directly and never sets `originalURL`).
+**Files:** Modify `Sources/Toolbox/Queue/QueueViewModel.swift` (`RowProblem.compressFailed` is F1's definition — F5a only PRODUCES it). Tests: `Tests/ToolboxTests/QueuePassTests.swift` (new) + `Tests/ToolboxTests/QueueViewModelTests.swift` (re-baseline: `row.count` 2 → 3 where the Original reference row now appears AND the paired `capsuleTitle` assertion in the same test body ("2 versions" → "3 versions") — `originalURL` is populated from this task on; `VersionStoreTests`' own `count == 3` stays 3, that test constructs `RowVersions` directly and never sets `originalURL`).
 
 Job body per file (spec §6.2/§6.4/§6.5/§6.8): compress leg (when effective-on, per-row `preset`/`rebuildScan`) → cancellation check → OCR leg (when effective-on; width-2 semaphore; `recognise` from ORIGINAL, `append` to delivered file via temp + `replaceItemAt`, and to a retained runner-up variant file; `.original`-kind runner-up NEVER appended; append failure → `searchable = false`, never a job failure) → cancellation check → re-stat `finalBytes`, commit. Cancel between legs → `.ocr = .cancelled`, kept-and-banked.
 
@@ -256,7 +260,7 @@ struct BatchProgress: Equatable { let fraction: Double; let etaSeconds: Int?; le
 func legLabel(for id: ToolJob.ID) -> String?   // "Compressing…" / "Rebuilding scan…" / "Reading page N of M"
 func measuredPageRate(for id: ToolJob.ID) -> Double?   // per-page seconds from the row's completed run (P-B duration lines)
 ```
-ETA: smoothed completed-fraction rate, nil until batch fraction ≥ 0.1; monotonic display.
+ETA: smoothed completed-fraction rate, nil until batch fraction ≥ 0.1; monotonic display. `batchProgress` PERSISTS after the run ends (the Finished screen's header numbers and "N MB saved" render from it) until the queue is cleared — test `testBatchProgressSurvivesBatchEnd`.
 
 - [ ] 1. Tests: aggregation, nil-before-10% (`testETANilBeforeTenPercent`), monotonicity, per-leg labels, `measuredPageRate` recorded post-run, `testOCROnlyAndRescuedRowsExcludedFromSavedSoFar` (spec §6.5: `savedSoFarBytes` sums COMPRESSED rows only — OCR-only, rescued and noGain+OCR rows contribute zero), plus the three `BatchProgressTextTests` assertions re-homed here with stated outcomes in a file comment atop `BatchProgressTests` (counts-current-file → aggregation tests; clamps-at-finish → `testReadingPageLabelClampsAtPageCount` — the same off-by-one shape the old test documented, now on `legLabel`'s "Reading page N of M"; uses-given-verb → per-leg label tests). FAIL → implement → PASS. Commit: `feat(queue): batch progress and measured ETA`.
 
@@ -274,7 +278,7 @@ Two-part measurement (spec §6.7), in order:
 
 **Files:** Create `Sources/Toolbox/Queue/HistoryStore.swift`; modify `Sources/Toolbox/Queue/QueueViewModel.swift` (batch-end recording). Tests: `Tests/ToolboxTests/HistoryStoreTests.swift` (new) + extend `QueuePassTests.swift`.
 
-Interfaces as specified: `HistoryBatch` (id/date/folderName/folderURL/fileCount/presetTitle?/compressOn/ocrOn/savedBytes/searchableCount/partial/problem/cancelled), `HistoryStore` (`retentionLimit = 200` — covers months of heavy use at trivial size, bounds growth; `batches` newest-first; `lifetimeSavedBytes`; `record`; `clearList()` empties batches ONLY, lifetime survives — spec §6.9; `groupedByDay`). Disk envelope `{"version":1,…}`; foreign version → empty start, never overwrite until next record. VM records at batch end incl. cancel-with-banked; cancel-with-nothing-banked records nothing.
+Interfaces as specified — OWNERSHIP pinned: `QueueViewModel` exposes `let history: HistoryStore` (constructed in the VM's init; ONE instance; I1a wires `QueueView(model: model, history: model.history, …)` and the `recentBatches` slot receives `RecentBatchesSheet(history: model.history)` — never a second instance): `HistoryBatch` (id/date/folderName/folderURL/fileCount/presetTitle?/compressOn/ocrOn/savedBytes/searchableCount/partial/problem/cancelled), `HistoryStore: ObservableObject` (`retentionLimit = 200` — covers months of heavy use at trivial size, bounds growth; `batches` newest-first; `lifetimeSavedBytes`; `record`; `clearList()` empties batches ONLY, lifetime survives — spec §6.9; `groupedByDay`). Disk envelope `{"version":1,…}`; foreign version → empty start, never overwrite until next record. VM records at batch end incl. cancel-with-banked; cancel-with-nothing-banked records nothing.
 
 - [ ] 1. `HistoryStoreTests`: round-trip, `testClearListPreservesLifetime`, trim at 200, day grouping, corrupt/foreign-version → empty. FAIL → implement → PASS.
 - [ ] 2. `QueuePassTests`: `testBatchEndRecordsHistory`, `testCancelledBatchWithBankedFileRecordsEntry`, `testCancelledEmptyBatchRecordsNothing`, `testOCROnlyAndRescuedRowsExcludedFromSavedBytes` (history `savedBytes` sums compressed rows only; rescued/noGain+OCR count via `searchableCount`). FAIL → wire → PASS.
@@ -296,7 +300,9 @@ struct OptionCard: View { let title: String; let value: String; let caption: Str
                           let captionTone: Tone; let isSelected: Bool; let action: () -> Void
                           enum Tone { case success, muted, plain } }
 struct QueueRow: View { /* thumbnail, name, meta(+accent), 70pt trailing sizes column, hover+focus gear,
-                           status slot, capsule; onOpen/onGear/onCapsule/onRemove; keyboard-focusable */ }
+                           status slot, capsule; onOpen/onGear/onCapsule/onRemove; keyboard-focusable;
+                           PLUS the problem variant (handoff screen 10): tinted bg danger-7%/warn-10%,
+                           inline secondary-button + link affordances (Find it… / Skip / Remove) */ }
 struct BatchCard: View { let icon: StatusIndicator.Kind; let title: String; let subtitle: String; let action: () -> Void }
 struct SecondaryButton: View { let title: String; var icon: Image? = nil; let action: () -> Void }
                         // handoff: shadow 0 .5px 1.5px rgba(0,0,0,.18) + inset ring; dark #3a3a3c
@@ -446,7 +452,7 @@ init(showAbout: Binding<Bool>) {
 
 ### Task I1b: Delete legacy + orphan sweep — Sonnet
 
-**Files:** Delete `App/SidebarView.swift`, `App/Tool.swift`, `Compress/CompressView.swift`, `Compress/VersionsPopover.swift` (superseded by P-B's `VersionsPopoverContent`; its sole consumer `CompressView` dies in this same task), `OCR/OCRView.swift`, `OCR/OCRViewModel.swift`, `Tests/ToolboxTests/OCRViewModelTests.swift` (its cancel invariant lives on as `QueuePassTests.testCancelStopsQueue`), `Tests/ToolboxTests/BatchProgressTextTests.swift` (subject deleted). From `Components.swift`: `FileRow`, `DropZone`, `ToolHeader`, `SegmentedPreset`, `SegmentedPresetOption`, `SuccessBanner`, `ToolIconTile`, `Card`, `LinearProgress`, `batchProgressText` — then a zero-consumer sweep over ALL of `Components.swift` (grep each remaining symbol; delete any orphan). `xcodegen`.
+**Files:** Delete `App/SidebarView.swift`, `App/Tool.swift`, `Compress/CompressView.swift`, `Compress/VersionsPopover.swift` (superseded by P-B's `VersionsPopoverContent`; its sole consumer `CompressView` dies in this same task), `OCR/OCRView.swift`, `OCR/OCRViewModel.swift`, `Tests/ToolboxTests/OCRViewModelTests.swift` (its cancel invariant lives on as `QueuePassTests.testCancelStopsQueue`), `Tests/ToolboxTests/BatchProgressTextTests.swift` (subject deleted). Modify `Tests/ToolboxTests/SmokeTests.swift`: its single test asserts `Tool.allCases` — the hosted-target wiring canary is RE-TARGETED onto a surviving symbol (`XCTAssertEqual(CompressPreset.allCases.count, 3)`), never deleted (the canary's purpose survives the enum it happened to use). From `Components.swift`: `FileRow`, `DropZone`, `ToolHeader`, `SegmentedPreset`, `SegmentedPresetOption`, `SuccessBanner`, `ToolIconTile`, `Card`, `LinearProgress`, `batchProgressText` — then a zero-consumer sweep over ALL of `Components.swift` (grep each remaining symbol; delete any orphan). `xcodegen`.
 
 - [ ] 1. Grep-verify zero consumers per deletion first; delete; build; full suite PASS. Commit: `chore(app): delete sidebar and legacy tool views`.
 
@@ -464,7 +470,7 @@ init(showAbout: Binding<Bool>) {
 
 ### Task V1: Visual verification — orchestrator-owned, bounded
 
-Owner: the LCW orchestrator (not a track). Protocol: build, drive with computer-use, capture all 14 screens light + dark, side-by-side against `renders/screen-*.png`; include the stray-focus-ring keyboard walk (open/close every popover and sheet via keyboard, no blue ring residue). Budget: up to THREE fix-and-recompare iterations per screen; a screen still divergent after three → stop-red to the human with the comparison pair. Then the private-corpus functional pass (spec §11), then review-team gate → PR.
+Owner: the LCW orchestrator (not a track). Protocol: build, drive with computer-use, capture all 14 screens light + dark, side-by-side against `renders/screen-*.png`; include the stray-focus-ring keyboard walk (open/close every popover and sheet via keyboard, no blue ring residue). Archive each screen's comparison pair under `$(git rev-parse --path-format=absolute --git-common-dir)/lcw/20260730-ui-redesign/visual/` (spec §11's archive requirement). Budget: up to THREE fix-and-recompare iterations per screen; a screen still divergent after three → stop-red to the human with the comparison pair. Then the private-corpus functional pass (spec §11), then review-team gate → PR.
 
 ---
 
