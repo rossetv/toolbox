@@ -15,33 +15,34 @@ import XCTest
 @MainActor
 final class QueueViewModelTests: XCTestCase {
 
-    /// `compress()` reserves an output name for every job it snapshots, but several MainActor hops
-    /// separate that snapshot from the queue launching anything. A file added in that window would
-    /// be `.queued`, so the live batch would run it — with no reserved name, allocating from
-    /// inside a concurrent job body and racing the very collision the reservation prevents. Both
-    /// the "+ Add" button and the drop handler call `add` unconditionally, so the window is
-    /// reachable by an ordinary user dropping a file just as a batch starts.
-    func testAddIsIgnoredWhileABatchIsRunning() async throws {
-        let model = QueueViewModel()
-        XCTAssertNil(model.loadError)
+    // `testAddIsIgnoredWhileABatchIsRunning` lived here. It asserted the OLD add-time guard —
+    // names were reserved in a serial pass at run start, so a file dropped mid-batch would run
+    // unreserved. Reservation moved to add time (spec §6.5), so the drop now JOINS the batch:
+    // SUPERSEDED by `QueueAdmissionTests.testAddDuringRunJoinsBatch`.
 
-        let inputs = [try Fixtures.imagePDF(), try Fixtures.textImagePDF()]
-        model.outputFolder = inputs[0].deletingLastPathComponent()
-        model.add(inputs)
-        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+    /// Vision's `.fast` recognition supports only the six Latin-script entries of
+    /// `OCROptions.curatedLanguages` — Chinese, Japanese and Korean need `.accurate` (recorded on
+    /// `OCROptions` itself, read from `supportedRecognitionLanguages()`). A Fast + CJK request
+    /// either fails or reads nothing, so the pairing is clamped at the view model's own options
+    /// surface, where the user sees the control snap back rather than being quietly overridden
+    /// deeper down.
+    func testCJKLanguageClampsAccuracyToAccurate() throws {
+        let model = QueueViewModel(engine: nil)
 
-        model.compress()
-        XCTAssertTrue(model.isRunning)
+        for code in ["zh-Hans", "ja-JP", "ko-KR"] {
+            model.ocrOptions = OCROptions(accuracy: .fast, languages: [code])
+            XCTAssertEqual(model.ocrOptions.accuracy, .accurate,
+                           "\(code) cannot be read at Fast, so the request must not claim it will")
+            XCTAssertEqual(model.ocrOptions.languages, [code], "only the accuracy is clamped")
+        }
 
-        // The drop that lands a moment too late.
-        model.add([try Fixtures.bornDigitalPDF()])
-        XCTAssertEqual(model.jobs.count, 2,
-                       "a file added mid-batch must not join the running batch unreserved")
+        // A mixed selection still clamps — one unsupported language is enough to make Fast a lie.
+        model.ocrOptions = OCROptions(accuracy: .fast, languages: ["en-US", "ja-JP"])
+        XCTAssertEqual(model.ocrOptions.accuracy, .accurate)
 
-        try await waitUntil(timeout: 60) { !model.isRunning }
-        // And once the batch is over, adding works normally again.
-        model.add([try Fixtures.bornDigitalPDF()])
-        try await waitUntil(timeout: 5) { model.jobs.count == 3 }
+        // And a Latin-only Fast request is left exactly as the user set it.
+        model.ocrOptions = OCROptions(accuracy: .fast, languages: ["en-US", "fr-FR"])
+        XCTAssertEqual(model.ocrOptions.accuracy, .fast)
     }
 
     func testThreeFileSyntheticBatchCompressesEndToEnd() async throws {
@@ -72,7 +73,7 @@ final class QueueViewModelTests: XCTestCase {
             XCTAssertGreaterThan(job.estimate!.predictedBytes, 0)
         }
 
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
         model.compress()
         XCTAssertTrue(model.isRunning)
 
@@ -499,7 +500,7 @@ final class QueueViewModelTests: XCTestCase {
         // An armed/queued row present alongside the in-flight switch.
         model.add([try Fixtures.bornDigitalPDF()])
         try await waitUntil(timeout: 5) { model.jobs.count == 2 }
-        XCTAssertFalse(model.canCompress, "the footer button must disable, not silently no-op")
+        XCTAssertFalse(model.canStart, "the footer button must disable, not silently no-op")
 
         model.compress()
         XCTAssertFalse(model.isRunning, "compress() must not start a run while a switch is in flight")
@@ -511,7 +512,7 @@ final class QueueViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(job.id) }
 
         // Now that the switch has landed, compress() must work again.
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
         let callsAfterSwitch = env.stub.callCount
         model.compress()
         try await waitUntil(timeout: 5) { model.isRunning }
@@ -1354,7 +1355,7 @@ final class QueueViewModelTests: XCTestCase {
         model.preset = .smallestSize
         XCTAssertEqual(model.pendingCount, 1)
         XCTAssertEqual(model.armedCount, 1, "both sets: the button reads Compress K · Recompress M")
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
     }
 
     /// The armed set alone is enough to arm the button — with nothing queued, "Recompress N PDFs"
@@ -1364,10 +1365,10 @@ final class QueueViewModelTests: XCTestCase {
         let model = env.model
         model.preset = .balanced
         try await env.runToDone()
-        XCTAssertFalse(model.canCompress)
+        XCTAssertFalse(model.canStart)
 
         model.preset = .smallestSize
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
     }
 
     /// Risk 2's resolution, asserted: the recompress phase does not start until the queue phase is
@@ -1815,71 +1816,5 @@ final class QueueViewModelTests: XCTestCase {
         return try XCTUnwrap(attributes[.size] as? Int)
     }
 
-    /// A view model wired to a stub engine that emits `.compressedHeavy` and writes both versions,
-    /// plus a temp-rooted store and output folder — the shared fixture for the switch/lifecycle tests.
-    @MainActor
-    private struct HeavyEnv {
-        static let heavyBytes = 1200
-        static let normalBytes = 3400
-        let model: QueueViewModel
-        let stub: StubCompressEngine
-        let input: URL
-        let storeRoot: URL
-
-        init(before: Int = 9000, contentType: PDFContentType? = nil) throws {
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-            storeRoot = tmp.appendingPathComponent("cache", isDirectory: true)
-            let outputFolder = tmp.appendingPathComponent("out", isDirectory: true)
-            try FileManager.default.createDirectory(at: outputFolder,
-                                                    withIntermediateDirectories: true)
-
-            input = try Fixtures.imagePDF()
-            stub = StubCompressEngine(outcome: .compressedHeavy(before: before,
-                                                        after: HeavyEnv.heavyBytes,
-                                                        runnerUpBytes: HeavyEnv.normalBytes),
-                              shippedBytes: HeavyEnv.heavyBytes,
-                              runnerUpBytes: HeavyEnv.normalBytes)
-            // The ONLY change to the existing body: the estimator is injected when a caller pins
-            // the classification, and is the default otherwise, so every existing `HeavyEnv()`
-            // call site behaves exactly as before.
-            let estimator = contentType.map {
-                CompressEstimator(analyser: FixedAnalyser(contentType: $0))
-            } ?? CompressEstimator()
-            model = QueueViewModel(engine: stub, estimator: estimator,
-                                      store: RunnerUpStore(rootOverride: storeRoot))
-            model.outputFolder = outputFolder
-        }
-
-        /// A `PDFAnalysing` that answers with a fixed classification, so a prediction test pins the
-        /// R16 boundary rather than whatever a fixture happens to classify as.
-        private struct FixedAnalyser: PDFAnalysing {
-            let contentType: PDFContentType
-            func pageCount(_ url: URL) throws -> Int { 1 }
-            func classify(_ url: URL) throws -> PDFContentType { contentType }
-        }
-
-        /// The single job once it has reached a done state carrying the heavy pair.
-        func doneHeavyJob(_ model: QueueViewModel) -> ToolJob? {
-            model.jobs.first {
-                if case .done(let outcome) = $0.state {
-                    return outcome.shippedVariant == .mrc && outcome.runnerUp != nil
-                }
-                return false
-            }
-        }
-
-        /// Runs the input through to the done heavy pair — the add/wait/compress/wait
-        /// preamble nearly every test in this file starts with.
-        @discardableResult
-        func runToDone() async throws -> ToolJob {
-            model.add([input])
-            try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-            model.compress()
-            try await waitUntil(timeout: 5) { doneHeavyJob(model) != nil }
-            return try XCTUnwrap(doneHeavyJob(model))
-        }
-    }
 
 }

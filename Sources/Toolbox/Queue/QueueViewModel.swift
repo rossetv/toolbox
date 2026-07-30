@@ -8,17 +8,20 @@
 import Combine
 import Foundation
 
-/// Drives the Compress tool: owns the `ToolQueue`, the selected preset/output folder and the
-/// Rung-1 `CompressEngine`, and mirrors the queue's jobs so the view re-renders on state
-/// changes. Batch (Track C, Task C.2): every queued file gets a time-boxed `CompressEstimator`
-/// prediction, shown until the real compress run overtakes it with live progress and a real
-/// before/after (both driven by `ToolQueue`'s own `JobState`).
+/// Drives the unified queue (spec §6.1): owns the `ToolQueue`, the verb set (Compress / OCR) and
+/// its options, the selected preset/output folder, the per-row overrides, and the engines. It
+/// mirrors the queue's jobs so the view re-renders on state changes. Every queued file gets a
+/// time-boxed `CompressEstimator` prediction, shown until the real run overtakes it with live
+/// progress and a real before/after (both driven by `ToolQueue`'s own `JobState`).
 ///
 /// `ToolQueue.jobs` is the source of truth for lifecycle state (queued/running/done/failed);
 /// this view model never mutates it. Instead it publishes its own `jobs` — value-copies of the
 /// queue's jobs with the locally-tracked estimate (and an `.analysing` overlay while that
 /// estimate is in flight) merged in — so the estimate/analysing bookkeeping stays entirely on
 /// this side of the shared `ToolQueue` contract.
+///
+/// Delivery names are reserved when a file is ADDED, not at run start (spec §6.5) — that is what
+/// makes drag-during-run safe, and it is why `ToolQueue.add` no longer needs its own guard.
 @MainActor
 final class QueueViewModel: ObservableObject {
     @Published var preset: CompressPreset = .balanced {
@@ -35,10 +38,52 @@ final class QueueViewModel: ObservableObject {
             reestimatePendingJobs()
         }
     }
-    @Published var outputFolder: URL?
+    @Published var outputFolder: URL? {
+        didSet {
+            guard outputFolder != oldValue else { return }
+            invalidateReservations()
+        }
+    }
+
+    // MARK: the verb set (spec §6.1)
+
+    /// The batch verbs. At least one on ⇒ Start enabled; zero ⇒ `canStart` refuses (the chip UI
+    /// enforces the same floor visually).
+    @Published var compressOn = true {
+        didSet {
+            guard compressOn != oldValue else { return }
+            invalidateReservations()
+        }
+    }
+    @Published var ocrOn = false {
+        didSet {
+            guard ocrOn != oldValue else { return }
+            invalidateReservations()
+        }
+    }
+    /// Language and accuracy for the OCR leg, clamped on write — see `clampingAccuracy`.
+    @Published var ocrOptions = OCROptions() {
+        didSet {
+            let clamped = Self.clampingAccuracy(ocrOptions)
+            // Terminates after one extra pass: the clamped value is its own fixed point, so the
+            // re-entrant `didSet` this triggers takes the `else` branch and stops.
+            if clamped != ocrOptions { ocrOptions = clamped }
+        }
+    }
+
+    /// Per-row overrides of the batch settings (spec §6.1). Sparse: a row with nothing overridden
+    /// has no entry at all, which is the state "Match the batch" restores.
+    @Published private(set) var overrides: [ToolJob.ID: RowOverride] = [:]
+    /// What add-time inspection found per row (spec §6.6).
+    @Published private(set) var inspections: [ToolJob.ID: RowInspection] = [:]
+    /// Rows the user has skipped on the Problems screen: excluded from the run and from
+    /// `canStart`'s healthy count, but left in the list.
+    @Published private(set) var skippedRows: Set<ToolJob.ID> = []
+    /// Rows unchecked in Change quality's "Choose which files…" — they report `.none` from
+    /// `recompressState` and so never arm (spec §7).
+    @Published private(set) var armedExclusions: Set<ToolJob.ID> = []
+
     @Published private(set) var jobs: [ToolJob] = []
-    /// Page count per job, resolved off the main actor as files are added.
-    @Published private(set) var pageCounts: [ToolJob.ID: Int] = [:]
     @Published private(set) var isRunning = false
     @Published private(set) var loadError: String?
     /// Rows with a switch in flight: the R10 re-run AND every plain instant swap. Membership is
@@ -48,6 +93,9 @@ final class QueueViewModel: ObservableObject {
 
     let queue = ToolQueue()
     private let engine: (any Compressing)?
+    /// The OCR seam (spec §6.1's absorbed `OCRViewModel`). Injected here so the job body's OCR leg
+    /// can be stubbed exactly as the compress leg is; the leg itself is the single-pass task's.
+    private let ocrEngine: (any OCRing)?
     private let estimator: CompressEstimator
     private let store: RunnerUpStore
     /// The display authority for every row's versions (R14). Owns the preset each version was
@@ -71,17 +119,63 @@ final class QueueViewModel: ObservableObject {
     /// file that is not there (the F6 mislabel: heavy content under "Normal compression" and gs's
     /// bytes).
     private var switchFailures: [ToolJob.ID: String] = [:]
-    /// Runner-up cache names reserved for the in-flight batch. A run-scoped RESERVATION ledger, not
-    /// a version record: a reservation whose job never shipped a runner-up is discarded by `cancel`
-    /// and by the run's own teardown, and everything committed is owned by `versionStore`.
+    /// The in-flight batch's runner-up cache names, snapshotted from the ledger at run start. NOT
+    /// the ledger itself: this is the set `cancel` sweeps for FILES the store has not claimed, so
+    /// it is scoped to the run and cleared with it, while the reservations themselves are
+    /// queue-lifetime and outlive both the cancel and the batch.
     private var runReservations: [ToolJob.ID: URL] = [:]
+
+    /// Every name one row owns. Queue-lifetime (spec §6.5): reserved when the file is ADDED,
+    /// recomputed when a mutable input changes while idle, released when the row leaves the queue.
+    private struct Reservation: Equatable {
+        /// Where this row's single delivered file will land. Optional because a row can ship
+        /// nothing at all — the rescue's no-delivery outcomes release it mid-run.
+        var delivered: URL?
+        /// The runner-up name, reserved only for a row whose compress leg could retain a second
+        /// variant. Only a job that actually retains one writes the file; the rest just hold it.
+        var alternate: URL?
+    }
+    private var reservations: [ToolJob.ID: Reservation] = [:]
+
+    /// The batch settings a run locks at its start (spec §6.5). Non-nil for exactly the duration
+    /// of a run: every one of that run's jobs — the ones added while it is live included — reads
+    /// its destination, verbs and preset from here, so settings the user moves mid-run cannot
+    /// retarget work already in flight.
+    private struct RunSettings: Equatable {
+        let preset: CompressPreset
+        let compressOn: Bool
+        let ocrOn: Bool
+        let folder: URL?
+    }
+    private var lockedRun: RunSettings?
+
+    /// The settings in force right now: the run's lock while one is in flight, the live values
+    /// otherwise. Deliberately one accessor rather than two paths — arming already stands down for
+    /// the duration of a run (`recompressState`'s `!isRunning` guard), so the lock cannot distort
+    /// anything the user can still act on.
+    private var activeSettings: RunSettings {
+        lockedRun ?? RunSettings(preset: preset, compressOn: compressOn,
+                                 ocrOn: ocrOn, folder: outputFolder)
+    }
+
     /// A recompress attempt that came back with no saving. Dies with the row (Clear finished /
     /// remove) and with the session; never persisted.
+    ///
+    /// Keyed by the row's effective preset AND its verb set (spec §6.1): a no-gain compress says
+    /// nothing about a run that also reads the text, so a verb change must re-open the row rather
+    /// than leave it wearing a verdict a different run produced.
     private struct FutileAttempt: Hashable {
         let id: ToolJob.ID
         let preset: CompressPreset
+        let compress: Bool
+        let ocr: Bool
     }
     private var futileAttempts: Set<FutileAttempt> = []
+
+    private func futileKey(_ id: ToolJob.ID, at preset: CompressPreset) -> FutileAttempt {
+        let verbs = effectiveVerbs(for: id)
+        return FutileAttempt(id: id, preset: preset, compress: verbs.compress, ocr: verbs.ocr)
+    }
     /// Per-row messages that must NOT replace the row's result — the row keeps its result and its
     /// versions and carries the message beside them. Distinct from `switchFailures`, which puts the
     /// row into `.failed` precisely because that row can no longer back what it was claiming.
@@ -174,16 +268,19 @@ final class QueueViewModel: ObservableObject {
             engine = nil
             error = "Ghostscript is missing from the app bundle — the app cannot compress."
         }
-        self.init(engine: engine, estimator: estimator, store: store)
+        self.init(engine: engine, ocrEngine: OCREngine(), estimator: estimator, store: store)
         self.loadError = error
     }
 
-    /// Test seam: inject a stub engine (and an override-rooted store) so the runner-up switch and
-    /// lifecycle can be driven without invoking the real MRC pipeline.
+    /// Test seam: inject stub engines (and an override-rooted store) so the queue's legs, the
+    /// runner-up switch and the lifecycle can be driven without invoking the real MRC or Vision
+    /// pipelines.
     init(engine: (any Compressing)?,
+         ocrEngine: (any OCRing)? = OCREngine(),
          estimator: CompressEstimator = CompressEstimator(),
          store: RunnerUpStore? = nil) {
         self.engine = engine
+        self.ocrEngine = ocrEngine
         self.estimator = estimator
         // Built here (not as a default argument) because a default value expression is evaluated in
         // a nonisolated context, and `RunnerUpStore.init` is `@MainActor`.
@@ -252,7 +349,7 @@ final class QueueViewModel: ObservableObject {
                                     for: job.id)
                 // R6: a first-run no-gain at P0 records (job, P0) as futile exactly as a
                 // recompress no-gain does.
-                futileAttempts.insert(FutileAttempt(id: job.id, preset: preset))
+                futileAttempts.insert(futileKey(job.id, at: preset))
             case .skipped:
                 continue        // the compress leg never runs alone here; the rescue is spec §6.5's
             case nil:
@@ -273,6 +370,162 @@ final class QueueViewModel: ObservableObject {
             case .queued, .analysing, .running: continue
             }
         }
+    }
+
+    // MARK: effective per-row settings (spec §6.1)
+
+    /// The preset this row will run at: its own override, else the batch's (locked while a run is
+    /// in flight). Every preset-keyed structure reads through here — arming, futility, the
+    /// displayed estimate and the provenance recorded against the delivered version — so an
+    /// overridden row can never be measured against a preset it was not compressed at.
+    func effectivePreset(for id: ToolJob.ID) -> CompressPreset {
+        overrides[id]?.preset ?? activeSettings.preset
+    }
+
+    /// The verbs this row will run, with the per-row floor applied (spec §6.1): an override may
+    /// never empty a row's verb set, so an `ocr: false` on a Compress-off batch is refused and the
+    /// row keeps its last verb. A batch with no verbs at all is a different rule — `canStart`
+    /// refuses it — and manufacturing one here would contradict the disabled Start button.
+    func effectiveVerbs(for id: ToolJob.ID) -> (compress: Bool, ocr: Bool) {
+        let settings = activeSettings
+        let ocr = overrides[id]?.ocr ?? settings.ocrOn
+        if !settings.compressOn && !ocr { return (false, settings.ocrOn) }
+        return (settings.compressOn, ocr)
+    }
+
+    /// Replace one row's overrides; `nil` (or an empty override) is "Match the batch". The row's
+    /// reservation follows, because both the delivered suffix and the runner-up name derive from
+    /// the row's effective settings (spec §6.5).
+    func setOverride(_ override: RowOverride?, for id: ToolJob.ID) {
+        let normalised = (override?.isEmpty ?? true) ? nil : override
+        guard overrides[id] != normalised else { return }
+        overrides[id] = normalised
+        invalidateReservation(for: id)
+        publishJobs()
+    }
+
+    /// Vision's `.fast` recognition covers only the six Latin-script entries of
+    /// `OCROptions.curatedLanguages`; Chinese, Japanese and Korean need `.accurate` (recorded on
+    /// `OCROptions` itself, read from `supportedRecognitionLanguages()`). A Fast request naming one
+    /// of them either fails or reads nothing, so the pairing is clamped at this surface — where the
+    /// user can see the control snap back — rather than silently corrected inside the engine.
+    private static let accurateOnlyLanguages: Set<String> = ["zh-Hans", "ja-JP", "ko-KR"]
+
+    static func clampingAccuracy(_ options: OCROptions) -> OCROptions {
+        guard options.accuracy == .fast,
+              options.languages.contains(where: { accurateOnlyLanguages.contains($0) }) else {
+            return options
+        }
+        var clamped = options
+        clamped.accuracy = .accurate
+        return clamped
+    }
+
+    // MARK: the reservation ledger (spec §6.5)
+
+    /// The delivered file's name for a row, or nil when the row has none reserved.
+    func reservedDelivery(for id: ToolJob.ID) -> URL? { reservations[id]?.delivered }
+
+    /// The runner-up name for a row, or nil when its effective settings can produce no second
+    /// variant.
+    func reservedAlternate(for id: ToolJob.ID) -> URL? { reservations[id]?.alternate }
+
+    /// Reserve a fresh delivery name under `suffix`, releasing whatever the row held. The ledger's
+    /// ONLY mid-run mutation (spec §6.5's compress-failure rescue and its noGain sibling), and the
+    /// reason that switch is race-free: it runs on this actor, through the same allocator every
+    /// other reservation uses, so the rescue's `-ocr.pdf` cannot collide with a concurrent add's.
+    ///
+    /// Returns nil only when the row has left the queue under the caller — the caller then has
+    /// nothing to deliver and must fail or abandon that job rather than write to a fabricated name.
+    @discardableResult
+    func reserveDelivery(suffix: String, for id: ToolJob.ID) -> URL? {
+        guard let job = queue.jobs.first(where: { $0.id == id }) else { return nil }
+        var keys = reservedKeys(excluding: id)
+        // Only the DELIVERY name changes: the row keeps its runner-up reservation, so put that key
+        // back before allocating over the top of it.
+        if let alternate = reservations[id]?.alternate {
+            keys.insert(FileNaming.reservationKey(for: alternate))
+        }
+        let delivered = FileNaming.output(for: job.url, suffix: suffix,
+                                          folder: activeSettings.folder, reserving: &keys)
+        reservations[id, default: Reservation()].delivered = delivered
+        return delivered
+    }
+
+    /// Give up a row's delivery name — the row ships nothing (spec §6.5's `.alreadySearchable` /
+    /// `.tooFaint` no-delivery dispositions). Its runner-up reservation is untouched.
+    func releaseDelivery(for id: ToolJob.ID) {
+        reservations[id]?.delivered = nil
+    }
+
+    /// Every filename the queue currently owns, as reservation keys.
+    ///
+    /// Two sources, both load-bearing: the live ledger, and every version a row still holds. The
+    /// second is R11's rule — a recompress commit makes the shipped file transiently absent, and
+    /// `promote`'s cache-slot step is best-effort, so a row's files can be missing from disk while
+    /// the row still owns their paths. The `.originalReference` card is deliberately EXCLUDED: it
+    /// names the user's own input file, which no output ever lands on, and seeding it would push
+    /// unrelated allocations onto a suffixed name for nothing.
+    private func reservedKeys(excluding id: ToolJob.ID? = nil) -> Set<String> {
+        var keys: Set<String> = []
+        for (rowID, reservation) in reservations where rowID != id {
+            if let delivered = reservation.delivered {
+                keys.insert(FileNaming.reservationKey(for: delivered))
+            }
+            if let alternate = reservation.alternate {
+                keys.insert(FileNaming.reservationKey(for: alternate))
+            }
+        }
+        for job in queue.jobs {
+            for card in versionStore.versions(for: job.id)?.cards ?? []
+            where card.key != .originalReference {
+                keys.insert(FileNaming.reservationKey(for: card.version.url))
+            }
+        }
+        return keys
+    }
+
+    /// Reserve (or re-reserve) every name one row's effective settings can produce.
+    ///
+    /// The delivered suffix is pinned by spec §6.5: a run including Compress delivers
+    /// `-compressed.pdf`, an OCR-only run `-ocr.pdf`. The runner-up name is reserved whenever the
+    /// compress leg could retain a second variant — deliberately NOT gated on the content
+    /// classification or the preset, because the classification is not known at add time (the
+    /// estimator's analysis is async and time-boxed) and an unused reservation costs nothing,
+    /// whereas a missing one is the race the ledger exists to close. Only the explicit
+    /// `rebuildScan: false` opt-out removes it, because that is the one input the user has already
+    /// decided.
+    ///
+    /// A batch PRESET change is deliberately not an invalidation trigger: it appears nowhere in
+    /// §6.5's list, and neither the suffix nor the runner-up name keys on it.
+    private func reserve(for job: ToolJob) {
+        var keys = reservedKeys(excluding: job.id)
+        let verbs = effectiveVerbs(for: job.id)
+        let delivered = FileNaming.output(for: job.url,
+                                          suffix: verbs.compress ? "compressed" : "ocr",
+                                          folder: activeSettings.folder, reserving: &keys)
+        let alternate = verbs.compress && overrides[job.id]?.rebuildScan != false
+            ? store.reserveURL(for: job.url, reserving: &keys)
+            : nil
+        reservations[job.id] = Reservation(delivered: delivered, alternate: alternate)
+    }
+
+    /// Recompute one row's reservation after a mutable input changed while the queue is idle.
+    ///
+    /// A row that has already DELIVERED is left alone: its name is the file on disk, so
+    /// re-allocating would both hand it a spuriously suffixed name (the allocator skips existing
+    /// files) and detach the ledger from `VersionStore.shipped.url`. That is R11's pin-to-the-
+    /// existing-result-path rule, in the one new place the ledger could break it.
+    private func invalidateReservation(for id: ToolJob.ID) {
+        guard !isRunning,
+              versionStore.versions(for: id)?.shipped == nil,
+              let job = queue.jobs.first(where: { $0.id == id }) else { return }
+        reserve(for: job)
+    }
+
+    private func invalidateReservations() {
+        guard !isRunning else { return }
+        for job in queue.jobs { invalidateReservation(for: job.id) }
     }
 
     var hasQueuedWork: Bool {
@@ -301,23 +554,45 @@ final class QueueViewModel: ObservableObject {
         }.count
     }
 
-    var canCompress: Bool {
-        engine != nil && !isRunning && switchesInFlight.isEmpty && (hasQueuedWork || armedCount > 0)
+    /// Whether Start may run — the one gate `compress()` and the view that offers it must agree on
+    /// (CODE_GUIDELINES.md §8.2).
+    ///
+    /// Two floors beyond the mechanical ones (spec §6.1/§7): zero verbs disables Start outright,
+    /// and the queued half of the work must contain at least one HEALTHY row — a file that could
+    /// not be opened at add time, or one the user has skipped, is not work this batch can do. Armed
+    /// rows count on their own: a re-run of finished rows is a legitimate batch with nothing queued.
+    var canStart: Bool {
+        engine != nil && !isRunning && switchesInFlight.isEmpty
+            && (compressOn || ocrOn)
+            && (healthyQueuedCount > 0 || armedCount > 0)
+    }
+
+    /// Queued rows this batch could actually work on. A row whose inspection has not landed yet
+    /// counts as healthy — the run-time `OpenGuard` pass is the second net, and refusing Start
+    /// while a background inspection settles would make the button flicker.
+    private var healthyQueuedCount: Int {
+        jobs.filter { job in
+            switch job.state {
+            case .queued, .analysing:
+                return inspections[job.id]?.problem == nil && !skippedRows.contains(job.id)
+            case .running, .done, .failed:
+                return false
+            }
+        }.count
     }
 
     /// Whether "Clear finished" may run — the one gate `clearFinished()` and the view that offers
-    /// it must agree on (CODE_GUIDELINES.md §8.2), mirroring `canCompress`'s shape for its sibling
+    /// it must agree on (CODE_GUIDELINES.md §8.2), mirroring `canStart`'s shape for its sibling
     /// action.
     var canClearFinished: Bool {
         !isRunning && switchesInFlight.isEmpty && jobs.contains(where: isFinished)
     }
 
+    /// Accepted at any time, a live run included (spec §6.5's drag-during-run). The race the old
+    /// `isRunning` guard closed is gone: names are reserved HERE, one row at a time on this actor,
+    /// so a row that joins a live batch carries a reserved name exactly like every other row —
+    /// against the settings that run locked, never against settings the user has moved since.
     func add(_ urls: [URL]) {
-        // Gated on `isRunning`: `compress()` snapshots `queue.jobs` and reserves an output name for
-        // each up front, but several MainActor hops separate that snapshot from the queue actually
-        // launching jobs. A file added in that window would be `.queued` and run by the live batch
-        // with no reserved name — the very race `outputs`/`reserved` exist to prevent.
-        guard !isRunning else { return }
         // `isFileURL` is required, not decorative: a drag can deliver a remote URL (http, ftp),
         // which would otherwise be handed to the engine as if it were a local path.
         let pdfs = urls.filter { $0.isFileURL && $0.pathExtension.lowercased() == "pdf" }
@@ -325,16 +600,119 @@ final class QueueViewModel: ObservableObject {
         let beforeIDs = Set(queue.jobs.map(\.id))
         queue.add(pdfs)
         for job in queue.jobs where !beforeIDs.contains(job.id) {
+            // Serially, one row at a time: each reservation reads the ones already handed out, so
+            // two files with the same basename cannot both claim the same name.
+            reserve(for: job)
+            if isRunning {
+                // The row joins the run in flight, so it needs everything `compress()` seeds for
+                // the rows that started with it — its provenance and its place in the progress
+                // bar's denominator — or it would ingest with no recorded preset and stall the
+                // bar one row short of 1.
+                pendingPresets[job.id] = effectivePreset(for: job.id)
+                runIDs.append(job.id)
+                runQueuedIDs.insert(job.id)
+                runComposition = RunComposition(queued: runComposition.queued + 1,
+                                                armed: runComposition.armed)
+            }
             scheduleEstimate(for: job)
+            inspect(job)
         }
-        resolvePageCounts()
+    }
+
+    /// The Problems screen's Skip: the row stays in the list, untouched, but is excluded from the
+    /// run and from `canStart`'s healthy count. Refused mid-run — the run's excluded set is
+    /// snapshotted at its start, so a later change could not reach it anyway.
+    func setSkipped(_ skipped: Bool, for id: ToolJob.ID) {
+        guard !isRunning else { return }
+        if skipped { skippedRows.insert(id) } else { skippedRows.remove(id) }
+    }
+
+    /// Change quality's "Choose which files…": an unchecked row reports `.none` from
+    /// `recompressState`, so it neither arms nor contributes to the armed banner's arithmetic.
+    func setArmedExclusion(_ excluded: Bool, for id: ToolJob.ID) {
+        guard !isRunning else { return }
+        if excluded { armedExclusions.insert(id) } else { armedExclusions.remove(id) }
+        publishJobs()
+    }
+
+    /// "Find it…" — re-point a row at a file the user has located (spec §7's Problems screen).
+    ///
+    /// A FULL state reset, not a URL swap: the row is describing a different document, so every
+    /// fact the previous file produced goes with it — inspection (and its problem), versions,
+    /// futility, the analysis behind its estimate, and any recorded failure. The row's `id`
+    /// survives, which is what keeps its overrides and its place in the queue.
+    func rebind(_ id: ToolJob.ID, to url: URL) {
+        guard !isRunning, url.isFileURL,
+              queue.jobs.contains(where: { $0.id == id }) else { return }
+        queue.rebind(id, to: url)
+        inspections[id] = nil
+        skippedRows.remove(id)
+        recompressErrors[id] = nil
+        switchFailures[id] = nil
+        rerunReports[id] = nil
+        versionStore.discardRow(id)
+        futileAttempts = futileAttempts.filter { $0.id != id }
+        // Cleared BEFORE the fresh analysis is scheduled: left standing, the old file's numbers
+        // would price the new one until the estimator caught up.
+        analyses[id] = nil
+        invalidateReservation(for: id)
+        guard let job = queue.jobs.first(where: { $0.id == id }) else { return }
+        scheduleEstimate(for: job)
+        inspect(job)
+        publishJobs()
+    }
+
+    // MARK: add-time inspection (spec §6.6)
+
+    /// Page count, a text-layer sample and open-failure detection, resolved off the main actor as
+    /// files are added. `contentType` is not resolved here — it comes from the estimator's own
+    /// time-boxed analysis and is merged in by `scheduleEstimate` when (and if) it lands.
+    ///
+    /// `OpenGuard`'s run-time inspection stays as the second net: files can move or lock between
+    /// add and run, and the Problems screen covers both moments.
+    private func inspect(_ job: ToolJob) {
+        let url = job.url
+        let id = job.id
+        Task.detached(priority: .utility) {
+            var pageCount: Int?
+            var hasTextLayer: Bool?
+            var problem: RowProblem?
+            do {
+                switch try OpenGuard.inspect(url) {
+                case .ok(let count):
+                    pageCount = count
+                    // A SAMPLE, per spec §6.6: the first page answers "does this file read yet?"
+                    // without re-parsing the document once per page.
+                    hasTextLayer = try? PDFService().pageHasText(url, index: 0)
+                case .encrypted:
+                    problem = .locked
+                case .corrupt:
+                    problem = .unreadable
+                }
+            } catch {
+                // `OpenGuard` throws for a file that is not there and for one with no pages at
+                // all; only the first is a "moved or renamed" story.
+                problem = FileManager.default.fileExists(atPath: url.path) ? .unreadable : .missing
+            }
+            let resolved = (pageCount: pageCount, hasTextLayer: hasTextLayer, problem: problem)
+            await MainActor.run { [weak self] in
+                guard let self, self.queue.jobs.contains(where: { $0.id == id && $0.url == url })
+                else { return }   // the row was removed, or rebound onto a different file
+                self.inspections[id] = RowInspection(pageCount: resolved.pageCount,
+                                                     hasTextLayer: resolved.hasTextLayer,
+                                                     contentType: self.analyses[id]?.contentType,
+                                                     problem: resolved.problem)
+                self.publishJobs()
+            }
+        }
     }
 
     func remove(_ job: ToolJob) {
-        // Matches `add(_:)`'s guard: a recompressing row is `.done` throughout (R8), so a mid-run
-        // `remove` would discard a runner-up whose commit is still in flight. The view already
-        // never offers removal on such a row, but the invariant belongs to the type that owns the
-        // state, not to every caller (CODE_GUIDELINES.md §6.3).
+        // Still refused mid-run, unlike `add(_:)`: a recompressing row is `.done` throughout (R8),
+        // so a mid-run `remove` would discard a runner-up whose commit is still in flight — the
+        // reservation move makes ADDING safe, not removing. The view already never offers removal
+        // on such a row, but the invariant belongs to the type that owns the state, not to every
+        // caller (CODE_GUIDELINES.md §6.3).
         guard !isRunning else { return }
         // Explicit discard needed here, unlike `clearFinished()`: `ToolQueue.remove(_:)` only
         // actually removes a `.queued` job, so for a `.done`/`.failed` row (the case this method
@@ -343,6 +721,9 @@ final class QueueViewModel: ObservableObject {
         // never be discarded without this call.
         versionStore.discardRow(job.id)
         switchFailures[job.id] = nil
+        // Same reason as the discard above: `queue.remove` is a no-op on a finished row, so the
+        // `pruneStaleEstimateState` sweep that would release the ledger entry never fires.
+        reservations[job.id] = nil
         queue.remove(job.id)
     }
 
@@ -357,7 +738,9 @@ final class QueueViewModel: ObservableObject {
         guard canClearFinished else { return }
         // No explicit discard loop here either — see `remove(_:)`'s comment: the same
         // `pruneStaleEstimateState()` sweep is the row's one discard path, reached the instant
-        // `removeCompleted()` republishes the queue.
+        // `removeCompleted()` republishes the queue. That sweep also RELEASES the cleared rows'
+        // reservations (spec §6.5), so re-adding a same-named file is not pushed onto a suffix by
+        // a ledger entry nothing owns any more.
         queue.removeCompleted()
     }
 
@@ -380,84 +763,64 @@ final class QueueViewModel: ObservableObject {
         }
     }
 
-    /// Page count for a job, once resolved.
-    func pageCount(for job: ToolJob) -> Int? { pageCounts[job.id] }
-
-    private func resolvePageCounts() {
-        let pending = queue.jobs.filter { pageCounts[$0.id] == nil }
-        guard !pending.isEmpty else { return }
-        Task.detached(priority: .utility) {
-            let service = PDFService()
-            for job in pending {
-                guard let count = try? service.pageCount(job.url) else { continue }
-                await MainActor.run { self.pageCounts[job.id] = count }
-            }
-        }
-    }
+    /// Page count for a job, once add-time inspection has resolved it.
+    func pageCount(for job: ToolJob) -> Int? { inspections[job.id]?.pageCount }
 
     func compress() {
         // Also refused while a switch is in flight: `switchVersions`'s promote is still rewriting
         // the shipped path an outstanding switch owns, and a fresh run here would hand out cache
         // reservations for paths that are transiently absent mid-swap (R9).
-        guard let engine, !isRunning, switchesInFlight.isEmpty else { return }
-        let chosen = preset
-        let folder = outputFolder
-        // Allocate every output name up front, serially, on this thread — BEFORE the concurrent
-        // run starts — so two same-basename inputs from different folders can't both claim the same
-        // target and fail the second job's atomic rename (a purely on-disk check races under
-        // concurrency). Each job then looks up its pre-reserved, guaranteed-unique destination.
-        var reserved = Set<String>()
-        // Seed every row's existing result path, and both its parked cache slots, BEFORE
-        // allocating anything. A recompress commit parks then promotes, so the shipped file is
-        // transiently absent, and `promote`'s cache-slot step is best-effort — a `previous` (or
-        // `runnerUp`) file can be transiently OR permanently absent while its row still owns that
-        // path. Either way a queued same-basename job must be kept off it by the reservation,
-        // never by the file happening to exist now (R11) — otherwise a second row's cache
-        // allocation can land on a first row's still-live parked slot and overwrite its content.
-        for job in queue.jobs {
-            for card in versionStore.versions(for: job.id)?.cards ?? [] {
-                reserved.insert(FileNaming.reservationKey(for: card.version.url))
-            }
-        }
-        var outputs: [ToolJob.ID: URL] = [:]
-        var alternates: [ToolJob.ID: URL] = [:]
-        for job in queue.jobs {
-            outputs[job.id] = FileNaming.output(for: job.url, suffix: "compressed",
-                                                folder: folder, reserving: &reserved)
-            // Runner-up name from the same serial allocator, into the cache root (C4/R15). Only a
-            // job that RETAINS a second variant actually writes this file; the rest just hold the
-            // reservation.
-            alternates[job.id] = store.reserveURL(for: job.url, reserving: &reserved)
-            // Only for the rows this batch will actually run: `ToolQueue.execute` picks up
-            // `.queued` jobs only, so recording the current preset against a finished row from an
-            // earlier batch would misattribute it — and a later R10 re-run would rewrite that row's
-            // delivered file under a preset it was never compressed at. (The reservations above
-            // stay unfiltered: a finished row still owns its output and runner-up paths, and this
-            // batch must not hand either to a new same-basename job.)
-            if isStillQueued(job) { pendingPresets[job.id] = chosen }
-        }
+        guard let engine, canStart else { return }
+        // The run's settings lock here, before anything reads them (spec §6.5): every job of this
+        // batch — including any added while it is live — resolves its destination, verb set and
+        // preset through `activeSettings`, so a control the user moves mid-run cannot retarget
+        // work already in flight.
+        lockedRun = RunSettings(preset: preset, compressOn: compressOn,
+                                ocrOn: ocrOn, folder: outputFolder)
+        // Delivery names are already allocated — every row reserved its own at ADD time (spec
+        // §6.5), which is what makes drag-during-run safe. What still has to be allocated here is
+        // the RECOMPRESS phase's per-attempt artefacts, so this seeds the same key set the ledger
+        // was built against: every live reservation, plus every row's existing versions. That
+        // second half is R11's rule — a recompress commit parks then promotes, so the shipped file
+        // is transiently absent, and `promote`'s cache-slot step is best-effort, so a `previous`
+        // (or `runnerUp`) file can be transiently OR permanently absent while its row still owns
+        // that path. Either way an allocation here must be kept off it by the reservation, never
+        // by the file happening to exist now.
+        var reserved = reservedKeys()
+        // Only the rows this batch will actually run: `ToolQueue.execute` picks up `.queued` jobs
+        // only, so recording a preset against a finished row from an earlier batch would
+        // misattribute it — and a later R10 re-run would rewrite that row's delivered file under a
+        // preset it was never compressed at. The preset is the ROW's (spec §6.1): an overridden
+        // row records what it actually ran at, or `recompressState` reads it against the wrong one.
+        let runnableIDs = queue.jobs
+            .filter { isStillQueued($0) && !skippedRows.contains($0.id) }
+            .map(\.id)
+        for id in runnableIDs { pendingPresets[id] = effectivePreset(for: id) }
         // `armedJobs` is read BEFORE `isRunning` goes true: arming is suppressed for the duration
         // of a run (R9), so the set must be captured while it still exists.
         let armed = armedJobs
         let plans: [RecompressPlan] = armed.map { job in
             let shipped = versionStore.versions(for: job.id)?.shipped
             // R11: the row's own result path, even if "Save to" changed since. A row that shipped
-            // nothing (no-gain) has none, so it takes the name the loop above ALREADY allocated for
-            // it — `jobs` is a 1:1 map of `queue.jobs`, so an armed row is always in that loop and
-            // `outputs[job.id]` is always present. Allocating a second time from the same
-            // `reserved` ledger would collide with the first pass's own entry and hand the row
-            // `<name>-compressed-1.pdf`.
-            let output = shipped?.url ?? outputs[job.id]
-                ?? FileNaming.output(for: job.url, suffix: "compressed", folder: folder,
-                                     reserving: &reserved)
+            // nothing (no-gain) has none, so it takes the name it reserved at add time — every row
+            // in the queue has one. Allocating a second time from the same `reserved` ledger would
+            // collide with the ledger's own entry and hand the row `<name>-compressed-1.pdf`.
+            let output = shipped?.url ?? reservedDelivery(for: job.id)
+                ?? FileNaming.output(for: job.url, suffix: "compressed",
+                                     folder: activeSettings.folder, reserving: &reserved)
             return RecompressPlan(
-                id: job.id, url: job.url, target: chosen, output: output,
+                id: job.id, url: job.url, target: effectivePreset(for: job.id), output: output,
                 temp: output.deletingLastPathComponent()
                     .appendingPathComponent(".toolbox-recompress-\(UUID().uuidString).pdf"),
                 parked: versionStore.reservePreviousURL(for: job.url, reserving: &reserved),
                 runnerUp: store.reserveURL(for: job.url, reserving: &reserved))
         }
-        let queuedIDs = queue.jobs.filter(isStillQueued).map(\.id)
+        let queuedIDs = runnableIDs
+        // The batch's runner-up names, snapshotted from the ledger for `cancel`'s discard sweep.
+        let alternates = Dictionary(uniqueKeysWithValues: queuedIDs.compactMap { id in
+            reservations[id]?.alternate.map { (id, $0) }
+        })
+        let skipped = skippedRows
         runIDs = queuedIDs + plans.map(\.id)
         // The queued subset is tracked separately: see `runQueuedIDs`. An armed row is `.done`
         // throughout, so only `recompress` may mark one finished.
@@ -472,21 +835,24 @@ final class QueueViewModel: ObservableObject {
         isRunning = true
         Task {
             // Phase 1 — the queued rows, through the shared queue exactly as before.
-            await queue.run { job, report in
-                // A missing reservation means `add` let a file into the batch after the up-front
-                // allocation pass — fail this one job loudly rather than silently allocating a
+            await queue.run({ job, report in
+                // Read from the LEDGER, not from a snapshot: a row that joined this batch after it
+                // started reserved its name at add time and is not in any snapshot taken here. A
+                // row with no reservation at all fails loudly rather than silently allocating a
                 // second, racing name from inside the concurrent run (see
                 // `MissingOutputReservationError`).
-                guard let output = outputs[job.id] else {
+                guard let output = self.reservedDelivery(for: job.id) else {
                     throw MissingOutputReservationError()
                 }
-                let alternate = alternates[job.id]
+                let alternate = self.reservedAlternate(for: job.id)
+                let rowPreset = self.effectivePreset(for: job.id)
                 // Captured here, per job invocation, so each concurrent job's report lands on
                 // that job's own `JobResult` rather than a shared/racing variable.
                 var capturedReport: MRCDocumentReport?
                 // `rebuildScan: nil` — the engine derives the MRC decision as it always has. The
-                // per-row override that will feed this arrives with the row settings surface.
-                let outcome = try await engine.compress(job.url, preset: chosen, to: output,
+                // per-row override is wired into this call by the single-pass job body (F5a),
+                // which owns the leg sequence; here it governs the runner-up reservation only.
+                let outcome = try await engine.compress(job.url, preset: rowPreset, to: output,
                                                         alternateOutput: alternate,
                                                         rebuildScan: nil,
                                                         mrcReport: { capturedReport = $0 }) { report($0) }
@@ -501,7 +867,7 @@ final class QueueViewModel: ObservableObject {
                                      mrcReport: capturedReport)
                 }
                 return JobResult(outcome, outputURL: output, mrcReport: capturedReport)
-            }
+            }, skipping: skipped)
             // Phase 2 — the armed rows, through the engine directly. SERIALISED after phase 1, not
             // alongside it: running both mechanisms at once would put 2 × the batch width of gs
             // processes on the machine, and the spec bounds the total to one normal batch. One
@@ -509,9 +875,12 @@ final class QueueViewModel: ObservableObject {
             // `runRecompressPhase` opens with the `runCancelled` guard, which is what makes a
             // cancel landing during phase 1 stop the run here instead of starting phase 2.
             await runRecompressPhase(plans, engine: engine)
-            // The batch is over: its in-flight reservations are settled (every committed runner-up
-            // is now owned by `versionStore`), so nothing here is `cancel`'s to discard any more.
+            // The batch is over: its in-flight runner-up FILES are settled (every committed one is
+            // now owned by `versionStore`), so nothing here is `cancel`'s to discard any more. The
+            // ledger itself is untouched — reservations are queue-lifetime and outlive the run
+            // that used them (spec §6.5).
             runReservations = [:]
+            lockedRun = nil
             runIDs = []
             runQueuedIDs = []
             runComposition = RunComposition(queued: 0, armed: 0)
@@ -693,7 +1062,7 @@ final class QueueViewModel: ObservableObject {
             // recorded so re-selecting this preset shows the futile caption rather than re-running
             // a known-futile job (R6).
             discardArtefacts(of: plan)
-            futileAttempts.insert(FutileAttempt(id: plan.id, preset: plan.target))
+            futileAttempts.insert(futileKey(plan.id, at: plan.target))
             versionStore.recordAttempt(plan.target, for: plan.id)
             return
         case .skipped, nil:
@@ -756,6 +1125,11 @@ final class QueueViewModel: ObservableObject {
             let analysis = await self.estimator.analyse(job.url)
             guard !Task.isCancelled else { return }
             self.analyses[job.id] = analysis
+            // Inspection's second pass (spec §6.6): the classification behind the Ready screen's
+            // meta line only exists once this analysis lands, and it can legitimately never land
+            // (the analysis is time-boxed). The two writes race in either order — the inspection
+            // reads `analyses` when it lands first, this patches it when it lands second.
+            self.inspections[job.id]?.contentType = analysis.contentType
             self.analysingIDs.remove(job.id)
             self.estimationTasks[job.id] = nil
             self.publishJobs()
@@ -789,6 +1163,14 @@ final class QueueViewModel: ObservableObject {
         // `recompressErrors` is cleared only at the start of the next run and on a preset change,
         // neither of which fires when a row is simply removed.
         pendingPresets = pendingPresets.filter { liveIDs.contains($0.key) }
+        // The reservation ledger is queue-lifetime, so this sweep IS its release path (spec §6.5):
+        // a row cleared or removed gives its names straight back, and re-adding a same-named file
+        // is not pushed onto `-compressed-1.pdf` by an entry nothing owns any more.
+        reservations = reservations.filter { liveIDs.contains($0.key) }
+        overrides = overrides.filter { liveIDs.contains($0.key) }
+        inspections = inspections.filter { liveIDs.contains($0.key) }
+        skippedRows = skippedRows.filter { liveIDs.contains($0) }
+        armedExclusions = armedExclusions.filter { liveIDs.contains($0) }
         recompressErrors = recompressErrors.filter { liveIDs.contains($0.key) }
         rerunReports = rerunReports.filter { liveIDs.contains($0.key) }
         switchFailures = switchFailures.filter { liveIDs.contains($0.key) }
@@ -810,7 +1192,10 @@ final class QueueViewModel: ObservableObject {
     private func publishJobs() {
         jobs = rawJobs.map { job in
             var display = job
-            display.estimate = analyses[job.id]?.estimates[preset]
+            // Keyed by the ROW's effective preset (spec §6.1): the batch preset's estimate on an
+            // overridden row is two different numbers for one file, so the fix belongs here rather
+            // than at each site that renders it.
+            display.estimate = analyses[job.id]?.estimates[effectivePreset(for: job.id)]
             if let rerunReport = rerunReports[job.id] { display.mrcReport = rerunReport }
             if let failure = switchFailures[job.id] {
                 // Deliberately ahead of the re-run overlay: a failure recorded by the re-run's own
@@ -854,6 +1239,8 @@ final class QueueViewModel: ObservableObject {
         // Nothing arms mid-run: the selector is disabled for the duration (R9), and an armed row
         // whose file is being rewritten underneath it would be describing a moving target.
         guard !isRunning else { return .none }
+        // Unchecked in "Choose which files…" — the user has scoped the re-run past this row.
+        guard !armedExclusions.contains(job.id) else { return .none }
         guard case .done(let outcome) = job.state else { return .none }
         switch outcome.compress {
         // A `.failed` row never arms (its recourse is re-adding the file), and neither does a row
@@ -863,10 +1250,12 @@ final class QueueViewModel: ObservableObject {
         }
         // A row whose delivered file could not be backed any more has nothing to recompress from.
         guard let row = versions(for: job) else { return .none }
-        let target = preset
+        // The ROW's preset, not the batch's (spec §6.1): an overridden row is armed against what
+        // it would actually run at, and equals the batch preset whenever it overrides nothing.
+        let target = effectivePreset(for: job.id)
         // Ahead of the row-preset check on purpose: a row that came back no-gain at its own preset
         // must show the futile caption rather than read as a plain, unremarkable finished row.
-        if futileAttempts.contains(FutileAttempt(id: job.id, preset: target)) { return .futile(target) }
+        if futileAttempts.contains(futileKey(job.id, at: target)) { return .futile(target) }
         if row.rowPreset == target { return .none }
         if row.previous?.preset == target { return .instantSwitch(target) }
         return .armed(target)
@@ -961,7 +1350,9 @@ final class QueueViewModel: ObservableObject {
         var total = 0
         var confident = false
         for job in armed {
-            guard let predicted = recompressPrediction(for: job, at: preset),
+            // Each row's own effective preset — the same one it armed against, so the banner's
+            // arithmetic and the row's pill can never describe different runs.
+            guard let predicted = recompressPrediction(for: job, at: effectivePreset(for: job.id)),
                   let row = versions(for: job) else { continue }
             confident = true
             total += (row.shipped?.bytes ?? row.originalBytes) - predicted

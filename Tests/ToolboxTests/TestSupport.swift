@@ -8,6 +8,7 @@
 import CoreGraphics
 import Foundation
 import PDFKit
+import XCTest
 @testable import Toolbox
 
 /// Shared test helpers.
@@ -303,5 +304,72 @@ func waitUntil(timeout: TimeInterval, _ condition: @escaping () -> Bool) async t
             throw TimedOut(seconds: timeout)
         }
         try await Task.sleep(nanoseconds: 20_000_000)
+    }
+}
+
+/// A view model wired to a stub engine that emits `.compressedHeavy` and writes both versions,
+/// plus a temp-rooted store and output folder — the shared fixture for the switch/lifecycle tests.
+@MainActor
+struct HeavyEnv {
+    static let heavyBytes = 1200
+    static let normalBytes = 3400
+    let model: QueueViewModel
+    let stub: StubCompressEngine
+    let input: URL
+    let storeRoot: URL
+
+    init(before: Int = 9000, contentType: PDFContentType? = nil) throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        storeRoot = tmp.appendingPathComponent("cache", isDirectory: true)
+        let outputFolder = tmp.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputFolder,
+                                                withIntermediateDirectories: true)
+
+        input = try Fixtures.imagePDF()
+        stub = StubCompressEngine(outcome: .compressedHeavy(before: before,
+                                                    after: HeavyEnv.heavyBytes,
+                                                    runnerUpBytes: HeavyEnv.normalBytes),
+                          shippedBytes: HeavyEnv.heavyBytes,
+                          runnerUpBytes: HeavyEnv.normalBytes)
+        // The ONLY change to the existing body: the estimator is injected when a caller pins
+        // the classification, and is the default otherwise, so every existing `HeavyEnv()`
+        // call site behaves exactly as before.
+        let estimator = contentType.map {
+            CompressEstimator(analyser: FixedAnalyser(contentType: $0))
+        } ?? CompressEstimator()
+        model = QueueViewModel(engine: stub, estimator: estimator,
+                                  store: RunnerUpStore(rootOverride: storeRoot))
+        model.outputFolder = outputFolder
+    }
+
+    /// A `PDFAnalysing` that answers with a fixed classification, so a prediction test pins the
+    /// R16 boundary rather than whatever a fixture happens to classify as.
+    private struct FixedAnalyser: PDFAnalysing {
+        let contentType: PDFContentType
+        func pageCount(_ url: URL) throws -> Int { 1 }
+        func classify(_ url: URL) throws -> PDFContentType { contentType }
+    }
+
+    /// The single job once it has reached a done state carrying the heavy pair.
+    func doneHeavyJob(_ model: QueueViewModel) -> ToolJob? {
+        model.jobs.first {
+            if case .done(let outcome) = $0.state {
+                return outcome.shippedVariant == .mrc && outcome.runnerUp != nil
+            }
+            return false
+        }
+    }
+
+    /// Runs the input through to the done heavy pair — the add/wait/compress/wait
+    /// preamble nearly every test in this file starts with.
+    @discardableResult
+    func runToDone() async throws -> ToolJob {
+        model.add([input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { doneHeavyJob(model) != nil }
+        return try XCTUnwrap(doneHeavyJob(model))
     }
 }

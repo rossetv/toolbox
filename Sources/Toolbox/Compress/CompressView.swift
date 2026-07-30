@@ -351,7 +351,7 @@ struct CompressView: View {
                 }
             } else {
                 if model.isRunning { ProgressView().controlSize(.small) }
-                PrimaryButton(title: actionTitle, isEnabled: model.canCompress) { model.compress() }
+                PrimaryButton(title: actionTitle, isEnabled: model.canStart) { model.compress() }
             }
         }
         .padding(.horizontal, Theme.Spacing.large)

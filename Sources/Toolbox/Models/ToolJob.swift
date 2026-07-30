@@ -11,7 +11,10 @@ import Foundation
 /// is filled in by the compress estimator where applicable.
 struct ToolJob: Identifiable {
     let id: UUID
-    let url: URL
+    /// The input. Mutable for exactly one caller: `ToolQueue.rebind(_:to:)`, the "Find it…" repair
+    /// for a file that moved (spec §7). The row keeps its `id` across a rebind precisely so its
+    /// overrides, inspection and reservations survive with it.
+    var url: URL
     var state: JobState
     var resultURL: URL?
     var alternateURL: URL?
