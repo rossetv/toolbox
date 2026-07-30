@@ -394,7 +394,18 @@ Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sectio
 Flow per spec §6.10: sha256 vs `<dmgURL>.sha256` → mount (plist-parsed) → payload+version check → strip quarantine on STAGED copy pre-swap iff `spctl` rejects (strip failure → abort pre-swap) → aside-swap (restore on failure; restore-failure → aside preserved + path in `.failed`) → detach best-effort → detached `/bin/sh` relaunch helper → terminate.
 
 - [ ] 1. `SelfUpdaterTests` (fixture HTTP server + `hdiutil create` DMGs): checksum mismatch → `.failed`, no swap; mount failure; `testPayloadMissingAppFails`; wrong payload version; `testQuarantineStripFailureAbortsPreSwap` (strip fails on the staged copy → abort, current install untouched); `installDestination` nil → degrade; swap failure legs → working install remains, aside named on restore-failure; success path; `testUpdateRefusedWhileBusy` (`isBusy` true → `.blockedByRun`, filesystem untouched); `testNonHTTPSRedirectCancelled` (fixture redirect to `http://` → `.failed`); `testHTTPSRedirectFollowed` (fixture serves the DMG via a 302 to a second local https port — download succeeds; the redirected host is deliberately unconstrained, spec §6.10). Never live GitHub. FAIL → implement → PASS.
-- [ ] 2. **Banner dismissal (spec §7/§10)**: × dismiss persists PER VERSION. Produces (added to the block above): `struct UpdateBannerView: View { init(release: UpdateChecker.Release, updater: SelfUpdater, store: UserDefaults = .standard) }` with the TESTABLE predicate the body itself calls: `static func isDismissed(version: String, in store: UserDefaults) -> Bool` (key "bannerDismissed" stores the dismissed version string); the banner renders nothing when `isDismissed(version: release.version, in: store)`, re-shows for a newer version; dismissal writes through the same store. Tests `testBannerDismissalPersistsPerVersion` + `testNewerVersionReShowsBanner` drive the predicate through a `UserDefaults(suiteName:)` so the hosted bundle's standard domain is never polluted. I1a mounts the view.
+- [ ] 2. **Banner dismissal (spec §7/§10)**: × dismiss persists PER VERSION. Produces (added to the block above) — BOTH readers pinned to one key so the × invalidates the view (a static UserDefaults read registers no SwiftUI dependency; the wrapper is the invalidation source):
+```swift
+struct UpdateBannerView: View {
+    private static let dismissKey = "bannerDismissed"
+    @AppStorage(dismissKey) private var dismissedVersion: String = ""
+    init(release: UpdateChecker.Release, updater: SelfUpdater, store: UserDefaults = .standard) {
+        …; _dismissedVersion = AppStorage(wrappedValue: "", Self.dismissKey, store: store)
+    }
+    static func isDismissed(version: String, in store: UserDefaults) -> Bool  // test seam, same key + store
+}
+```
+body renders nothing when `dismissedVersion == release.version`; the × sets `dismissedVersion = release.version` (wrapper write → view invalidates → banner hides immediately); re-shows for a newer version. Tests `testBannerDismissalPersistsPerVersion` + `testNewerVersionReShowsBanner` drive the predicate through a per-test suite with teardown — `let store = try XCTUnwrap(UserDefaults(suiteName: "toolbox.tests.\(UUID().uuidString)"))` (the initialiser is failable) + `addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }` so no state leaks across runs. I1a mounts the view.
 - [ ] 3. Commits: `feat(update): release asset parsing`, `feat(update): self-updater state machine`, `feat(update): banner view` (banner shows `blockedByRun` as disabled button + caption "after the current batch finishes").
 
 ### Task P-D: R-net test re-derivation — Opus, track D (worktree `…-d`)
@@ -417,7 +428,15 @@ Protocol (spec §11, widened): enumerate all **62** existing `QueueViewModelTest
 
 ### Task I1a: Wire the shell — Opus
 
-**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL EIGHT frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about; `SelfUpdater` wired with `isBusy: { model.isRunning }`; `UpdateBannerView(release:updater:)` mounted above the queue content (the file-private incumbent `UpdateBanner` struct, its call site and its stale never-self-updates doc comment DELETED in this rewrite), sliding per the handoff's banner motion; `SelfUpdater` held as `@StateObject` created once — release passed per-call, never rebuilt on re-render; window-level drop), `ToolboxApp.swift` (app-menu About via `CommandGroup(replacing: .appInfo)` toggling an `@State` hoisted to `ToolboxApp` and passed into `RootView` — ONE presentation state shared with the `⋯` menu item, so the two entry points cannot both present), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
+**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL EIGHT frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about; `SelfUpdater` wired with `isBusy: { model.isRunning }`; `UpdateBannerView(release:updater:)` mounted above the queue content (the file-private incumbent `UpdateBanner` struct, its call site and its stale never-self-updates doc comment DELETED in this rewrite), sliding per the handoff's banner motion; `SelfUpdater` lifetime wired EXACTLY thus (the naive property-initialiser closure over a sibling property does not compile, and the cheapest escape — `isBusy: { false }` — would silently kill spec §6.10's busy block):
+```swift
+init() {
+    let m = QueueViewModel()
+    _model   = StateObject(wrappedValue: m)
+    _updater = StateObject(wrappedValue: SelfUpdater(isBusy: { m.isRunning }))
+}
+```
+window-level drop), `ToolboxApp.swift` (app-menu About via `CommandGroup(replacing: .appInfo)` toggling an `@State` hoisted to `ToolboxApp` and passed into `RootView` — ONE presentation state shared with the `⋯` menu item, so the two entry points cannot both present), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
 
 - [ ] 1. Wire, build, full suite PASS. Commit: `feat(app): single-window unified-queue shell`.
 
