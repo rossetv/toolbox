@@ -630,3 +630,36 @@ accept destroyed the page.
 **Affects:** `Sources/Toolbox/Compress/BilevelScan.swift` (`chromaCeiling`, `chromaFraction`),
 `Tests/ToolboxTests/BilevelScanTests.swift` (`testSmallColourStampIsNotBinarised`,
 `testSubThresholdChromaStillBinarises`).
+
+## 2026-07-30 — Panel: UI-redesign spec §6.4/§6.5 amendments — searchability carve-out and compress-failure OCR rescue
+
+**Decision:** Panel verdict, winner = the defensive proposal, adopted with grafts. (1) §6.4
+gains the `.alreadySearchable` carve-out — the Original version row is labelled searchable iff
+the OCR leg returned `.alreadySearchable` (`OCREngine` returns that only after every page passed
+`pageHasText`, so the label is evidence-backed); every other OCR outcome keeps the blanket
+"not searchable"; "searchable" is pinned as "extractable text layer on every page, keyed to the
+OCR leg's outcome, never a fresh probe". (2) §6.5 gains the compress-failure OCR rescue — a
+compress-SPECIFIC failure (`ghostscriptFailed`/`validationFailed`) with OCR effective-on delivers
+an OCR-only rescue named `-ocr.pdf` via the normal reservation ledger; the rescued row is
+classified warn/degraded (never "failed", keeping the Problems footer's "Files that failed were
+not touched at all" true) and counts as OCR-only in all savings sums (never toward "N MB saved");
+on rescue-leg OCR failure both reservations are released and the job fails to a problem row
+(worst case identical to no-rescue); encrypted/corrupt still fail the whole job; compress-failure
+with OCR OFF still fails the row with a recorded copy-divergence problem line.
+
+**Why:** Judge's core reasoning — amendment 1 was unanimous and forced by acceptance criterion 3
+(a text-bearing Original labelled "not searchable" is a false label on a switch path); amendment
+2's rescue re-dispatches into the already-first-class OCR-only pipeline and its worst case equals
+the no-rescue outcome, so it dominates (same floor, better ceiling).
+
+**Losing proposals:** the simplicity-first proposal adopted the carve-out but rejected the rescue
+as unbought machinery (judge: its costs dissolve — the pipeline and ledger paths already exist,
+and its own recovery copy taxes the least-able users); the requirements-first proposal adopted
+both but left the rescued row's classification and the savings-accounting honesty unpinned.
+
+**Provenance:** autonomous panel (three lensed Fable panellists + hardened judge), convened on
+the human's explicit instruction 2026-07-30.
+**Spec:** .claude/specs/20260730-ui-redesign.md
+**Affects:** Sources/Toolbox/Compress/VersionStore.swift, Sources/Toolbox/Queue/ (QueueViewModel
+job body), Sources/Toolbox/Models/JobOutcome.swift, Sources/Toolbox/Shared/FileNaming.swift
+consumers
