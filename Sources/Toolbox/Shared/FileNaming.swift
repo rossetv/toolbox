@@ -7,11 +7,12 @@
 
 import Foundation
 
-/// A job reached the concurrent run with no name reserved for it by the batch's up-front
-/// allocation pass (`compress()`/`run()` build `outputs` from `queue.jobs` before the batch
-/// starts). Falling back to a second, on-disk-only `FileNaming.output(for:suffix:folder:)` call
-/// from inside the concurrent job body would re-introduce the very TOCTOU race the up-front
-/// reservation exists to close, so a missing reservation fails that one job loudly instead.
+/// A job reached the concurrent run with no name in the queue's reservation ledger — every row
+/// reserves its delivery name when it is ADDED (spec §6.5), so this is a row whose entry was
+/// released or never made. Falling back to a second, on-disk-only
+/// `FileNaming.output(for:suffix:folder:)` call from inside the concurrent job body would
+/// re-introduce the very TOCTOU race the reservation exists to close, so a missing reservation
+/// fails that one job loudly instead.
 struct MissingOutputReservationError: LocalizedError {
     var errorDescription: String? {
         "No output name was reserved for this file before the batch started."
@@ -27,12 +28,12 @@ enum FileNaming {
         return output(for: input, suffix: suffix, folder: folder, reserving: &reserved)
     }
 
-    /// Batch-safe output name. A single run picks all its output names up front on one thread,
-    /// threading `reserved` through each call: this avoids a collision that a purely on-disk
-    /// check cannot see — two inputs with the same basename from different folders, sent to the
-    /// same output folder, would otherwise both resolve to `<name>-<suffix>.pdf` and the second
-    /// job's atomic rename would fail. Names already handed out this run are skipped alongside
-    /// names already on disk. Allocation must run BEFORE the concurrent compression starts.
+    /// Batch-safe output name. Names are picked serially on one thread, threading `reserved`
+    /// through each call: this avoids a collision that a purely on-disk check cannot see — two
+    /// inputs with the same basename from different folders, sent to the same output folder,
+    /// would otherwise both resolve to `<name>-<suffix>.pdf` and the second job's atomic rename
+    /// would fail. Names already handed out are skipped alongside names already on disk.
+    /// Allocation must never run from inside a concurrent job body.
     ///
     /// `reserved` is keyed on `reservationKey(for:)` rather than the raw `URL`, because APFS is
     /// case-insensitive (and normalisation-insensitive) by default: `Report.pdf` and `report.pdf`

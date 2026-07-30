@@ -1022,7 +1022,8 @@ final class QueueViewModel: ObservableObject {
     /// while every state mutation here stays on it, in runs uninterrupted between the awaits. Two
     /// things can now interleave at those awaits and neither changes an outcome: another row's
     /// commit, which touches only its own id and its own pre-reserved paths; and `cancel()`, whose
-    /// discard loop walks `runReservations` — the batch's up-front runner-up allocation — and so
+    /// discard loop walks `runReservations` — the batch's runner-up names, snapshotted from the
+    /// ledger at run start — and so
     /// never reaches the separate reservation a plan carries. R9's cancel semantics are unchanged
     /// too: the swap runs on a GCD queue bridged with a checked continuation, which does not inherit
     /// cancellation, so one already begun runs to completion rather than tearing at a `Task`

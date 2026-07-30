@@ -46,7 +46,8 @@ final class RunnerUpStore {
 
     /// Reserve a cache URL for one of a job's parked versions, via the same serial allocator as
     /// every batch output (C4). `suffix` keeps a row's runner-up and its parked previous version
-    /// (R14) apart in the shared cache root. Call in the view-model's up-front reservation loop.
+    /// (R14) apart in the shared cache root. Call from the view model's serial reservation paths —
+    /// the add-time ledger and the recompress phase's plan pass — never from a concurrent body.
     func reserveURL(for input: URL, suffix: String = "runner-up",
                     reserving reserved: inout Set<String>) -> URL {
         FileNaming.output(for: input, suffix: suffix, folder: root, reserving: &reserved)
