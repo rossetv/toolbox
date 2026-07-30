@@ -304,22 +304,6 @@ private final class RecordingRunner: GhostscriptRunning, @unchecked Sendable {
     }
 }
 
-/// Deterministic handshake: lets the test cancel exactly while the "gs run" is in flight, with no
-/// ordering race (open-before-wait returns immediately).
-private actor Gate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var opened = false
-    func wait() async {
-        if opened { return }
-        await withCheckedContinuation { continuation = $0 }
-    }
-    func open() {
-        opened = true
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
 /// A stub runner that parks mid-run until the test releases it, then writes a valid, smaller
 /// output — i.e. a run that *would* be delivered if cancellation were ignored.
 private struct GatedRunner: GhostscriptRunning {

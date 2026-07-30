@@ -9,22 +9,6 @@ import Combine
 import XCTest
 @testable import Toolbox
 
-/// Deterministic handshake for tests: lets a job body suspend until the test opens the gate,
-/// with no ordering race (open-before-wait returns immediately).
-private actor Gate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var opened = false
-    func wait() async {
-        if opened { return }
-        await withCheckedContinuation { continuation = $0 }
-    }
-    func open() {
-        opened = true
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
 @MainActor
 final class ToolQueueTests: XCTestCase {
 
