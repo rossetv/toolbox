@@ -14,7 +14,7 @@
 - Every source file: SPDX header `AGPL-3.0-or-later`, as every existing file.
 - British English prose everywhere; code identifiers follow platform/API spelling.
 - No new dependencies. No line-number citations in docs. Never reference the user's private test corpus — corpus-derived FIGURES go in the LCW ledger dir, never the repo.
-- All numbers in UI `.monospacedDigit()`. Copy verbatim from the handoff except spec-recorded divergences (§6.3 "grew", §6.8 footer line, honest variant labels, §7 consent copy).
+- All numbers in UI `.monospacedDigit()`. Copy verbatim from the handoff except spec-recorded divergences (§6.3 "grew", §6.8 footer line, honest variant labels, §7 consent copy) plus one plan-recorded divergence: the compress-failure continuation meta "Couldn't be compressed — made searchable instead" (F5a — no handoff string exists for this state).
 - Never delete/skip a failing gate test. All seven `GATES.md` gates must be green before the review-team gate.
 - TDD per task: failing test → run (expect FAIL) → implement → run (expect PASS) → commit. Small conventional commits, one logical change each.
 - Worktrees: foundation + integration tasks run in the LCW worktree (`.claude/worktrees/ui-redesign`, branch `feat/ui-redesign`). Parallel tracks run in their own worktrees under `.claude/worktrees/` branched off `feat/ui-redesign`, merged back on completion.
@@ -37,7 +37,9 @@
 **Interfaces — Produces (later tasks rely on these exact shapes):**
 ```swift
 // Models/JobOutcome.swift
-enum RowProblem: Equatable { case locked; case missing; case unreadable }   // defined HERE (F4's inspection reuses it)
+enum RowProblem: Equatable { case locked; case missing; case unreadable
+                             case compressFailed }   // meta-line vocabulary only (F5a's continuation);
+                                                     // never problem-row tint/copy. Defined HERE; F4's inspection reuses the first three.
 struct RetainedVariant: Equatable {
     let kind: EngineVariant          // existing .mrc/.plain/.original (VersionStore.swift)
     let bytes: Int
@@ -78,28 +80,32 @@ enum JobState: Equatable { case queued; case analysing; case running(Double); ca
 ### Task F1b: VersionStore four-row surface + honest labels — Opus, foundation
 
 **Files:**
-- Modify: `Sources/Toolbox/Compress/VersionStore.swift` (`RowVersions.cards`, `capsuleTitle`, new mutators; `VersionSlot` widens `Equatable` → `Hashable` — dictionary key)
-- Modify: `Tests/ToolboxTests/VersionStoreTests.swift` (extend) AND `Tests/ToolboxTests/CompressViewModelTests.swift` — ten existing assertions flip and are updated HERE (this is pre-fork foundation, not P-D's): the four `capsuleTitle` string asserts in `VersionStoreTests` (`"Heavy compression"`/`"Normal compression"`/`"Versions"` → the new `"N versions"` values, `count == 3` → new arity) and the five `capsuleTitle` + four `cards.first(where:)` sites in `CompressViewModelTests` (each updated to the new titles/arity, invariant unchanged).
+- Modify: `Sources/Toolbox/Compress/VersionStore.swift` (`RowVersions.cards`, `capsuleTitle`, new key type + mutators)
+- Modify: `Tests/ToolboxTests/VersionStoreTests.swift` AND `Tests/ToolboxTests/CompressViewModelTests.swift` — exactly EIGHT `capsuleTitle` string assertions flip HERE (3 in `VersionStoreTests`, 5 in `CompressViewModelTests`) to the new `"N versions"` values. **`cards` arity does NOT change at F1b** — nothing sets `originalURL` until F5a, so `count == 3`-style assertions stay green here; the `row.count` re-baseline belongs to F5a. Also re-anchor the two `VersionsPopover.label(_:slot:)` doc-comment citations in these tests onto `VersionsPopoverContent` (their file dies at I1b).
 
 **Interfaces — Produces (P-B consumes READ-ONLY; F5a is the PRODUCER of the new state):**
 ```swift
+enum VersionCardKey: Hashable { case shipped, runnerUp, previous, originalReference }  // display identity,
+                                          // distinct from VersionSlot — the parked cap stays two slots (spec §5)
 // RowVersions gains:
 var originalURL: URL?                      // the untouched input, for the always-present Original reference row
-var searchableBySlot: [VersionSlot?: Bool] // nil key = shipped. SEMANTICS: populated ONLY when the OCR leg ran
-                                           // for this row; empty = OCR never ran → popover shows NO searchability
-                                           // subtitles (design defaults stand). Never a lie in either direction.
+var searchableByCard: [VersionCardKey: Bool] = [:]   // default REQUIRED (8 existing memberwise constructions).
+                                           // SEMANTICS: populated ONLY when the OCR leg ran for this row;
+                                           // empty = OCR never ran → popover shows NO searchability subtitles
+                                           // (design defaults stand). Never a lie in either direction.
+// cards re-keys to the display identity, up to FOUR rows in popover order:
+var cards: [(key: VersionCardKey, version: FileVersion)]   // shipped, runnerUp, previous, originalReference
+// (originalReference appears when originalURL != nil AND no parked version already IS the original —
+//  never two rows for the same file). capsuleTitle: "N versions" per handoff screen 06/07.
 // VersionStore gains the mutators F5a drives:
 func setOriginalURL(_ url: URL, for id: ToolJob.ID)
-func setSearchable(_ searchable: Bool, slot: VersionSlot?, for id: ToolJob.ID)
-// cards emits up to FOUR rows in popover order: shipped, runnerUp, previous, original-reference
-// (original-reference row appears when originalURL != nil AND no parked version already IS the original —
-//  never two rows for the same file). capsuleTitle: "N versions" per handoff screen 06/07.
+func setSearchable(_ searchable: Bool, card: VersionCardKey, for id: ToolJob.ID)
 ```
-Parked cap stays structural (`runnerUp` + `previous` slots only — spec §5's ruling); the Original row is a reference, not a parked copy.
+**Stated test outcomes (loop rule — no silent drops):** `testCapsuleTitleFlipsOnSwitch` and `testCapsuleTitleReadsOriginalWhenRunnerUpIsInput` become tautologies under the static `"N versions"` label — the R15 dynamic-label family is SUPERSEDED by the handoff (authority: spec §5's radio-list supersession + handoff screens 06/07), and the honest-label invariant they proved now lives on the popover rows: **re-target** them as `testShippedCardFlipsOnSwitch` (cards' shipped entry's variant flips across a switch) and `testCardsSurfaceOriginalKindParkedVariant` (a parked `.original`-kind version surfaces with its kind intact).
 
 **Steps:**
-- [ ] 1. Extend `VersionStoreTests`: `testCardsIncludeOriginalReference`, `testNoDuplicateRowWhenParkedVariantIsOriginal` (parked `.original` kind → 3 rows, not 4), `testSearchableBySlotEmptyMeansNoLabels`, `testSetSearchablePerSlot`, `testConsentRetentionPlusPreviousParkStaysWithinCap` (runner-up + previous occupied → cards = 4 incl. reference, never 5). FAIL → implement → PASS.
-- [ ] 2. Update the ten flipped assertions in both test files to the new titles/arity. Full suite: PASS.
+- [ ] 1. Extend `VersionStoreTests`: `testCardsIncludeOriginalReference`, `testNoDuplicateRowWhenParkedVariantIsOriginal` (parked `.original` kind → 3 rows, not 4), `testSearchableByCardEmptyMeansNoLabels`, `testSetSearchablePerCard`, `testConsentRetentionPlusPreviousParkStaysWithinCap` (runner-up + previous occupied → cards = 4 incl. reference, never 5); re-target the two superseded tests as stated above. FAIL → implement → PASS.
+- [ ] 2. Update the eight flipped `capsuleTitle` assertions + the two doc-comment citations. Full suite: PASS.
 - [ ] 3. Commit: `feat(versions): four-row card surface with honest searchability`.
 
 ### Task F2: Engine per-file rebuild override + withhold-at-≥input — Opus, foundation
@@ -198,13 +204,14 @@ Reservation moves to `add(_:)` (delivered suffix per spec §6.5: compress-inclus
 
 ### Task F5a: Single-pass job body — Opus, foundation
 
-**Files:** Modify `Sources/Toolbox/Queue/QueueViewModel.swift`. Test: `Tests/ToolboxTests/QueuePassTests.swift` (new).
+**Files:** Modify `Sources/Toolbox/Queue/QueueViewModel.swift`, `Sources/Toolbox/Models/JobOutcome.swift` (`RowProblem` gains `case compressFailed` — meta-line vocabulary only). Tests: `Tests/ToolboxTests/QueuePassTests.swift` (new) + `Tests/ToolboxTests/QueueViewModelTests.swift` (re-baseline: `row.count` 2 → 3 where the Original reference row now appears — `originalURL` is populated from this task on; `VersionStoreTests`' own `count == 3` stays 3, that test constructs `RowVersions` directly and never sets `originalURL`).
 
 Job body per file (spec §6.2/§6.4/§6.5/§6.8): compress leg (when effective-on, per-row `preset`/`rebuildScan`) → cancellation check → OCR leg (when effective-on; width-2 semaphore; `recognise` from ORIGINAL, `append` to delivered file via temp + `replaceItemAt`, and to a retained runner-up variant file; `.original`-kind runner-up NEVER appended; append failure → `searchable = false`, never a job failure) → cancellation check → re-stat `finalBytes`, commit. Cancel between legs → `.ocr = .cancelled`, kept-and-banked.
 
-**Producer duties pinned here**: the commit step populates F1b's new state — `setOriginalURL(job.url)`, then `setSearchable` per slot from the append results: shipped/parked = did its append succeed; `.original`-kind slot and the Original reference = `ocr == .alreadySearchable` (the input's own text state); no OCR leg ran → no `setSearchable` calls at all (empty map = no labels). **`CompressOutcome.skipped(problem:)` producer**: a compress-leg failure that is compress-specific (`CompressError.ghostscriptFailed`/`.validationFailed`) while OCR is effective-on does NOT fail the job — the body continues to the OCR leg against the ORIGINAL (delivering the `-ocr` name, reserved at add for this contingency), `compress = .skipped(problem: .unreadable)`, meta "Couldn't be compressed — made searchable instead". `CompressError.encrypted`/`.corrupt` fail the whole job (OCR would fail identically) → problem row.
+**Producer duties pinned here**: the commit step populates F1b's new state — `setOriginalURL(job.url)`, then `setSearchable` per card from the append results: `.shipped`/`.runnerUp`/`.previous` = did that file's append succeed; `.originalReference` (and any `.original`-KIND parked version) = `ocr == .alreadySearchable` — that case means the input already carries text, so no layer was needed and labelling it "not searchable" would itself be the lie spec §6.4 forbids (stated refinement of §6.4's blanket rule, recorded here); no OCR leg ran → no `setSearchable` calls at all (empty map = no labels). **Selecting the Original reference row** (design screen 07 makes it a radio target): `func useCard(_ key: VersionCardKey, for job: ToolJob) async` maps `.runnerUp`/`.previous` onto the existing `useVersion`; `.originalReference` parks the shipped file and installs a COPY of the original at the delivered path (the original in its own folder is NEVER touched); no re-append (the copy is byte-identical to the never-modified input); test `testUseOriginalReferenceCopiesNeverMoves`.
+**`CompressOutcome.skipped(problem:)` producer**: a compress-specific failure (`CompressError.ghostscriptFailed`/`.validationFailed`) while OCR is effective-on does NOT fail the job — the body requests a contingency `-ocr` reservation from the SAME main-actor ledger that serves mid-run adds (no filesystem race — the ledger is authoritative and queue-lifetime; the `-compressed` reservation is released, so ONE name per job still ships, honouring spec §6.5), continues the OCR leg against the ORIGINAL, and commits `compress = .skipped(problem: .compressFailed)` (F1's `RowProblem` gains `case compressFailed`; its ONLY consumer is the row meta line — it never feeds problem-row tint/copy) with meta "Couldn't be compressed — made searchable instead" (recorded copy divergence — added to Global Constraints' divergence list). `CompressError.encrypted`/`.corrupt` fail the whole job (OCR would fail identically) → problem row. **Any other throw (`.sameInputOutput`, `CancellationError`, non-`CompressError`) propagates out of the body unchanged — never the OCR continuation.**
 
-- [ ] 1. Write `QueuePassTests`: `testCompressThenOCRSingleRow`, `testOCRAppliedToRunnerUpVariant` (both files carry layer, assert `pageHasText` each), `testOriginalVariantNeverAppended` (file untouched, `searchable == false`), `testSearchableBySlotReflectsAppendOutcomes` (incl. empty-map when OCR off), `testCompressFailureContinuesOCRLeg` (stub throws `ghostscriptFailed`; OCR on → `-ocr` output delivered, `compress == .skipped(problem: .unreadable)`), `testEncryptedFailsWholeJob`, `testCancelBetweenLegsBanksCompressed` (asserts `.ocr == .cancelled` + file kept), `testCancelStopsQueue` (successor to `OCRViewModelTests.testCancelStopsTheViewModelsQueue` — no further job starts after cancel), `testOCROnlyRowNoSizeLie`, `testOCRSemaphoreWidthTwo` (4 jobs, gated `StubOCREngine` → ≤2 concurrent in OCR leg), `testFinalBytesRestatedAfterAppend`. Run: FAIL.
+- [ ] 1. Write `QueuePassTests`: `testCompressThenOCRSingleRow`, `testOCRAppliedToRunnerUpVariant` (both files carry layer, assert `pageHasText` each), `testOriginalVariantNeverAppended` (file untouched, `searchable == false`), `testSearchableByCardReflectsAppendOutcomes` (incl. empty-map when OCR off), `testUseOriginalReferenceCopiesNeverMoves`, `testCompressFailureContinuesOCRLeg` (stub throws `ghostscriptFailed`; OCR on → contingency `-ocr` reservation through the ledger, output delivered, `compress == .skipped(problem: .compressFailed)`, `-compressed` reservation released), `testEncryptedFailsWholeJob`, `testCancelBetweenLegsBanksCompressed` (asserts `.ocr == .cancelled` + file kept), `testCancelStopsQueue` (successor to `OCRViewModelTests.testCancelStopsTheViewModelsQueue` — no further job starts after cancel), `testOCROnlyRowNoSizeLie`, `testOCRSemaphoreWidthTwo` (4 jobs, gated `StubOCREngine` → ≤2 concurrent in OCR leg), `testFinalBytesRestatedAfterAppend`. Run: FAIL.
 - [ ] 2. Implement (leg-boundary checks per concurrency lessons: guard before first await, re-check between engine return and commit). Run: PASS. Full suite: PASS.
 - [ ] 3. Commit: `feat(queue): single compress+OCR pass per file`.
 
@@ -300,7 +307,7 @@ Every interactive component: `.clearsClickFocus()` (standing invariant) + hover 
 
 **Files (create only):** `Sources/Toolbox/Queue/QueueView.swift`, `EmptyStateView.swift`, `DragOverlayView.swift`, `QueueHeaderView.swift`, `QueueRowsView.swift`, `QueueFooterView.swift`. Test: `Tests/ToolboxTests/QueueViewStateTests.swift` (new).
 
-**Interfaces — Consumes:** `QueueViewModel` (F4/F5 surface), `HistoryStore` (F6), `QueueComponents` (F7), `FilePicker`, `RowVersions` read-only. **Produces — the FROZEN injection seam (I1 plugs P-B's views into exactly these seven slots; no other cross-track reference exists):**
+**Interfaces — Consumes:** `QueueViewModel` (F4/F5 surface), `HistoryStore` (F6), `QueueComponents` (F7), `FilePicker`, `RowVersions` read-only. **Produces — the FROZEN injection seam (I1 plugs P-B's views into exactly these EIGHT slots; no other cross-track reference exists):**
 ```swift
 struct QueueView: View {
     init(model: QueueViewModel, history: HistoryStore,
@@ -327,8 +334,9 @@ Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sectio
 
 **Interfaces — Consumes (read-only):** `QueueViewModel` surface, `RowVersions.cards`/`searchableBySlot` (F1b), `HistoryStore.groupedByDay`, `measuredPageRate` (F5c), `QueueComponents` (complete inventory — a missing component is a stop-and-report). **Produces (exact inits P-A's seam receives):** `QualityPopover(model:)`, `OCRPopover(model:)`, `PerFileSettingsPopover(model:jobID:)`, `VersionsPopoverContent(model:jobID:)` (adopts the old popover's Quick-Look freeze pattern — collection never shrinks while the panel is alive), `ChangeQualitySheet(model:)`, `ScanConsentSheet(model:jobID:)`, `RecentBatchesSheet(history:)`, `AboutView()` (no-arg, frozen).
 
-- [ ] 1. `PopoverLogicTests`: quality totals per preset from analyses; per-file estimate reflects overrides; change-quality deltas from current rows; duration lines only when `measuredPageRate` non-nil; consent honest copy for `.original` kind. FAIL → implement → PASS.
-- [ ] 2. One commit per view. A11y: labels for radio/toggle/check rows; Reduce Motion on sheet/popover motion.
+- [ ] 1. `PopoverLogicTests`: quality totals per preset from analyses; per-file estimate reflects overrides; change-quality deltas from current rows; duration lines only when `measuredPageRate` non-nil; consent honest copy for `.original` kind; `testFrozenCardsNeverShrinkWhilePanelOpen` (the Quick-Look freeze invariant, ported below). FAIL → implement → PASS.
+- [ ] 2. `VersionsPopoverContent`: port the `@State` frozen-items pattern from `Compress/VersionsPopover.swift` VERBATIM (read that file, copy the pattern, touch nothing in it) — the recorded KVO trap: the card collection must never shrink while the panel is alive; freeze at preview-open, overwrite-only.
+- [ ] 3. One commit per view. A11y: labels for radio/toggle/check rows; Reduce Motion on sheet/popover motion.
 
 ### Task P-C: Self-updater — Opus, track C (worktree `…-c`)
 
@@ -351,12 +359,15 @@ Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sectio
          bundleURL: URL = Bundle.main.bundleURL)
     static func installDestination(for bundleURL: URL) -> URL?   // writable …/Applications parent, else nil
     func update() async                                   // isBusy() → .blockedByRun, no side effects
-    // Redirect policy (install.sh posture): follow hops; enforce https per hop via the delegate method,
-    // declared NONISOLATED (it runs on the session's delegate queue; a @MainActor-isolated implementation
-    // cannot satisfy the nonisolated protocol requirement and would race a security check):
-    //   nonisolated func urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)
-    // — non-https redirect → cancel + .failed (phase mutation hopped via await MainActor.run);
-    // host-check the INITIAL URL only (parseRelease's pin). No redirect-host allow-list: probed 2026-07-30,
+    // Redirect policy (install.sh posture): follow hops; enforce https per hop via the ASYNC delegate
+    // variant, declared NONISOLATED (the completion-handler form cannot await; a @MainActor-isolated
+    // implementation cannot satisfy the nonisolated requirement and would race a security check):
+    //   nonisolated func urlSession(_ session: URLSession, task: URLSessionTask,
+    //       willPerformHTTPRedirection response: HTTPURLResponse,
+    //       newRequest request: URLRequest) async -> URLRequest?
+    // — non-https redirect → task.cancel(); return nil (nil = don't follow);
+    //   await MainActor.run { phase = .failed(…) }.
+    // Host-check the INITIAL URL only (parseRelease's pin). No redirect-host allow-list: probed 2026-07-30,
     // GitHub currently redirects to release-assets.githubusercontent.com and has changed this host before —
     // any list would be perishable.
 }
@@ -386,7 +397,7 @@ Protocol (spec §11): enumerate all **62** existing `QueueViewModelTests` funcs 
 
 ### Task I1a: Wire the shell — Opus
 
-**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL EIGHT frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about; `SelfUpdater` wired with `isBusy: { model.isRunning }`; window-level drop), `ToolboxApp.swift` (app-menu About → same `about` content), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
+**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL EIGHT frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about; `SelfUpdater` wired with `isBusy: { model.isRunning }`; window-level drop), `ToolboxApp.swift` (app-menu About via `CommandGroup(replacing: .appInfo)` toggling an `@State` hoisted to `ToolboxApp` and passed into `RootView` — ONE presentation state shared with the `⋯` menu item, so the two entry points cannot both present), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
 
 - [ ] 1. Wire, build, full suite PASS. Commit: `feat(app): single-window unified-queue shell`.
 
@@ -417,6 +428,12 @@ Owner: the LCW orchestrator (not a track). Protocol: build, drive with computer-
 ## Self-review notes
 
 - Spec coverage re-walked after revision: §6.1→F4, §6.2→F5a, §6.3→F1, §6.4→F3+F5a+F1b, §6.5→F4+F5a, §6.6→F4, §6.7→F5d, §6.8→F5c+F5a(semaphore), §6.9→F6, §6.10→P-C(+I1a busy-wire, I3 functional), §6.11→I1b, §7 screens→P-A/P-B+F5b(consent), §8→F7/P-E/I2, §9→F7+P-A/P-B a11y steps+I2 step 4+V1, §11→P-D/I3/V1, §13 acceptance 1→V1 (owner + budget).
-- Type-consistency pass: `RowProblem` defined in F1 (Models) and consumed by F4's `RowInspection` and F1's `CompressOutcome.skipped`; `OCRing`/`StubOCREngine` defined F3/F4 before F5a consumes; seam signatures in P-A's Produces match P-B's Produces one-for-one (seven slots, `(ToolJob.ID) -> AnyView` where a row id is needed); `measuredPageRate` produced F5c, consumed P-B.
+- Type-consistency pass: `RowProblem` defined in F1 (Models) and consumed by F4's `RowInspection` and F1's `CompressOutcome.skipped`; `OCRing`/`StubOCREngine` defined F3/F4 before F5a consumes; seam signatures in P-A's Produces match P-B's Produces one-for-one (eight slots, `(ToolJob.ID) -> AnyView` where a row id is needed); `measuredPageRate` produced F5c, consumed P-B.
 - Topological order: F1→F1b→F2→F3→F4→F5a→F5b→F5c→F5d→F6→F7 all serial; every P-track consumes only F-phase symbols; I1a consumes P-A+P-B+P-C merges.
 - File-list completeness derived by grep (F1's ~82 test sites; I1b's orphan list), not recall.
+
+## Gate rounds
+
+- **R3 (incremental, Opus): NO-SHIP** — 4 majors (F1b assertion accounting corrected to eight + arity re-baseline moved to F5a; two superseded capsule-label tests re-targeted with recorded handoff authority; `searchableBySlot` key space → `VersionCardKey` display identity incl. `originalReference` + `useCard` semantics; contingency `-ocr` name now reserved through the main-actor ledger mid-run, one-name-per-job preserved) + 9 minors (eight-slot residues, async redirect delegate variant + cancel semantics, continuation copy recorded as divergence + `RowProblem.compressFailed`, error-taxonomy default clause, `.alreadySearchable` honesty clause, app-menu About mechanism, dead citations re-anchored at F1b, `searchableByCard` default, freeze-pattern port step + test, this footer added). Lesson-candidates: per-assertion task attribution in re-baselines; count render rows against key spaces; contingency paths name their reserving task; adopted copy can retire prior invariants — state the outcome; delegate signatures must compile with their prescribed body.
+- **R2 (incremental, Opus): NO-SHIP** — all 24 R1 findings confirmed fixed; 4 new majors (unproduced `searchableBySlot`/`originalURL`; F1b breakage outside its file list; in-place `VersionsPopover` rewrite with live out-of-track consumer; missing About seam slot / doubly-assigned `⋯` menu) + 7 minors, all applied.
+- **R1 (full read, Opus): NO-SHIP** — 14 majors (track-boundary break on `VersionStore`; unfrozen P-A↔P-B seam; understated file lists; dropped spec cases; `finalBytes` ownership; missing doubles + OCR seam; incomplete F7 inventory; stale/wide updater host pin — live-probed; missing update-during-run gate; half-done estimator calibration; oversized F5/I1; unprotected focus-ring nets; unowned visual verification) + 10 minors, all applied.
