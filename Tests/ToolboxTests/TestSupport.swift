@@ -100,6 +100,12 @@ final class StubCompressEngine: Compressing, @unchecked Sendable {
         let shippedBytes: Int?
         /// Bytes to write at the alternate output, or nil to leave that slot empty.
         let runnerUpBytes: Int?
+        /// A real PDF to deliver instead of filler bytes — required by any test that then runs the
+        /// REAL `OCREngine` over the variant, because `append` parses the target and matches its
+        /// page count against the recognition. `TestSupport.tinyValidPDF(matching:)` produces one.
+        /// Takes precedence over the byte count when both are set.
+        var shippedPayload: Data?
+        var runnerUpPayload: Data?
     }
 
     // `compress` runs concurrently: `ToolQueue.execute` fans out up to `performanceCoreCount`
@@ -185,17 +191,22 @@ final class StubCompressEngine: Compressing, @unchecked Sendable {
         // Mirror the production engine's never-overwrite delivery contract (it `moveItem`s the
         // winner into place, which throws on an existing destination) — a stub that overwrites
         // via `Data.write` would mask a caller that targets an already-occupied destination.
-        if let bytes = response.shippedBytes {
+        if let payload = response.shippedPayload ?? response.shippedBytes.map({
+            Data(repeating: 0x48, count: $0)
+        }) {
             guard !fm.fileExists(atPath: output.path) else {
                 throw CocoaError(.fileWriteFileExists)
             }
-            try Data(repeating: 0x48, count: bytes).write(to: output)
+            try payload.write(to: output)
         }
-        if let alternateOutput, let bytes = response.runnerUpBytes {
+        if let alternateOutput,
+           let payload = response.runnerUpPayload ?? response.runnerUpBytes.map({
+               Data(repeating: 0x4E, count: $0)
+           }) {
             guard !fm.fileExists(atPath: alternateOutput.path) else {
                 throw CocoaError(.fileWriteFileExists)
             }
-            try Data(repeating: 0x4E, count: bytes).write(to: alternateOutput)
+            try payload.write(to: alternateOutput)
         }
         if let reportToDeliver { mrcReport?(reportToDeliver) }
         if let gate { await gate.wait() }
@@ -220,6 +231,8 @@ final class StubOCREngine: OCRing, @unchecked Sendable {
     private var _throwOnRecogniseCall: Int?
     private var _recogniseError: Error = OCRError.validationFailed
     private var _appendShouldThrow = false
+    private var _throwOnAppendCall: Int?
+    private var _growthBytes = 0
     private var _gate: Gate?
 
     /// The document every `recognise` hands back. No default: a wrong default would decide the
@@ -251,6 +264,18 @@ final class StubOCREngine: OCRing, @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _appendShouldThrow }
         set { lock.lock(); defer { lock.unlock() }; _appendShouldThrow = newValue }
     }
+    /// When set, only this 1-based `append` call throws — the leg appends to the delivered file
+    /// first and the runner-up second, so one variant can fail while the other succeeds.
+    var throwOnAppendCall: Int? {
+        get { lock.lock(); defer { lock.unlock() }; return _throwOnAppendCall }
+        set { lock.lock(); defer { lock.unlock() }; _throwOnAppendCall = newValue }
+    }
+    /// Bytes `append` adds on top of the copied target. A real text layer grows the file, and the
+    /// commit step's per-artefact re-stat is only observable if the stub grows it too.
+    var growthBytes: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _growthBytes }
+        set { lock.lock(); defer { lock.unlock() }; _growthBytes = newValue }
+    }
     /// Suspends every `recognise` until opened, so a test can hold the OCR leg mid-flight.
     var gate: Gate? {
         get { lock.lock(); defer { lock.unlock() }; return _gate }
@@ -279,13 +304,22 @@ final class StubOCREngine: OCRing, @unchecked Sendable {
 
     func append(_ recognised: RecognisedDocument, to target: URL, output: URL) throws {
         let shouldThrow: Bool
+        let growth: Int
         lock.lock()
         _appendCallCount += 1
         _appendTargets.append(target)
-        shouldThrow = _appendShouldThrow
+        shouldThrow = _appendShouldThrow || _throwOnAppendCall == _appendCallCount
+        growth = _growthBytes
         lock.unlock()
         if shouldThrow { throw OCRError.validationFailed }
         try FileManager.default.copyItem(at: target, to: output)
+        guard growth > 0 else { return }
+        // Appended, never rewritten: the real writer's incremental update keeps the target as the
+        // output's verbatim prefix, so a stub that replaced the bytes would model the wrong thing.
+        let handle = try FileHandle(forWritingTo: output)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(repeating: 0x54, count: growth))
     }
 }
 
@@ -319,7 +353,8 @@ struct HeavyEnv {
     let storeRoot: URL
 
     init(before: Int = 9000, contentType: PDFContentType? = nil,
-         timeBudget: TimeInterval = 0.5) throws {
+         timeBudget: TimeInterval = 0.5,
+         ocrEngine: (any OCRing)? = nil) throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -342,8 +377,9 @@ struct HeavyEnv {
         let estimator = contentType.map {
             CompressEstimator(analyser: FixedAnalyser(contentType: $0), timeBudget: timeBudget)
         } ?? CompressEstimator(timeBudget: timeBudget)
-        model = QueueViewModel(engine: stub, estimator: estimator,
-                                  store: RunnerUpStore(rootOverride: storeRoot))
+        model = QueueViewModel(engine: stub, ocrEngine: ocrEngine ?? OCREngine(),
+                               estimator: estimator,
+                               store: RunnerUpStore(rootOverride: storeRoot))
         model.outputFolder = outputFolder
     }
 
@@ -353,6 +389,15 @@ struct HeavyEnv {
         let contentType: PDFContentType
         func pageCount(_ url: URL) throws -> Int { 1 }
         func classify(_ url: URL) throws -> PDFContentType { contentType }
+    }
+
+    /// Add one file and wait for its row to appear — `nil` adds the env's own input.
+    @discardableResult
+    func addRow(_ url: URL? = nil) async throws -> ToolJob.ID {
+        let before = model.jobs.count
+        model.add([url ?? input])
+        try await waitUntil(timeout: 5) { self.model.jobs.count == before + 1 }
+        return try XCTUnwrap(model.jobs.last).id
     }
 
     /// The single job once it has reached a done state carrying the heavy pair.
