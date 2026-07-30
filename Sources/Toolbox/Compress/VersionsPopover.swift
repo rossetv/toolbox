@@ -35,13 +35,28 @@ struct VersionsPopover: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 12) {
-                ForEach(Array(versions.cards.enumerated()), id: \.offset) { _, card in
+                ForEach(Array(legacyCards.enumerated()), id: \.offset) { _, card in
                     versionCard(card.version, slot: card.slot)
                 }
             }
         }
         .padding(16)
         .frame(width: width)
+    }
+
+    /// Shim until `VersionsPopoverContent` replaces this view: `RowVersions.cards` is now keyed by
+    /// display identity, so the Original reference row is dropped here and the remaining keys are
+    /// mapped back onto the slot this popover switches by. Geometry stays at today's two or three
+    /// cards.
+    private var legacyCards: [(slot: VersionSlot?, version: FileVersion)] {
+        versions.cards.compactMap { card -> (slot: VersionSlot?, version: FileVersion)? in
+            switch card.key {
+            case .shipped: return (nil, card.version)
+            case .runnerUp: return (.runnerUp, card.version)
+            case .previous: return (.previous, card.version)
+            case .originalReference: return nil
+            }
+        }
     }
 
     /// "Smallest · Heavy", "Smallest · Normal", "Balanced (previous)" — the preset is what the user

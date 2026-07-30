@@ -289,46 +289,58 @@ final class CompressViewModelTests: XCTestCase {
                        "a plain swap must keep the row .done/.doneHeavy and allFinished true throughout")
     }
 
-    /// `capsuleTitle` drives the row's capsule label; it must flip with the shipped version and use
-    /// the popover's own vocabulary for the parked version — "Normal compression" when the runner-up
-    /// is a real gs output, matching the label `VersionsPopover.label(_:slot:)` gives the parked
-    /// card, "Normal".
-    func testCapsuleTitleFlipsOnSwitch() async throws {
+    /// The honest-label invariant the superseded `testCapsuleTitleFlipsOnSwitch` used to carry now
+    /// lives on the popover's rows: the capsule only counts them, so a switch must flip the SHIPPED
+    /// card's variant — the vocabulary `VersionsPopoverContent` renders per row.
+    func testShippedCardFlipsOnSwitch() async throws {
         let env = try HeavyEnv()
         let model = env.model
         try await env.runToDone()
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         var versions = try XCTUnwrap(model.versions(for: job))
-        XCTAssertEqual(versions.capsuleTitle, "Heavy compression")
+        XCTAssertEqual(versions.cards.first?.key, .shipped)
+        XCTAssertEqual(versions.cards.first?.version.variant, .mrc)
+        XCTAssertEqual(versions.capsuleTitle, "2 versions")
 
         await model.useVersion(.runnerUp, for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
-        XCTAssertEqual(versions.capsuleTitle, "Normal compression",
+        XCTAssertEqual(versions.cards.first?.version.variant, .plain,
                        "the parked version is a real gs output, not the untouched input")
+        XCTAssertEqual(versions.cards.last?.version.variant, .mrc,
+                       "and the heavy version is now the parked one")
+        XCTAssertEqual(versions.capsuleTitle, "2 versions")
 
         await model.useVersion(.runnerUp, for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
-        XCTAssertEqual(versions.capsuleTitle, "Heavy compression",
-                       "switching back restores the heavy label")
+        XCTAssertEqual(versions.cards.first?.version.variant, .mrc,
+                       "switching back restores the heavy version to the shipped card")
+        XCTAssertEqual(versions.capsuleTitle, "2 versions")
     }
 
-    /// When the runner-up is the untouched original (R6/R7 field fix), switching to it must label
-    /// the capsule "Original" — matching the label `VersionsPopover.label(_:slot:)` gives that card
-    /// — not "Normal compression".
-    func testCapsuleTitleReadsOriginalWhenRunnerUpIsInput() async throws {
+    /// When the runner-up is the untouched original (R6/R7 field fix), the popover must surface it
+    /// with its kind intact — `VersionsPopoverContent` labels that row "Original", and a `.plain`
+    /// kind there would advertise a gs output that was never produced.
+    func testCardsSurfaceOriginalKindParkedVariant() async throws {
         let env = try HeavyEnv(before: HeavyEnv.normalBytes)
         let model = env.model
         try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
+        var versions = try XCTUnwrap(model.versions(for: job))
+        let parked = try XCTUnwrap(versions.cards.first { $0.key == .runnerUp })
+        XCTAssertEqual(parked.version.variant, .original,
+                       "the parked file IS the input, and the card must say so")
+        XCTAssertEqual(versions.capsuleTitle, "2 versions")
+
         await model.useVersion(.runnerUp, for: job)
         let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
-        let versions = try XCTUnwrap(model.versions(for: switchedJob))
+        versions = try XCTUnwrap(model.versions(for: switchedJob))
         XCTAssertFalse(versions.shipped?.variant == .mrc)
-        XCTAssertEqual(versions.capsuleTitle, "Original")
+        XCTAssertEqual(versions.cards.first?.version.variant, .original,
+                       "the kind travels with the bytes across the switch")
     }
 
     /// `displayedSizes(for:)` feeds the batch success banner's totals; for a `.compressedHeavy` job it
@@ -1481,8 +1493,10 @@ final class CompressViewModelTests: XCTestCase {
                        "the parked previous version must go with the row")
     }
 
-    /// R15: the capsule renders on ANY row with two or more versions — including a plain
-    /// (non-heavy) result that gained a previous version from a recompress.
+    /// R15: the capsule renders on ANY row holding a PARKED version — including a plain (non-heavy)
+    /// result that gained a previous version from a recompress. The gate is the parked slots, not
+    /// the card count: the popover's always-present Original reference row puts every delivered row
+    /// at two cards or more.
     func testAPlainResultWithAPreviousVersionOffersTheCapsule() async throws {
         let env = try HeavyEnv()
         let model = env.model
@@ -1499,7 +1513,7 @@ final class CompressViewModelTests: XCTestCase {
         let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
         XCTAssertNil(row.runnerUp, "the re-run shipped plain gs, so there is no runner-up")
         XCTAssertEqual(row.count, 2, "current + previous still draws the capsule")
-        XCTAssertEqual(row.capsuleTitle, "Versions")
+        XCTAssertEqual(row.capsuleTitle, "2 versions")
     }
 
     // MARK: the armed banner's arithmetic (R4)
