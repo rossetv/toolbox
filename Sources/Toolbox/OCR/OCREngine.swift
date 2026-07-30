@@ -31,6 +31,43 @@ enum OCRError: Error, LocalizedError {
     }
 }
 
+/// One document's recognition results, produced **once** from the original and appended to every
+/// variant a job delivers (spec §6.4).
+struct RecognisedDocument {
+    /// Vision-normalised boxes (0…1, bottom-left origin, in each page's **displayed** space) for
+    /// the pages that gained text. Pages that recognised nothing carry no entry.
+    let pageText: [Int: [PositionedText]]
+    /// The **original** page geometry, per index — the record of what was recognised, not the
+    /// projection target: `OCREngine.append` derives the geometry it writes against from the
+    /// target document, so the same runs land correctly on a composed variant (see `append`).
+    let geometry: [Int: PageGeometry]
+    let pagesRecognised: Int
+    let pagesSkipped: Int
+    let pageCount: Int
+
+    /// The row's OCR outcome for this recognition — the single named partition every consumer
+    /// reads, so "zero usable runs" cannot be re-derived (and re-derived differently) at each
+    /// call site. `.cancelled`/`.failed` are the *caller's* outcomes, never this one's: a
+    /// recognition that returns at all completed.
+    var outcome: OCROutcome {
+        pagesRecognised == 0 && pagesSkipped == pageCount
+            ? .alreadySearchable
+            : (pagesRecognised > 0 && pageText.isEmpty
+                ? .tooFaint
+                : .added(pages: pagesRecognised, skipped: pagesSkipped))
+    }
+}
+
+/// The OCR seam the queue's job body is written against (mirrors `Compressing`): recognition and
+/// delivery are separate steps because one recognition serves **every** variant the job ships.
+protocol OCRing: Sendable {
+    func recognise(_ input: URL, options: OCROptions,
+                   progress: @escaping (Double) -> Void) async throws -> RecognisedDocument
+    func append(_ recognised: RecognisedDocument, to target: URL, output: URL) throws
+}
+
+extension OCREngine: OCRing {}
+
 /// Makes image-only PDFs searchable by adding an invisible Vision text layer (spec §6).
 ///
 /// Per page: pages that already carry extractable text are skipped (`PDFService.pageHasText`);
@@ -40,6 +77,10 @@ enum OCRError: Error, LocalizedError {
 /// document until the writer consumes it, which is what `maxRecognisedTextRuns` bounds.
 /// Output is written to a temp file **in the output directory** then atomically renamed, and
 /// re-validated before success. If every page already had text → `.alreadySearchable`.
+///
+/// The two halves are separately callable through `OCRing` — `recognise` reads, `append` writes —
+/// because one recognition of the original serves every variant a job delivers (spec §6.4).
+/// `ocr(_:to:options:progress:)` is exactly those two steps plus the atomic delivery.
 struct OCREngine {
     /// Render resolution for OCR. 300 DPI is the spec default (corpus-tunable); it is a single
     /// fixed value today, so it stays a constant rather than a config knob.
@@ -122,6 +163,58 @@ struct OCREngine {
             throw OCRError.sameInputOutput
         }
 
+        let recognised = try await recognise(input, options: options, progress: progress)
+        let outcome = recognised.outcome
+
+        // The row's size facts. This leg compresses nothing, so both start at the input's size —
+        // the append genuinely grows the delivered file, and the queue's commit step re-stats it
+        // (`RowOutcome.finalBytes`' ownership note) rather than the engine guessing here.
+        let inputSize = (try? input.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+
+        // Nothing to deliver, for either of the two reasons recognition can find nothing to add:
+        // every page already carried text, or the pages that lacked it recognised no usable run
+        // (a blank or unreadable scan). The writer's no-op path would emit a byte-identical
+        // duplicate of the input, and handing that back as an OCR result is the misrepresentation
+        // §3.7 forbids — so nothing is written and the row says what actually happened.
+        if outcome == .alreadySearchable || outcome == .tooFaint {
+            return RowOutcome(originalBytes: inputSize, finalBytes: inputSize, ocr: outcome)
+        }
+
+        // Temp file in the OUTPUT directory (same volume → atomic rename can't cross-device fail).
+        let outputDir = output.deletingLastPathComponent().canonical
+        let tempURL = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
+        var renamed = false
+        defer { if !renamed { try? FileManager.default.removeItem(at: tempURL) } }
+
+        // The append — writing the incremental update, then reading the whole file back for both
+        // validation passes — is synchronous and unbounded, so it runs off the cooperative pool
+        // (§6.1); parking a pool thread here would starve every other job.
+        try await offloadBlocking { try self.append(recognised, to: input, output: tempURL) }
+
+        // Last thing before the file becomes visible to the user. The only other check is inside
+        // the recognition loop, and everything between it and here — writing the incremental
+        // update, then two validation passes that re-render pages — is slow enough to cover a
+        // whole cancellation. Cancellation is cooperative: unobserved, it does not throw, so
+        // without this the user cancels and the output is delivered anyway. `renamed` stays false
+        // on the throw, so the `defer` removes the temp and nothing is left behind.
+        try Task.checkCancellation()
+        try FileManager.default.moveItem(at: tempURL, to: output)
+        renamed = true
+        progress(1.0)
+        return RowOutcome(originalBytes: inputSize, finalBytes: inputSize, ocr: outcome)
+    }
+
+    /// Recognise `input`'s image pages — the whole read-only half of the OCR leg, run **once** per
+    /// file against the original (spec §6.4: better input than any compressed variant, and the
+    /// results serve every variant the job delivers).
+    ///
+    /// Pages that already carry extractable text are skipped; the rest are rendered upright at
+    /// 300 DPI one at a time and handed to Vision. `progress` reports per-page completion.
+    func recognise(_ input: URL,
+                   options: OCROptions,
+                   progress: @escaping (Double) -> Void) async throws -> RecognisedDocument {
+        let input = input.canonical
+
         switch try OpenGuard.inspect(input) {
         case .ok: break
         case .encrypted: throw OCRError.encrypted
@@ -130,11 +223,6 @@ struct OCREngine {
         guard let doc = PDFDocument(url: input) else { throw OCRError.corrupt }
         let count = doc.pageCount
         guard count > 0 else { throw OCRError.corrupt }
-
-        // The row's size facts. This leg compresses nothing, so both start at the input's size —
-        // the append genuinely grows the delivered file, and the queue's commit step re-stats it
-        // (`RowOutcome.finalBytes`' ownership note) rather than the engine guessing here.
-        let inputSize = (try? input.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
 
         var pageText: [Int: [PositionedText]] = [:]
         var geometry: [Int: PageGeometry] = [:]
@@ -167,50 +255,50 @@ struct OCREngine {
             progress(Double(i + 1) / Double(count))
         }
 
-        // Every page already had text → nothing to do.
-        guard ocrPages > 0 else {
-            return RowOutcome(originalBytes: inputSize, finalBytes: inputSize,
-                              ocr: .alreadySearchable)
-        }
-        // Recognition found nothing anywhere (a blank or unreadable scan). The writer's no-op path
-        // would emit a byte-identical duplicate of the input, so nothing is written and the row
-        // says what actually happened: the pages that lacked text are too faint to read. This is
-        // the zero-usable-runs fact `OCROutcome.tooFaint` is defined as (spec §6.3) — the pages
-        // that already had text are not a claim this outcome makes.
-        guard !pageText.isEmpty else {
-            return RowOutcome(originalBytes: inputSize, finalBytes: inputSize, ocr: .tooFaint)
+        return RecognisedDocument(pageText: pageText, geometry: geometry,
+                                  pagesRecognised: ocrPages, pagesSkipped: skipped,
+                                  pageCount: count)
+    }
+
+    /// Write `target` plus `recognised`'s text layer to `output`, by incremental update — the
+    /// delivery half of the OCR leg, run once per variant the job ships (spec §6.4). `target` is
+    /// only ever read; the caller decides where the result goes.
+    ///
+    /// **The geometry is derived from `target`, never from `recognised.geometry`.** Vision's boxes
+    /// are normalised against the page as *displayed*, so they project onto whatever the target's
+    /// own MediaBox and `/Rotate` are: a Rung-1 variant keeps the original geometry and the append
+    /// is direct, while an MRC/bilevel composed page carries the original's displayed size at
+    /// origin (0,0) with no `/Rotate` — the same fractions, the right way up.
+    ///
+    /// A target with a different page count is not the document that was recognised, so the runs
+    /// would land on the wrong pages: refused before anything is written. Callers consult
+    /// `recognised.outcome` first — a recognition with nothing to add writes no file at all, so
+    /// this is never asked to append an empty layer.
+    func append(_ recognised: RecognisedDocument, to target: URL, output: URL) throws {
+        let target = target.canonical
+        guard let doc = PDFDocument(url: target) else { throw OCRError.corrupt }
+        guard doc.pageCount == recognised.pageCount else { throw OCRError.validationFailed }
+
+        var geometry: [Int: PageGeometry] = [:]
+        for index in recognised.pageText.keys {
+            guard let page = doc.page(at: index) else { throw OCRError.corrupt }
+            geometry[index] = PageGeometry(mediaBox: page.bounds(for: .mediaBox),
+                                           rotation: page.rotation)
         }
 
-        // Temp file in the OUTPUT directory (same volume → atomic rename can't cross-device fail).
-        let outputDir = output.deletingLastPathComponent().canonical
-        let tempURL = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
-        var renamed = false
-        defer { if !renamed { try? FileManager.default.removeItem(at: tempURL) } }
-
-        // Writing and both validation passes are synchronous and unbounded — the whole input is
-        // streamed to disk, read back byte for byte, then re-rendered — so they run off the
-        // cooperative pool (§6.1); parking a pool thread here would starve every other job.
-        try await offloadBlocking {
-            try self.writer.appendTextLayer(to: input, output: tempURL,
-                                            pageText: pageText, geometry: geometry)
-            guard try self.validator.validate(input: input, output: tempURL) else {
-                throw OCRError.validationFailed
-            }
-            try self.validateOCROutput(input: input, output: tempURL,
-                                       textPages: Set(pageText.keys), pageCount: count)
+        try writer.appendTextLayer(to: target, output: output,
+                                   pageText: recognised.pageText, geometry: geometry)
+        // From here the output exists and is ours: a file that fails the fail-loud net must not be
+        // left on disk where the caller asked for a sound one.
+        var sound = false
+        defer { if !sound { try? FileManager.default.removeItem(at: output) } }
+        guard try validator.validate(input: target, output: output) else {
+            throw OCRError.validationFailed
         }
-        // Last thing before the file becomes visible to the user. The only other check is inside
-        // the recognition loop, and everything between it and here — writing the incremental
-        // update, then two validation passes that re-render pages — is slow enough to cover a
-        // whole cancellation. Cancellation is cooperative: unobserved, it does not throw, so
-        // without this the user cancels and the output is delivered anyway. `renamed` stays false
-        // on the throw, so the `defer` removes the temp and nothing is left behind.
-        try Task.checkCancellation()
-        try FileManager.default.moveItem(at: tempURL, to: output)
-        renamed = true
-        progress(1.0)
-        return RowOutcome(originalBytes: inputSize, finalBytes: inputSize,
-                          ocr: .added(pages: ocrPages, skipped: skipped))
+        try validateOCROutput(input: target, output: output,
+                              textPages: Set(recognised.pageText.keys),
+                              pageCount: recognised.pageCount)
+        sound = true
     }
 
 
