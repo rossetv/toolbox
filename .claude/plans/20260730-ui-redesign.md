@@ -78,14 +78,19 @@ enum JobState: Equatable { case queued; case analysing; case running(Double); ca
 ### Task F1b: VersionStore four-row surface + honest labels — Opus, foundation
 
 **Files:**
-- Modify: `Sources/Toolbox/Compress/VersionStore.swift` (`RowVersions.cards`, `capsuleTitle`)
-- Test: `Tests/ToolboxTests/VersionStoreTests.swift` (extend)
+- Modify: `Sources/Toolbox/Compress/VersionStore.swift` (`RowVersions.cards`, `capsuleTitle`, new mutators; `VersionSlot` widens `Equatable` → `Hashable` — dictionary key)
+- Modify: `Tests/ToolboxTests/VersionStoreTests.swift` (extend) AND `Tests/ToolboxTests/CompressViewModelTests.swift` — ten existing assertions flip and are updated HERE (this is pre-fork foundation, not P-D's): the four `capsuleTitle` string asserts in `VersionStoreTests` (`"Heavy compression"`/`"Normal compression"`/`"Versions"` → the new `"N versions"` values, `count == 3` → new arity) and the five `capsuleTitle` + four `cards.first(where:)` sites in `CompressViewModelTests` (each updated to the new titles/arity, invariant unchanged).
 
-**Interfaces — Produces (P-B consumes READ-ONLY):**
+**Interfaces — Produces (P-B consumes READ-ONLY; F5a is the PRODUCER of the new state):**
 ```swift
 // RowVersions gains:
 var originalURL: URL?                      // the untouched input, for the always-present Original reference row
-var searchableBySlot: [VersionSlot?: Bool] // display truth for §6.4's honest labels (nil key = shipped)
+var searchableBySlot: [VersionSlot?: Bool] // nil key = shipped. SEMANTICS: populated ONLY when the OCR leg ran
+                                           // for this row; empty = OCR never ran → popover shows NO searchability
+                                           // subtitles (design defaults stand). Never a lie in either direction.
+// VersionStore gains the mutators F5a drives:
+func setOriginalURL(_ url: URL, for id: ToolJob.ID)
+func setSearchable(_ searchable: Bool, slot: VersionSlot?, for id: ToolJob.ID)
 // cards emits up to FOUR rows in popover order: shipped, runnerUp, previous, original-reference
 // (original-reference row appears when originalURL != nil AND no parked version already IS the original —
 //  never two rows for the same file). capsuleTitle: "N versions" per handoff screen 06/07.
@@ -93,8 +98,9 @@ var searchableBySlot: [VersionSlot?: Bool] // display truth for §6.4's honest l
 Parked cap stays structural (`runnerUp` + `previous` slots only — spec §5's ruling); the Original row is a reference, not a parked copy.
 
 **Steps:**
-- [ ] 1. Extend `VersionStoreTests`: `testCardsIncludeOriginalReference`, `testNoDuplicateRowWhenParkedVariantIsOriginal` (parked `.original` kind → 3 rows, not 4), `testSearchableBySlotDefaultsFalseUntilSet`, `testConsentRetentionPlusPreviousParkStaysWithinCap` (runner-up + previous occupied simultaneously → cards = 4 incl. reference, never 5). FAIL → implement → PASS.
-- [ ] 2. Commit: `feat(versions): four-row card surface with honest searchability`.
+- [ ] 1. Extend `VersionStoreTests`: `testCardsIncludeOriginalReference`, `testNoDuplicateRowWhenParkedVariantIsOriginal` (parked `.original` kind → 3 rows, not 4), `testSearchableBySlotEmptyMeansNoLabels`, `testSetSearchablePerSlot`, `testConsentRetentionPlusPreviousParkStaysWithinCap` (runner-up + previous occupied → cards = 4 incl. reference, never 5). FAIL → implement → PASS.
+- [ ] 2. Update the ten flipped assertions in both test files to the new titles/arity. Full suite: PASS.
+- [ ] 3. Commit: `feat(versions): four-row card surface with honest searchability`.
 
 ### Task F2: Engine per-file rebuild override + withhold-at-≥input — Opus, foundation
 
@@ -143,7 +149,7 @@ Geometry rule: boxes are normalised → they project onto the TARGET's own page 
 
 **Steps:**
 - [ ] 1. Extend `OCREngineTests`: `testRecogniseThenAppendEqualsOcr`, `testAppendToComposedGeometry` (`/Rotate 90` scan → MRC-shaped composed target via the `MRCComposer` fixture path `MRCInvariantTests` uses → append → text selectable at upright position), `testAppendNeverTouchesTarget` (verbatim prefix; target unmodified), `testOriginalNeverModified`, `testAppendPageCountMismatchThrows`. Run: FAIL.
-- [ ] 2. Implement split + protocol. Run: PASS. Full OCR suite: PASS.
+- [ ] 2. Implement split + protocol. Run: PASS. Full OCR suite: PASS. **Bail-out (spec §12): if `testAppendToComposedGeometry` cannot be made to pass, take the spec's recorded fallback — append only to Rung-1-shaped variants, composed variants labelled "not searchable" — and REPORT to the orchestrator; never a silent narrowing.**
 - [ ] 3. Commit: `feat(ocr): recognise/append split behind OCRing seam`.
 
 ### Task F4: QueueViewModel part 1 — rename, doubles, verbs, inspection, reservation — Opus, foundation
@@ -196,7 +202,9 @@ Reservation moves to `add(_:)` (delivered suffix per spec §6.5: compress-inclus
 
 Job body per file (spec §6.2/§6.4/§6.5/§6.8): compress leg (when effective-on, per-row `preset`/`rebuildScan`) → cancellation check → OCR leg (when effective-on; width-2 semaphore; `recognise` from ORIGINAL, `append` to delivered file via temp + `replaceItemAt`, and to a retained runner-up variant file; `.original`-kind runner-up NEVER appended; append failure → `searchable = false`, never a job failure) → cancellation check → re-stat `finalBytes`, commit. Cancel between legs → `.ocr = .cancelled`, kept-and-banked.
 
-- [ ] 1. Write `QueuePassTests`: `testCompressThenOCRSingleRow`, `testOCRAppliedToRunnerUpVariant` (both files carry layer, assert `pageHasText` each), `testOriginalVariantNeverAppended` (file untouched, `searchable == false`), `testCancelBetweenLegsBanksCompressed` (asserts `.ocr == .cancelled` + file kept), `testCancelStopsQueue` (successor to `OCRViewModelTests.testCancelStopsTheViewModelsQueue` — no further job starts after cancel), `testOCROnlyRowNoSizeLie`, `testOCRSemaphoreWidthTwo` (4 jobs, gated `StubOCREngine` → ≤2 concurrent in OCR leg), `testFinalBytesRestatedAfterAppend`. Run: FAIL.
+**Producer duties pinned here**: the commit step populates F1b's new state — `setOriginalURL(job.url)`, then `setSearchable` per slot from the append results: shipped/parked = did its append succeed; `.original`-kind slot and the Original reference = `ocr == .alreadySearchable` (the input's own text state); no OCR leg ran → no `setSearchable` calls at all (empty map = no labels). **`CompressOutcome.skipped(problem:)` producer**: a compress-leg failure that is compress-specific (`CompressError.ghostscriptFailed`/`.validationFailed`) while OCR is effective-on does NOT fail the job — the body continues to the OCR leg against the ORIGINAL (delivering the `-ocr` name, reserved at add for this contingency), `compress = .skipped(problem: .unreadable)`, meta "Couldn't be compressed — made searchable instead". `CompressError.encrypted`/`.corrupt` fail the whole job (OCR would fail identically) → problem row.
+
+- [ ] 1. Write `QueuePassTests`: `testCompressThenOCRSingleRow`, `testOCRAppliedToRunnerUpVariant` (both files carry layer, assert `pageHasText` each), `testOriginalVariantNeverAppended` (file untouched, `searchable == false`), `testSearchableBySlotReflectsAppendOutcomes` (incl. empty-map when OCR off), `testCompressFailureContinuesOCRLeg` (stub throws `ghostscriptFailed`; OCR on → `-ocr` output delivered, `compress == .skipped(problem: .unreadable)`), `testEncryptedFailsWholeJob`, `testCancelBetweenLegsBanksCompressed` (asserts `.ocr == .cancelled` + file kept), `testCancelStopsQueue` (successor to `OCRViewModelTests.testCancelStopsTheViewModelsQueue` — no further job starts after cancel), `testOCROnlyRowNoSizeLie`, `testOCRSemaphoreWidthTwo` (4 jobs, gated `StubOCREngine` → ≤2 concurrent in OCR leg), `testFinalBytesRestatedAfterAppend`. Run: FAIL.
 - [ ] 2. Implement (leg-boundary checks per concurrency lessons: guard before first await, re-check between engine return and commit). Run: PASS. Full suite: PASS.
 - [ ] 3. Commit: `feat(queue): single compress+OCR pass per file`.
 
@@ -235,7 +243,7 @@ ETA: smoothed completed-fraction rate, nil until batch fraction ≥ 0.1; monoton
 Two-part measurement (spec §6.7), in order:
 - [ ] 1. Synthetic measurement: run the actual MRC pipeline on the repo's scanColour fixtures; record achieved reductions in the task log.
 - [ ] 2. Corpus measurement: run the same on the private corpus; record FIGURES ONLY in `$(git rev-parse --path-format=absolute --git-common-dir)/lcw/20260730-ui-redesign/calibration.md` — never in the repo (`no-personal-corpus-references` gate).
-- [ ] 3. Set `baseReduction[.scanColour]` from the measurements (untempered constants chosen so the TEMPERED prediction `base * (0.3 + 0.7 * payloadRatio)` lands within ±15% of measured on both sets; expected neighbourhood `.balanced` ≈ 0.75, `.smallestSize` ≈ 0.80 — the measurements decide). Fallback if ±15% is unreachable with one constant: widen to ±25%, keep "about" phrasing, and record the achieved tolerance in the plan (edit this step's line with the final constants + tolerance).
+- [ ] 3. Set `baseReduction[.scanColour]` from the measurements (untempered constants chosen so the TEMPERED prediction `base * (0.3 + 0.7 * payloadRatio)` lands within ±15% of measured on both sets; expected neighbourhood `.balanced` ≈ 0.75, `.smallestSize` ≈ 0.80 — the measurements decide). **`.maximumQuality` stays untouched at 0.12 — MRC never runs there (MRC D3), so an MRC-derived constant would predict what the engine cannot deliver.** Fallback if ±15% is unreachable with one constant: widen to ±25%, keep "about" phrasing, and record the achieved tolerance in the plan (edit this step's line with the final constants + tolerance).
 - [ ] 4. `EstimatorTests`: `testScanColourPredictionMatchesMRCPipelineOnFixture` (tolerance per step 3), existing fallback tests still green. Commit: `feat(estimate): calibrate scanColour to the MRC path`. **Final constants recorded here post-measurement: ___ (implementer fills in).**
 
 ### Task F6: HistoryStore — Sonnet, foundation
@@ -302,9 +310,11 @@ struct QueueView: View {
          versions: @escaping (ToolJob.ID) -> AnyView,      // Versions popover content (capsule anchor)
          changeQuality: @escaping () -> AnyView,           // Change-quality sheet content
          scanConsent: @escaping (ToolJob.ID) -> AnyView,   // Scan-choice consent sheet content
-         recentBatches: @escaping () -> AnyView)           // Recent-batches sheet content
+         recentBatches: @escaping () -> AnyView,           // Recent-batches sheet content
+         about: @escaping () -> AnyView)                   // About sheet content (⋯ menu + app menu)
 }
 ```
+P-A owns the `⋯` button AND its menu (Recent batches… → `recentBatches` slot; Where files are saved… → `FilePicker.chooseFolder()` directly, no view; About Toolbox → `about` slot). EIGHT slots total — the freeze claim covers all of them; no other cross-track reference exists.
 Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sections. Divergences per spec (multi-active rows; truthful footer copy; "grew" meta; Skip/Remove/Find-it only).
 
 - [ ] 1. `QueueViewStateTests`: state selection (empty/ready/working/finished derivation), drop accepted in every state, Return on focused row invokes onOpen. FAIL → implement → PASS.
@@ -313,9 +323,9 @@ Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sectio
 
 ### Task P-B: Popovers + sheets — Sonnet, track B (worktree `…-b`)
 
-**Files:** Create `Sources/Toolbox/Queue/QualityPopover.swift`, `OCRPopover.swift`, `PerFileSettingsPopover.swift`, `ChangeQualitySheet.swift`, `ScanConsentSheet.swift`, `RecentBatchesSheet.swift`; modify `Sources/Toolbox/Compress/VersionsPopover.swift` (radio list, ≤4 rows via F1b's `cards`, honest subtitles, keep the Quick-Look freeze pattern) and `Sources/Toolbox/App/AboutView.swift` (redesign per screen 11 — **PRESERVE the three `.focusEffectDisabled()` modifiers**, the About-sheet net of the stray-focus-ring invariant). Test: `Tests/ToolboxTests/PopoverLogicTests.swift` (new).
+**Files:** Create `Sources/Toolbox/Queue/QualityPopover.swift`, `OCRPopover.swift`, `PerFileSettingsPopover.swift`, `VersionsPopoverContent.swift` (NEW file — the old `Compress/VersionsPopover.swift` is left COMPLETELY untouched; its live consumer `CompressView` survives until I1b, so an in-place rewrite would break this track's own build), `ChangeQualitySheet.swift`, `ScanConsentSheet.swift`, `RecentBatchesSheet.swift`; modify `Sources/Toolbox/App/AboutView.swift` (redesign per screen 11 — init STAYS no-arg `AboutView()` (SidebarView still calls it until I1b); **PRESERVE the three `.focusEffectDisabled()` modifiers**, the About-sheet net of the stray-focus-ring invariant). Test: `Tests/ToolboxTests/PopoverLogicTests.swift` (new).
 
-**Interfaces — Consumes (read-only):** `QueueViewModel` surface, `RowVersions.cards`/`searchableBySlot` (F1b), `HistoryStore.groupedByDay`, `measuredPageRate` (F5c), `QueueComponents` (complete inventory — a missing component is a stop-and-report). **Produces (exact inits P-A's seam receives):** `QualityPopover(model:)`, `OCRPopover(model:)`, `PerFileSettingsPopover(model:jobID:)`, `VersionsPopoverContent(model:jobID:)`, `ChangeQualitySheet(model:)`, `ScanConsentSheet(model:jobID:)`, `RecentBatchesSheet(history:)`.
+**Interfaces — Consumes (read-only):** `QueueViewModel` surface, `RowVersions.cards`/`searchableBySlot` (F1b), `HistoryStore.groupedByDay`, `measuredPageRate` (F5c), `QueueComponents` (complete inventory — a missing component is a stop-and-report). **Produces (exact inits P-A's seam receives):** `QualityPopover(model:)`, `OCRPopover(model:)`, `PerFileSettingsPopover(model:jobID:)`, `VersionsPopoverContent(model:jobID:)` (adopts the old popover's Quick-Look freeze pattern — collection never shrinks while the panel is alive), `ChangeQualitySheet(model:)`, `ScanConsentSheet(model:jobID:)`, `RecentBatchesSheet(history:)`, `AboutView()` (no-arg, frozen).
 
 - [ ] 1. `PopoverLogicTests`: quality totals per preset from analyses; per-file estimate reflects overrides; change-quality deltas from current rows; duration lines only when `measuredPageRate` non-nil; consent honest copy for `.original` kind. FAIL → implement → PASS.
 - [ ] 2. One commit per view. A11y: labels for radio/toggle/check rows; Reduce Motion on sheet/popover motion.
@@ -328,6 +338,8 @@ Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sectio
 ```swift
 // UpdateChecker.Release gains: let dmgURL: URL?
 //   parseRelease pins dmgURL to scheme https + host github.com EXACTLY (install.sh's pin; no other host).
+//   nil if the release has no .dmg asset — the release still PARSES (banner shows, button degrades to the
+//   release page); UpdateCheckerTests' existing assets:[] fixtures therefore need NO edit.
 @MainActor final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     enum Phase: Equatable { case idle; case blockedByRun; case downloading(Double); case verifying; case installing
                             case degradedToReleasePage(reason: String); case failed(message: String, asidePath: String?)
@@ -339,8 +351,11 @@ Visual truth: handoff README §Screens + renders 01/02/03/05/06/10 + HTML sectio
          bundleURL: URL = Bundle.main.bundleURL)
     static func installDestination(for bundleURL: URL) -> URL?   // writable …/Applications parent, else nil
     func update() async                                   // isBusy() → .blockedByRun, no side effects
-    // Redirect policy (install.sh posture): follow hops; enforce https per hop via
-    // urlSession(_:task:willPerformHTTPRedirection:) — non-https redirect → cancel + .failed;
+    // Redirect policy (install.sh posture): follow hops; enforce https per hop via the delegate method,
+    // declared NONISOLATED (it runs on the session's delegate queue; a @MainActor-isolated implementation
+    // cannot satisfy the nonisolated protocol requirement and would race a security check):
+    //   nonisolated func urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)
+    // — non-https redirect → cancel + .failed (phase mutation hopped via await MainActor.run);
     // host-check the INITIAL URL only (parseRelease's pin). No redirect-host allow-list: probed 2026-07-30,
     // GitHub currently redirects to release-assets.githubusercontent.com and has changed this host before —
     // any list would be perishable.
@@ -371,13 +386,13 @@ Protocol (spec §11): enumerate all **62** existing `QueueViewModelTests` funcs 
 
 ### Task I1a: Wire the shell — Opus
 
-**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView` with P-B's seven views plugged into P-A's frozen seam; `⋯` menu Recent batches… / Where files are saved… / About Toolbox; `SelfUpdater` wired with `isBusy: { model.isRunning }`; window-level drop), `ToolboxApp.swift` (app-menu About), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
+**Files:** Modify `Sources/Toolbox/App/RootView.swift` (single pane: mount `QueueView`, plugging P-B's views into ALL EIGHT frozen seam slots — quality/ocrOptions/perFile/versions/changeQuality/scanConsent/recentBatches/about; `SelfUpdater` wired with `isBusy: { model.isRunning }`; window-level drop), `ToolboxApp.swift` (app-menu About → same `about` content), `WindowConfigurator.swift` (min 900×640 — **PRESERVE `installStrayFocusClear(on:)` + `installArmingObserver()` untouched**, the window net of the stray-focus-ring invariant). Run `xcodegen`.
 
 - [ ] 1. Wire, build, full suite PASS. Commit: `feat(app): single-window unified-queue shell`.
 
 ### Task I1b: Delete legacy + orphan sweep — Sonnet
 
-**Files:** Delete `App/SidebarView.swift`, `App/Tool.swift`, `Compress/CompressView.swift`, `OCR/OCRView.swift`, `OCR/OCRViewModel.swift`, `Tests/ToolboxTests/OCRViewModelTests.swift` (its cancel invariant lives on as `QueuePassTests.testCancelStopsQueue`), `Tests/ToolboxTests/BatchProgressTextTests.swift` (subject deleted). From `Components.swift`: `FileRow`, `DropZone`, `ToolHeader`, `SegmentedPreset`, `SegmentedPresetOption`, `SuccessBanner`, `ToolIconTile`, `Card`, `LinearProgress`, `batchProgressText` — then a zero-consumer sweep over ALL of `Components.swift` (grep each remaining symbol; delete any orphan). `xcodegen`.
+**Files:** Delete `App/SidebarView.swift`, `App/Tool.swift`, `Compress/CompressView.swift`, `Compress/VersionsPopover.swift` (superseded by P-B's `VersionsPopoverContent`; its sole consumer `CompressView` dies in this same task), `OCR/OCRView.swift`, `OCR/OCRViewModel.swift`, `Tests/ToolboxTests/OCRViewModelTests.swift` (its cancel invariant lives on as `QueuePassTests.testCancelStopsQueue`), `Tests/ToolboxTests/BatchProgressTextTests.swift` (subject deleted). From `Components.swift`: `FileRow`, `DropZone`, `ToolHeader`, `SegmentedPreset`, `SegmentedPresetOption`, `SuccessBanner`, `ToolIconTile`, `Card`, `LinearProgress`, `batchProgressText` — then a zero-consumer sweep over ALL of `Components.swift` (grep each remaining symbol; delete any orphan). `xcodegen`.
 
 - [ ] 1. Grep-verify zero consumers per deletion first; delete; build; full suite PASS. Commit: `chore(app): delete sidebar and legacy tool views`.
 
