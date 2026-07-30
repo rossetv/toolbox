@@ -107,6 +107,12 @@ final class QueueViewModel: ObservableObject {
     /// The preset each in-flight queue job was dispatched at, consumed once when the job's outcome
     /// is ingested into the store. Not display state — the store owns that.
     private var pendingPresets: [ToolJob.ID: CompressPreset] = [:]
+    /// What each of a row's files can honestly claim, as the OCR leg found out, held until the
+    /// row's versions have been RECORDED: `VersionStore.record` replaces a row wholesale, so a flag
+    /// written from the job body would be thrown away by the ingest that follows it. Consumed with
+    /// `pendingPresets`, and absent for a row whose OCR leg never ran — which is exactly the state
+    /// "no searchability claim in either direction" (spec §6.4).
+    private var pendingSearchable: [ToolJob.ID: [VersionCardKey: Bool]] = [:]
     /// Progress fraction for a job in the R10 re-run path, overlaid onto its published state.
     private var rerunProgress: [ToolJob.ID: Double] = [:]
     /// MRC reports produced by an R10 re-run (spec §6's debugging record), overlaid onto the
@@ -315,10 +321,14 @@ final class QueueViewModel: ObservableObject {
             guard case .done(let outcome) = job.state,
                   let preset = pendingPresets[job.id] else { continue }
             pendingPresets[job.id] = nil
+            let searchable = pendingSearchable.removeValue(forKey: job.id)
             switch outcome.compress {
-            case .compressed(let before, let after):
+            case .compressed(let before, _):
                 guard let url = job.resultURL else { continue }
-                let shipped = FileVersion(url: url, bytes: after, preset: preset,
+                // `finalBytes`, never the compress leg's `after`: the OCR append grows the file the
+                // user actually has, and the commit re-stat'd it (`RowOutcome.finalBytes`' own
+                // ownership note). A card showing the pre-append number is the wrong number.
+                let shipped = FileVersion(url: url, bytes: outcome.finalBytes, preset: preset,
                                           variant: outcome.shippedVariant ?? .plain)
                 // Whether a second version exists is the DESCRIPTOR's answer, never the winner's
                 // (spec §5's R7 reversal: keying on which variant shipped is the asymmetry the
@@ -340,6 +350,7 @@ final class QueueViewModel: ObservableObject {
                                                     runnerUp: nil, previous: nil),
                                         for: job.id)
                 }
+                recordRowProvenance(job, searchable: searchable)
             case .noGain(let bytes):
                 // Nothing shipped, but the attempt still fixes the row's preset (R1). A wholesale
                 // `record` is safe here: only `.queued` rows ever reach this path, and a row
@@ -347,14 +358,31 @@ final class QueueViewModel: ObservableObject {
                 versionStore.record(RowVersions(originalBytes: bytes, lastAttemptPreset: preset,
                                                 shipped: nil, runnerUp: nil, previous: nil),
                                     for: job.id)
+                recordRowProvenance(job, searchable: searchable)
                 // R6: a first-run no-gain at P0 records (job, P0) as futile exactly as a
                 // recompress no-gain does.
                 futileAttempts.insert(futileKey(job.id, at: preset))
-            case .skipped:
-                continue        // the compress leg never runs alone here; the rescue is spec §6.5's
-            case nil:
-                continue        // no compress leg — never produced by CompressEngine
+            case .skipped, nil:
+                // A rescued row (spec §6.5) and an OCR-only row deliver a file that carries no
+                // compression, so there is no version PAIR to offer and no saving to claim: the
+                // row keeps its delivered file through `job.resultURL` and shows "no change".
+                continue
             }
+        }
+    }
+
+    /// The facts only the completed job knows, written onto the row AFTER `record` has replaced its
+    /// versions wholesale: where the untouched input lives (the popover's always-present Original
+    /// reference row, spec §6.4) and what each of the row's files can honestly claim.
+    ///
+    /// `setOriginalURL` runs for every recorded row, OCR or not — the reference row is a property of
+    /// the row, not of the verb set. A no-gain row records one too: it ships nothing today, but a
+    /// later re-run can give it a shipped version, and the reference row must not be missing from
+    /// the popover that then appears.
+    private func recordRowProvenance(_ job: ToolJob, searchable: [VersionCardKey: Bool]?) {
+        versionStore.setOriginalURL(job.url, for: job.id)
+        for (card, isSearchable) in searchable ?? [:] {
+            versionStore.setSearchable(isSearchable, card: card, for: job.id)
         }
     }
 
@@ -456,6 +484,13 @@ final class QueueViewModel: ObservableObject {
     /// `.tooFaint` no-delivery dispositions). Its runner-up reservation is untouched.
     func releaseDelivery(for id: ToolJob.ID) {
         reservations[id]?.delivered = nil
+    }
+
+    /// Give up a row's runner-up name too. Paired with `releaseDelivery` on the paths where the
+    /// compress leg produced nothing at all — spec §6.5's "BOTH reservations are released" — so a
+    /// row that ships nothing holds no name at all.
+    func releaseAlternate(for id: ToolJob.ID) {
+        reservations[id]?.alternate = nil
     }
 
     /// Every filename the queue currently owns, as reservation keys.
@@ -834,39 +869,9 @@ final class QueueViewModel: ObservableObject {
         runReservations = alternates
         isRunning = true
         Task {
-            // Phase 1 — the queued rows, through the shared queue exactly as before.
+            // Phase 1 — the queued rows, through the shared queue: one pass per file, both legs.
             await queue.run({ job, report in
-                // Read from the LEDGER, not from a snapshot: a row that joined this batch after it
-                // started reserved its name at add time and is not in any snapshot taken here. A
-                // row with no reservation at all fails loudly rather than silently allocating a
-                // second, racing name from inside the concurrent run (see
-                // `MissingOutputReservationError`).
-                guard let output = self.reservedDelivery(for: job.id) else {
-                    throw MissingOutputReservationError()
-                }
-                let alternate = self.reservedAlternate(for: job.id)
-                let rowPreset = self.effectivePreset(for: job.id)
-                // Captured here, per job invocation, so each concurrent job's report lands on
-                // that job's own `JobResult` rather than a shared/racing variable.
-                var capturedReport: MRCDocumentReport?
-                // `rebuildScan: nil` — the engine derives the MRC decision as it always has. The
-                // per-row override is wired into this call by the single-pass job body (F5a),
-                // which owns the leg sequence; here it governs the runner-up reservation only.
-                let outcome = try await engine.compress(job.url, preset: rowPreset, to: output,
-                                                        alternateOutput: alternate,
-                                                        rebuildScan: nil,
-                                                        mrcReport: { capturedReport = $0 }) { report($0) }
-                // `.noGain` deliberately writes nothing, so there is no output file to point at.
-                if case .noGain = outcome.compress {
-                    return JobResult(outcome, mrcReport: capturedReport)
-                }
-                // The alternate is attached whenever a second variant was RETAINED — keyed on the
-                // descriptor, never on which variant won the gate (spec §5's R7 reversal).
-                if outcome.runnerUp != nil {
-                    return JobResult(outcome, outputURL: output, alternateURL: alternate,
-                                     mrcReport: capturedReport)
-                }
-                return JobResult(outcome, outputURL: output, mrcReport: capturedReport)
+                try await self.runPass(job, engine: engine, report: report)
             }, skipping: skipped)
             // Phase 2 — the armed rows, through the engine directly. SERIALISED after phase 1, not
             // alongside it: running both mechanisms at once would put 2 × the batch width of gs
@@ -906,6 +911,299 @@ final class QueueViewModel: ObservableObject {
             store.discard(url)
         }
         runReservations = [:]
+    }
+
+    // MARK: the single pass (spec §6.2/§6.4/§6.5/§6.8)
+
+    /// What the compress leg left behind for the OCR leg to work with, and the result the row ships
+    /// if nothing further happens. Carried as one value because its four fields only ever travel
+    /// together — every early return below is `state.result`.
+    private struct PassState {
+        var outcome: RowOutcome
+        /// The file this row delivers, once one exists. A no-gain (or failed) compress leg writes
+        /// nothing, so it stays nil until the OCR leg delivers on its own.
+        var delivered: URL?
+        /// The retained second variant's file — attached whenever the DESCRIPTOR says one was kept,
+        /// never keyed on which variant won the gate (spec §5's R7 reversal).
+        var runnerUpFile: URL?
+        var mrcReport: MRCDocumentReport?
+
+        var result: JobResult {
+            JobResult(outcome, outputURL: delivered, alternateURL: runnerUpFile,
+                      mrcReport: mrcReport)
+        }
+    }
+
+    /// One file's whole journey through the queue: compress first (Rungs 2/3 rasterise pages, which
+    /// would destroy a pre-existing text layer — spec §6.2), the cancellation boundary, then OCR.
+    ///
+    /// Runs on this actor inside `ToolQueue`'s task group, so every ledger read and write here is
+    /// serialised against every other row's; only the engines leave the actor.
+    private func runPass(_ job: ToolJob, engine: any Compressing,
+                         report: @escaping @Sendable (Double) -> Void) async throws -> JobResult {
+        let verbs = effectiveVerbs(for: job.id)
+        var state: PassState
+
+        if verbs.compress {
+            // Read from the LEDGER, not from a snapshot: a row that joined this batch after it
+            // started reserved its name at add time and is in no snapshot taken here. A row with no
+            // reservation at all fails loudly rather than silently allocating a second, racing name
+            // from inside the concurrent run (see `MissingOutputReservationError`).
+            guard let output = reservedDelivery(for: job.id) else {
+                throw MissingOutputReservationError()
+            }
+            let alternate = reservedAlternate(for: job.id)
+            // Before the first await, per the concurrency-retrofit lesson: a row launched into a
+            // batch that is already cancelling must not start an engine run.
+            try Task.checkCancellation()
+            var mrcReport: MRCDocumentReport?
+            do {
+                // The ROW's rebuild decision, never the batch's and never nil: a per-file opt-out
+                // that reached the reservation but not the engine would reserve no runner-up name
+                // and then produce one (spec §7's per-file settings).
+                let outcome = try await engine.compress(job.url,
+                                                        preset: effectivePreset(for: job.id),
+                                                        to: output, alternateOutput: alternate,
+                                                        rebuildScan: overrides[job.id]?.rebuildScan,
+                                                        mrcReport: { mrcReport = $0 }) { report($0) }
+                state = PassState(outcome: outcome, mrcReport: mrcReport)
+                // `.noGain` deliberately writes nothing, so there is no output file to point at.
+                if case .noGain = outcome.compress {} else {
+                    state.delivered = output
+                    if outcome.runnerUp != nil { state.runnerUpFile = alternate }
+                }
+            } catch let error as CompressError {
+                switch error {
+                case .ghostscriptFailed, .validationFailed:
+                    // The file is readable — gs or validation failed on it. With the OCR verb on the
+                    // row is RESCUED rather than failed (spec §6.5): the compress leg is recorded as
+                    // skipped and the read runs against the original. With the verb off there is
+                    // nothing to rescue it with.
+                    guard verbs.ocr else { throw CompressLegFailure() }
+                    let bytes = fileBytes(job.url) ?? 0
+                    state = PassState(outcome: RowOutcome(originalBytes: bytes, finalBytes: bytes,
+                                                          compress: .skipped(problem: .compressFailed)))
+                case .encrypted, .corrupt, .sameInputOutput:
+                    // `encrypted`/`corrupt`: OCR would fail identically, so the whole job fails.
+                    // `sameInputOutput` is an internal guard and never rescues (spec §6.5's
+                    // CompressError partition).
+                    throw error
+                }
+            }
+        } else {
+            let bytes = fileBytes(job.url) ?? 0
+            state = PassState(outcome: RowOutcome(originalBytes: bytes, finalBytes: bytes))
+        }
+
+        guard verbs.ocr else { return state.result }
+        // The leg boundary. A compress delivery is atomic and complete, so a cancel landing here
+        // keeps and banks it — "no partial output" binds WITHIN a leg, never across them — and the
+        // row records why it is not searchable rather than reporting no OCR leg at all (spec §6.5).
+        if Task.isCancelled {
+            state.outcome.ocr = .cancelled
+            return state.result
+        }
+        return try await runOCRLeg(job, state: state, report: report)
+    }
+
+    /// The OCR leg: recognise ONCE from the ORIGINAL — better input than any compressed variant,
+    /// and the results serve every variant the job delivers (spec §6.4) — then append the layer to
+    /// each of them. Bounded to two files at a time (spec §6.8).
+    private func runOCRLeg(_ job: ToolJob, state initial: PassState,
+                           report: @escaping @Sendable (Double) -> Void) async throws -> JobResult {
+        guard let ocrEngine else { throw MissingOCREngineError() }
+        var state = initial
+        // Whether this leg is the only thing the row will deliver: the compress leg failed (the
+        // rescue), found nothing to gain (its sibling), or was never on. Such a file carries no
+        // compression, so it ships as `<name>-ocr.pdf` — naming it `-compressed` would be the lie
+        // (spec §6.5).
+        let ocrDelivers = state.delivered == nil
+        let destination: URL
+        if ocrDelivers {
+            if state.outcome.compress == nil {
+                // An OCR-only run reserved `<name>-ocr.pdf` at add time already.
+                guard let reserved = reservedDelivery(for: job.id) else {
+                    throw MissingOutputReservationError()
+                }
+                destination = reserved
+            } else {
+                destination = try switchedDelivery(for: job.id)
+            }
+        } else {
+            destination = state.delivered ?? job.url
+        }
+
+        // Two files read at once, whatever the batch width: in-flight 300-DPI rasters plus the
+        // recognised runs they produce are already hundreds of megabytes at width 2 (the bound
+        // `OCRViewModel` pinned, inherited here with its rationale).
+        await acquireOCRSlot()
+        defer { releaseOCRSlot() }
+
+        let recognised: RecognisedDocument
+        do {
+            recognised = try await ocrEngine.recognise(job.url, options: ocrOptions) { report($0) }
+        } catch {
+            if ocrDelivers {
+                // Nothing was delivered and nothing will be: both names go back and the row fails
+                // with the original untouched — the worst case is identical to no rescue at all
+                // (spec §6.5).
+                releaseDelivery(for: job.id)
+                releaseAlternate(for: job.id)
+                throw error
+            }
+            // A read that failed AFTER a compress delivery never fails the job: the file is kept
+            // and banked, and the row carries the caveat (spec §7's degraded family). No
+            // searchability flags are written — a failed read is evidence of nothing, and a
+            // manufactured "not searchable" would be as false as a manufactured "searchable".
+            state.outcome.ocr = error is CancellationError
+                ? .cancelled
+                : .failed(error.localizedDescription)
+            return state.result
+        }
+
+        state.outcome.ocr = recognised.outcome
+        // The Original reference row, and any parked variant that IS the original, are labelled
+        // from the OUTCOME (spec §6.4, amended 2026-07-30): the engine returns `.alreadySearchable`
+        // only after every page passed `pageHasText`, so that is the one evidence-backed claim. The
+        // original itself is never appended to.
+        let originalIsSearchable = recognised.outcome == .alreadySearchable
+        var flags: [VersionCardKey: Bool] = [.originalReference: originalIsSearchable]
+
+        // Nothing to append, for three reasons the row must not confuse: every page already reads,
+        // nothing usable was found, or every recognised run would be destroyed by the WinAnsi text
+        // layer this writer emits — a page of `?` that passes every validation and misrepresents
+        // the user's document.
+        let layerIsUnwritable = Self.layerWouldBeLost(recognised)
+        guard case .added = recognised.outcome, !layerIsUnwritable else {
+            if ocrDelivers {
+                releaseDelivery(for: job.id)
+                releaseAlternate(for: job.id)
+                // `.alreadySearchable`/`.tooFaint` deliver nothing and take the OCR-only pipeline's
+                // own disposition; an unwritable layer had nothing else to hand over, so it fails.
+                guard !layerIsUnwritable else { throw UnwritableTextLayerError() }
+                return state.result
+            }
+            flags[.shipped] = false
+            if let kind = state.outcome.runnerUp?.kind {
+                flags[.runnerUp] = kind == .original ? originalIsSearchable : false
+            }
+            pendingSearchable[job.id] = flags
+            return state.result
+        }
+
+        do {
+            try await appendLayer(recognised, using: ocrEngine,
+                                  reading: ocrDelivers ? job.url : destination,
+                                  writing: destination)
+            flags[.shipped] = true
+            state.delivered = destination
+            // Re-stat: the engine reported the COMPRESS artefact's size and the append has just
+            // grown the file the user actually gets (`RowOutcome.finalBytes`' ownership note).
+            if let bytes = fileBytes(destination) { state.outcome.finalBytes = bytes }
+        } catch {
+            if ocrDelivers {
+                releaseDelivery(for: job.id)
+                releaseAlternate(for: job.id)
+                throw error
+            }
+            // A variant that cannot carry the layer is labelled honestly and is never a job failure
+            // (spec §6.4): the compress artefact stands exactly as it was delivered.
+            flags[.shipped] = false
+        }
+
+        if let runnerUpFile = state.runnerUpFile, let kind = state.outcome.runnerUp?.kind {
+            if kind == .original {
+                flags[.runnerUp] = originalIsSearchable
+            } else {
+                do {
+                    try await appendLayer(recognised, using: ocrEngine,
+                                          reading: runnerUpFile, writing: runnerUpFile)
+                    flags[.runnerUp] = true
+                    // The consent sheet's two cards must be measured at the same moment.
+                    if let bytes = fileBytes(runnerUpFile) { state.outcome.runnerUp?.bytes = bytes }
+                } catch {
+                    flags[.runnerUp] = false
+                }
+            }
+        }
+        pendingSearchable[job.id] = flags
+        return state.result
+    }
+
+    /// Append one variant's copy of the layer. The engine only ever READS `source`, so the result
+    /// goes to a temp beside the destination and is landed atomically — replacing the variant when
+    /// it is being enriched in place, or arriving as a fresh file when this leg IS the delivery.
+    private func appendLayer(_ recognised: RecognisedDocument, using ocrEngine: any OCRing,
+                             reading source: URL, writing destination: URL) async throws {
+        let temp = destination.deletingLastPathComponent()
+            .appendingPathComponent(".toolbox-ocr-\(UUID().uuidString).pdf")
+        var landed = false
+        defer { if !landed { try? FileManager.default.removeItem(at: temp) } }
+        // Off the cooperative pool (§6.1): the append writes the whole file and reads it back to
+        // validate, and parking a pool thread here would starve every other job in the batch.
+        try await offloadBlocking { try ocrEngine.append(recognised, to: source, output: temp) }
+        if source == destination {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temp)
+        } else {
+            try FileManager.default.moveItem(at: temp, to: destination)
+        }
+        landed = true
+    }
+
+    /// Give back the `-compressed` name and take `<name>-ocr.pdf` instead — the ledger's ONE mid-run
+    /// mutation (spec §6.5), through the same main-actor allocator every other reservation uses, so
+    /// the rescue's name cannot collide with a concurrent add's.
+    private func switchedDelivery(for id: ToolJob.ID) throws -> URL {
+        guard let url = reserveDelivery(suffix: "ocr", for: id) else {
+            throw MissingOutputReservationError()
+        }
+        return url
+    }
+
+    /// True when EVERY recognised run would be destroyed by the WinAnsi encoding `PDFWriter`'s text
+    /// layer uses — a CJK, Cyrillic or Greek document, whose layer would land as a page of `?` that
+    /// passes every validation while misrepresenting the user's text. Partial loss is deliberately
+    /// NOT this: a mixed Latin/CJK page keeps its Latin runs honest, and dropping the layer there
+    /// would cost the user real text.
+    private static func layerWouldBeLost(_ recognised: RecognisedDocument) -> Bool {
+        let runs = recognised.pageText.values.flatMap { $0 }.filter { !$0.text.isEmpty }
+        guard !runs.isEmpty else { return false }
+        return runs.allSatisfy { PDFWriter.winAnsiWouldLose($0.text) }
+    }
+
+    /// A file's size on disk, or nil when it cannot be measured — never a fabricated zero, which
+    /// would read as "this file is empty" on a row and flip `RowOutcome.grew` on its own.
+    private func fileBytes(_ url: URL) -> Int? {
+        try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+    }
+
+    /// The OCR leg's two slots (spec §6.8). Main-actor state throughout — every acquire and release
+    /// happens on this actor — so the count needs no lock.
+    private static let ocrConcurrency = 2
+    private var ocrLegsInFlight = 0
+    private var ocrLegWaiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Take a slot, suspending until one frees. The wait is deliberately not cancellable: every
+    /// holder releases on unwind, so the queue always drains, and a leg resumed after a cancel
+    /// simply observes it at its own next checkpoint.
+    private func acquireOCRSlot() async {
+        if ocrLegsInFlight < Self.ocrConcurrency {
+            ocrLegsInFlight += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            ocrLegWaiters.append(continuation)
+        }
+    }
+
+    /// Hand the slot straight to the next waiter rather than decrementing and re-incrementing — the
+    /// gap between the two would let a third leg in ahead of one already queued.
+    private func releaseOCRSlot() {
+        if ocrLegWaiters.isEmpty {
+            ocrLegsInFlight -= 1
+        } else {
+            ocrLegWaiters.removeFirst().resume()
+        }
     }
 
     // MARK: the direct-engine recompress (R8/R10–R13)
@@ -1164,6 +1462,7 @@ final class QueueViewModel: ObservableObject {
         // `recompressErrors` is cleared only at the start of the next run and on a preset change,
         // neither of which fires when a row is simply removed.
         pendingPresets = pendingPresets.filter { liveIDs.contains($0.key) }
+        pendingSearchable = pendingSearchable.filter { liveIDs.contains($0.key) }
         // The reservation ledger is queue-lifetime, so this sweep IS its release path (spec §6.5):
         // a row cleared or removed gives its names straight back, and re-adding a same-named file
         // is not pushed onto `-compressed-1.pdf` by an entry nothing owns any more.
@@ -1377,6 +1676,104 @@ final class QueueViewModel: ObservableObject {
     func displayedSizes(for job: ToolJob) -> (before: Int, after: Int)? {
         guard let row = versions(for: job), let shipped = row.shipped else { return nil }
         return (row.originalBytes, shipped.bytes)
+    }
+
+    /// The versions popover's radio list (design screen 07), one entry point for all four display
+    /// keys. The partition is total, and each arm owns its own guarding:
+    ///
+    /// - `.shipped` is already in use — no guard, no insert, no state change;
+    /// - `.runnerUp`/`.previous` delegate to `useVersion`, which checks AND sets `switchesInFlight`
+    ///   in its own synchronous prefix. Taking that guard here as well would make every delegated
+    ///   switch a silent no-op: a re-entrancy flag set twice is not double safety;
+    /// - `.originalReference` is this type's own sequence, and takes the guard itself — no
+    ///   `rerunForSwitch` hand-off exists on that path, so nothing else would ever clear it.
+    func useCard(_ key: VersionCardKey, for job: ToolJob) async {
+        switch key {
+        case .shipped: return
+        case .runnerUp: await useVersion(.runnerUp, for: job)
+        case .previous: await useVersion(.previous, for: job)
+        case .originalReference: await useOriginalReference(for: job)
+        }
+    }
+
+    /// Switch the row back to its untouched input (design screen 07 makes the Original row a radio
+    /// target). The original is COPIED — never moved, never appended to, never parked: it stays
+    /// exactly where the user keeps it (spec §6.4).
+    ///
+    /// The copy is landed through `RunnerUpStore.promote`, the recompress commit's own primitive,
+    /// rather than a bespoke park-then-copy: promote parks the shipped file FIRST and restores it on
+    /// every failure, whereas the naive order lets `setSlot`'s discard delete the displaced previous
+    /// version before the copy is even attempted.
+    private func useOriginalReference(for job: ToolJob) async {
+        guard !isRunning else { return }
+        // Checked and set in this synchronous prefix, before the first await — a second tap must
+        // observe the guard already taken.
+        guard !switchesInFlight.contains(job.id) else { return }
+        guard let row = versions(for: job),
+              let shipped = row.shipped,
+              let originalURL = row.originalURL,
+              // Already in use: a second switch would list the original twice and park it over the
+              // compressed version the first switch preserved.
+              shipped.variant != .original else { return }
+
+        switchesInFlight.insert(job.id)
+        defer { switchesInFlight.remove(job.id) }
+
+        let temp = shipped.url.deletingLastPathComponent()
+            .appendingPathComponent(".toolbox-original-\(UUID().uuidString).pdf")
+        do {
+            try FileManager.default.copyItem(at: originalURL, to: temp)
+        } catch {
+            // Nothing has moved; record nothing. An explicit button press never fails silently
+            // (R12), and the version they still have is named so the message is actionable.
+            recompressErrors[job.id] = "Switch failed — kept your "
+                                     + "\(shipped.preset.title) version. Try again."
+            publishJobs()
+            return
+        }
+
+        var reserved = reservedKeys()
+        let parked = versionStore.reservePreviousURL(for: job.url, reserving: &reserved)
+        do {
+            try await store.promote(fresh: temp, to: shipped.url, parking: parked)
+        } catch let stranded as RunnerUpStore.SwitchError {
+            // MUST precede the generic catch: the shipped file survives under a hidden dot-name
+            // nothing else looks for, so the row states where the file is rather than reporting a
+            // switch that quietly cost the user their version.
+            try? FileManager.default.removeItem(at: temp)
+            reportSwitchFailure(job.id, stranded.localizedDescription)
+            return
+        } catch {
+            // The store's contract: any other throw leaves the shipped file exactly as it was, so
+            // there is nothing to unwind and nothing to record.
+            try? FileManager.default.removeItem(at: temp)
+            recompressErrors[job.id] = "Switch failed — kept your "
+                                     + "\(shipped.preset.title) version. Try again."
+            publishJobs()
+            return
+        }
+
+        // `promote` reaches the cache slot on a best-effort third step, so a file may not exist at
+        // `parked` — an already-designed-for state (`useVersion`'s "no longer available" path).
+        // Replacing the slot discards whatever the old occupant held (R14).
+        versionStore.setSlot(.previous,
+                             to: FileVersion(url: parked, bytes: shipped.bytes,
+                                             preset: shipped.preset, variant: shipped.variant),
+                             for: job.id)
+        versionStore.setShipped(FileVersion(url: shipped.url, bytes: row.originalBytes,
+                                            preset: row.rowPreset, variant: .original),
+                                for: job.id)
+        // The flags describe the BYTES, so they travel with them — but ONLY when the row has flags
+        // at all: on a compress-only row a `?? false` default here would manufacture a claim the
+        // row has no evidence for in either direction (spec §6.4).
+        if !row.searchableByCard.isEmpty {
+            versionStore.setSearchable(row.searchableByCard[.shipped] ?? false,
+                                       card: .previous, for: job.id)
+            versionStore.setSearchable(row.searchableByCard[.originalReference] ?? false,
+                                       card: .shipped, for: job.id)
+        }
+        recompressErrors[job.id] = nil
+        publishJobs()
     }
 
     /// The popover's switch, and its "Use this" per card. Instant when the parked file still
@@ -1595,6 +1992,30 @@ final class QueueViewModel: ObservableObject {
         }
         return true
     }
+}
+
+/// A compress-specific failure (`ghostscriptFailed`/`validationFailed`) on a row whose OCR verb is
+/// OFF: there is no second leg to rescue it with, so the row fails (spec §6.5). The handoff has no
+/// string for this state — a recorded copy divergence owned by the queue.
+struct CompressLegFailure: LocalizedError {
+    var errorDescription: String? { "Couldn't be compressed" }
+}
+
+/// Every recognised run would be destroyed by `PDFWriter`'s WinAnsi text layer, and this row had
+/// nothing but that layer to deliver. Skipping the append is the honest answer everywhere (spec
+/// §6.4's label rule); with no compress artefact to fall back on there is simply nothing to hand
+/// over, so the row fails saying why.
+struct UnwritableTextLayerError: LocalizedError {
+    var errorDescription: String? {
+        "The text in this file uses characters Toolbox can't add to a PDF yet."
+    }
+}
+
+/// The OCR verb was on for a row but no OCR engine was injected. Only reachable through the test
+/// seam — production always resolves one — and the row fails loudly rather than silently dropping
+/// a verb the user asked for.
+struct MissingOCREngineError: LocalizedError {
+    var errorDescription: String? { "The text reader is unavailable." }
 }
 
 /// The compression capability `QueueViewModel` depends on — a seam so tests can stub the engine

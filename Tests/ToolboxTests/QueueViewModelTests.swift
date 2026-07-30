@@ -302,23 +302,26 @@ final class QueueViewModelTests: XCTestCase {
         var versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.cards.first?.key, .shipped)
         XCTAssertEqual(versions.cards.first?.version.variant, .mrc)
-        XCTAssertEqual(versions.capsuleTitle, "2 versions")
+        // Three from F5a on: the batch's commit records the untouched input, so the popover's
+        // always-present Original reference row joins the pair (spec §6.4).
+        XCTAssertEqual(versions.capsuleTitle, "3 versions")
 
         await model.useVersion(.runnerUp, for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.cards.first?.version.variant, .plain,
                        "the parked version is a real gs output, not the untouched input")
-        XCTAssertEqual(versions.cards.last?.version.variant, .mrc,
+        // The runner-up card BY KEY, not `cards.last`: the reference row is appended last now.
+        XCTAssertEqual(versions.cards.first(where: { $0.key == .runnerUp })?.version.variant, .mrc,
                        "and the heavy version is now the parked one")
-        XCTAssertEqual(versions.capsuleTitle, "2 versions")
+        XCTAssertEqual(versions.capsuleTitle, "3 versions")
 
         await model.useVersion(.runnerUp, for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
         XCTAssertEqual(versions.cards.first?.version.variant, .mrc,
                        "switching back restores the heavy version to the shipped card")
-        XCTAssertEqual(versions.capsuleTitle, "2 versions")
+        XCTAssertEqual(versions.capsuleTitle, "3 versions")
     }
 
     /// When the runner-up is the untouched original (R6/R7 field fix), the popover must surface it
@@ -1513,8 +1516,12 @@ final class QueueViewModelTests: XCTestCase {
 
         let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
         XCTAssertNil(row.runnerUp, "the re-run shipped plain gs, so there is no runner-up")
-        XCTAssertEqual(row.count, 2, "current + previous still draws the capsule")
-        XCTAssertEqual(row.capsuleTitle, "2 versions")
+        // Current + previous + the Original reference row F5a's commit records (spec §6.4). The
+        // capsule's GATE is still the parked slot, not the card count — this row draws one because
+        // it holds a `previous`, and a row with no parked version draws none however many cards
+        // the popover would list.
+        XCTAssertEqual(row.count, 3, "current + previous + the original still draws the capsule")
+        XCTAssertEqual(row.capsuleTitle, "3 versions")
     }
 
     // MARK: the armed banner's arithmetic (R4)
