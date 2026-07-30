@@ -105,7 +105,7 @@ struct RowOutcome: Equatable {
 
 /// A job's lifecycle state. `ToolQueue` owns the `.queued`/`.running`/`.done`/`.failed`
 /// transitions; `.analysing` is a view-model-only overlay — `ToolQueue` never produces it.
-/// `CompressViewModel.publishJobs()` layers it onto a job that is still `.queued` in the queue
+/// `QueueViewModel.publishJobs()` layers it onto a job that is still `.queued` in the queue
 /// while a size estimate is in flight.
 enum JobState: Equatable {
     case queued

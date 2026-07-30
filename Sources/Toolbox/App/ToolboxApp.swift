@@ -60,7 +60,7 @@ struct ToolboxApp: App {
 
     var body: some Scene {
         // A single `Window`, not a `WindowGroup`. The group hands out File ▸ New Window (⌘N) for
-        // free, and a second window builds a second `RootView` — a second `CompressViewModel`
+        // free, and a second window builds a second `RootView` — a second `QueueViewModel`
         // sweeping the live runner-up cache, and a second output-name allocator handing out a
         // path the first window has already reserved but not yet written. One window is the same
         // "one allocator, one cache" invariant the instance guard above enforces between copies.

@@ -9,11 +9,11 @@ import Combine
 import XCTest
 @testable import Toolbox
 
-/// Drives `CompressViewModel` exactly as the view does — the full batch/preset/estimate/
+/// Drives `QueueViewModel` exactly as the view does — the full batch/preset/estimate/
 /// output-folder GUI path (Track C, Task C.2), end to end, with no UI harness involved (the
 /// view itself has no logic beyond calling into this model).
 @MainActor
-final class CompressViewModelTests: XCTestCase {
+final class QueueViewModelTests: XCTestCase {
 
     /// `compress()` reserves an output name for every job it snapshots, but several MainActor hops
     /// separate that snapshot from the queue launching anything. A file added in that window would
@@ -22,7 +22,7 @@ final class CompressViewModelTests: XCTestCase {
     /// the "+ Add" button and the drop handler call `add` unconditionally, so the window is
     /// reachable by an ordinary user dropping a file just as a batch starts.
     func testAddIsIgnoredWhileABatchIsRunning() async throws {
-        let model = CompressViewModel()
+        let model = QueueViewModel()
         XCTAssertNil(model.loadError)
 
         let inputs = [try Fixtures.imagePDF(), try Fixtures.textImagePDF()]
@@ -45,7 +45,7 @@ final class CompressViewModelTests: XCTestCase {
     }
 
     func testThreeFileSyntheticBatchCompressesEndToEnd() async throws {
-        let model = CompressViewModel()
+        let model = QueueViewModel()
         XCTAssertNil(model.loadError, "Ghostscript should resolve from the test host bundle")
 
         // Three distinct basenames: a shared output folder collision-avoidance race between
@@ -118,7 +118,7 @@ final class CompressViewModelTests: XCTestCase {
     }
 
     func testChangingPresetReestimatesQueuedJobs() async throws {
-        let model = CompressViewModel()
+        let model = QueueViewModel()
         let input = try Fixtures.imagePDF()
         model.add([input])
 
@@ -1821,7 +1821,7 @@ final class CompressViewModelTests: XCTestCase {
     private struct HeavyEnv {
         static let heavyBytes = 1200
         static let normalBytes = 3400
-        let model: CompressViewModel
+        let model: QueueViewModel
         let stub: StubEngine
         let input: URL
         let storeRoot: URL
@@ -1847,7 +1847,7 @@ final class CompressViewModelTests: XCTestCase {
             let estimator = contentType.map {
                 CompressEstimator(analyser: FixedAnalyser(contentType: $0))
             } ?? CompressEstimator()
-            model = CompressViewModel(engine: stub, estimator: estimator,
+            model = QueueViewModel(engine: stub, estimator: estimator,
                                       store: RunnerUpStore(rootOverride: storeRoot))
             model.outputFolder = outputFolder
         }
@@ -1861,7 +1861,7 @@ final class CompressViewModelTests: XCTestCase {
         }
 
         /// The single job once it has reached a done state carrying the heavy pair.
-        func doneHeavyJob(_ model: CompressViewModel) -> ToolJob? {
+        func doneHeavyJob(_ model: QueueViewModel) -> ToolJob? {
             model.jobs.first {
                 if case .done(let outcome) = $0.state {
                     return outcome.shippedVariant == .mrc && outcome.runnerUp != nil

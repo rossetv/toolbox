@@ -9,7 +9,7 @@ import Foundation
 
 /// Owns the app-managed cache directory holding losing compression versions (spec R15 — the
 /// documented exception to "no persisted app state", bounded to crash-leftover sweep).
-/// @MainActor: owned and driven by CompressViewModel.
+/// @MainActor: owned and driven by QueueViewModel.
 @MainActor
 final class RunnerUpStore {
     private let root: URL

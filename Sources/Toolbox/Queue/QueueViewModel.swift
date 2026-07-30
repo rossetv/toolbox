@@ -20,7 +20,7 @@ import Foundation
 /// estimate is in flight) merged in — so the estimate/analysing bookkeeping stays entirely on
 /// this side of the shared `ToolQueue` contract.
 @MainActor
-final class CompressViewModel: ObservableObject {
+final class QueueViewModel: ObservableObject {
     @Published var preset: CompressPreset = .balanced {
         didSet {
             guard preset != oldValue else { return }
@@ -1205,7 +1205,7 @@ final class CompressViewModel: ObservableObject {
     }
 }
 
-/// The compression capability `CompressViewModel` depends on — a seam so tests can stub the engine
+/// The compression capability `QueueViewModel` depends on — a seam so tests can stub the engine
 /// without invoking the real MRC pipeline. `CompressEngine` is the sole production implementation.
 /// `Sendable` because the job body that calls it is handed to `ToolQueue`'s task group.
 protocol Compressing: Sendable {

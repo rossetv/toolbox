@@ -10,7 +10,7 @@ import Foundation
 
 /// Drives the OCR tool: owns the shared `ToolQueue`, the OCR options and the `OCREngine`, and
 /// mirrors the queue's jobs so the view re-renders on state changes (the same shape as
-/// `CompressViewModel`).
+/// `QueueViewModel`).
 @MainActor
 final class OCRViewModel: ObservableObject {
     @Published var options = OCROptions()
@@ -25,7 +25,7 @@ final class OCRViewModel: ObservableObject {
         // Subscribe synchronously: both ToolQueue and this view model are @MainActor, so a
         // `.receive(on: RunLoop.main)` hop is not only unnecessary but hazardous — Combine replays
         // the current value at subscription and the delayed hop can deliver that stale snapshot
-        // after a same-tick mutation, and it adds a one-runloop-tick lag. (Matches CompressViewModel.)
+        // after a same-tick mutation, and it adds a one-runloop-tick lag. (Matches QueueViewModel.)
         cancellable = queue.$jobs.sink { [weak self] in self?.jobs = $0 }
     }
 
@@ -68,7 +68,7 @@ final class OCRViewModel: ObservableObject {
         // Allocate every output name up front, serially, before the concurrent run — two inputs
         // sharing a basename would otherwise both claim `<name>-ocr.pdf` and the second job's
         // atomic rename would fail (a purely on-disk check races under concurrency). Matches
-        // CompressViewModel; each job then looks up its pre-reserved, unique destination.
+        // QueueViewModel; each job then looks up its pre-reserved, unique destination.
         var reserved = Set<String>()
         var outputs: [ToolJob.ID: URL] = [:]
         for job in queue.jobs {
@@ -101,7 +101,7 @@ final class OCRViewModel: ObservableObject {
     }
 
     /// Stop the batch: queued files stay queued and in-flight recognition is interrupted at its
-    /// next page boundary, leaving no output (matches `CompressViewModel`). Without this a
+    /// next page boundary, leaving no output (matches `QueueViewModel`). Without this a
     /// thousand-page scan could only be stopped by force-quitting the app.
     func cancel() {
         queue.cancel()

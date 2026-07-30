@@ -17,7 +17,7 @@ struct RootView: View {
     // The tools' state lives HERE, above the switch that rebuilds the detail pane, so
     // switching tools never destroys a queue, a finished batch, or a running job's cancel
     // handle (review M9, reproduced live: switch to OCR and back emptied the Compress list).
-    @StateObject private var compressModel = CompressViewModel()
+    @StateObject private var compressModel = QueueViewModel()
     @StateObject private var ocrModel = OCRViewModel()
 
     var body: some View {

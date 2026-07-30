@@ -141,7 +141,7 @@ struct CompressEstimator {
     static let maxConcurrentEstimates = SystemInfo.performanceCoreCount
 
     /// The bounded pool every analysis runs on. Static so the bound holds across estimator
-    /// instances (each `CompressViewModel` builds its own).
+    /// instances (each `QueueViewModel` builds its own).
     private static let analysisQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = maxConcurrentEstimates

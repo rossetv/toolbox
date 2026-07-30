@@ -17,7 +17,7 @@ struct CompressView: View {
     /// Owned by `RootView`, not this view: the detail pane is rebuilt on every tool switch, and
     /// a view-owned `@StateObject` died with it — taking the finished batch, the runner-up
     /// references and any in-flight run's cancel handle along (review M9, reproduced live).
-    @ObservedObject var model: CompressViewModel
+    @ObservedObject var model: QueueViewModel
     @State private var isTargeted = false
     @State private var heavyPopoverJobID: ToolJob.ID?
     @State private var quickLookURL: URL?
@@ -232,7 +232,7 @@ struct CompressView: View {
     private var savedHeadline: String { "Saved \(byteString(savedBytes))" }
 
     /// Both fixed regions carry the story, because armed rows can be scrolled out of sight (R4).
-    private func armedHeadline(_ summary: CompressViewModel.ArmedSummary) -> String {
+    private func armedHeadline(_ summary: QueueViewModel.ArmedSummary) -> String {
         if summary.queuedCount > 0 {
             return "Will compress \(summary.queuedCount) and recompress \(summary.armedCount) PDFs"
         }
@@ -242,7 +242,7 @@ struct CompressView: View {
 
     /// Summed over armed rows with a confident prediction only; nil when none has one, so the
     /// banner shows no detail line rather than a fabricated zero (R4).
-    private func armedDetail(_ summary: CompressViewModel.ArmedSummary) -> String? {
+    private func armedDetail(_ summary: QueueViewModel.ArmedSummary) -> String? {
         guard let extra = summary.extraSaving else { return nil }
         return extra > 0 ? "\u{2248} saves another \(byteString(extra))"
                          : "files may grow for the extra quality"
@@ -604,13 +604,13 @@ struct CompressView: View {
 }
 
 #Preview("Compress – Light") {
-    CompressView(model: CompressViewModel())
+    CompressView(model: QueueViewModel())
         .frame(width: 720, height: 520)
         .preferredColorScheme(.light)
 }
 
 #Preview("Compress – Dark") {
-    CompressView(model: CompressViewModel())
+    CompressView(model: QueueViewModel())
         .frame(width: 720, height: 520)
         .preferredColorScheme(.dark)
 }
