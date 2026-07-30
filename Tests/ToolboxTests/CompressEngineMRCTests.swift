@@ -169,11 +169,19 @@ final class CompressEngineMRCTests: XCTestCase {
 /// so the two competing sizes are one measured value and one fixed value, never a race.
 final class CompressEngineRoutingTests: XCTestCase {
 
-    /// Captures the outcome of the single side effect a routing test cares about: whether the MRC
-    /// report callback fired (⟺ the hybrid won and was shipped) and, if so, what it carried.
+    /// Captures the side effect a routing test cares about: whether the MRC report callback fired
+    /// (⟺ a hybrid was actually built and weighed) and what it carried. A COUNT, not a flag: the
+    /// report has two firing sites — the winner's delivery and the loss path — and "fired exactly
+    /// once" is the invariant a flag would hide.
     private final class ReportSpy {
-        var fired = false
-        var report: MRCDocumentReport?
+        private(set) var count = 0
+        private(set) var report: MRCDocumentReport?
+        var fired: Bool { count > 0 }
+
+        func record(_ report: MRCDocumentReport) {
+            count += 1
+            self.report = report
+        }
     }
 
     // The gs stub (`TestSupport.BytesRunner`) and the small-valid-PDF builder
@@ -185,6 +193,21 @@ final class CompressEngineRoutingTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return (dir.canonical.appendingPathComponent("out.pdf"),
                 dir.canonical.appendingPathComponent("runner-up.pdf"))
+    }
+
+    private func makeWorkDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mrc-routing-work-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.canonical
+    }
+
+    /// A verifier that passes every page. Paired with `forceEligible` — `CompressEngine`'s other
+    /// documented test-only seam — it keeps a document on the MRC path that the classifier envelope
+    /// or the smear gate would otherwise decline, so a test about a variant's SIZE or VALIDITY
+    /// cannot quietly degrade into a test about eligibility.
+    private static let passingVerifier: @Sendable (MRCVerifier.Score) -> MRCVerifier.Score = { _ in
+        MRCVerifier.Score(normalisedError: 0, pass: true)
     }
 
     /// The hybrid beats a gs candidate that is itself a valid (smaller-than-input) compression:
@@ -202,7 +225,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
+                                                mrcReport: { spy.record($0) }) { _ in }
 
         guard case let .compressed(before, after) = outcome.compress,
               outcome.shippedVariant == .mrc,
@@ -229,11 +252,14 @@ final class CompressEngineRoutingTests: XCTestCase {
         }
     }
 
-    /// The hybrid loses to a tiny gs candidate: the gs output ships as a plain `.compressed`, no
-    /// runner-up file is ever written (R7 — `alternateOutput` untouched). The MRC attempt's report
-    /// still fires on this loss path — it is the spec §6 debugging record for the attempt
-    /// regardless of the gate outcome. gs is stubbed below the real MRC output's size.
-    func testHybridLargerThanGsShipsGsOutput() async throws {
+    /// **The R7-asymmetry reversal** (spec §5's change table; supersedes the old
+    /// `testHybridLargerThanGsShipsGsOutput`, which asserted that a losing hybrid was discarded).
+    /// The hybrid loses to a tiny gs candidate, so gs ships — and the LOSING HYBRID is now retained
+    /// as the runner-up, exactly as the losing gs output is when the hybrid wins. Which variant won
+    /// the gate decides only what SHIPS; retention is symmetric, because the consent sheet is about
+    /// the look of the page, not only its bytes. The attempt's report still fires on this path — it
+    /// is the spec §6 debugging record — and exactly once.
+    func testHybridLostGateStillWritesRunnerUp() async throws {
         let input = try Fixtures.colourTextScanPDF(pages: 1)
         let tiny = try TestSupport.tinyValidPDF(matching: input)
         let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: tiny))
@@ -242,17 +268,175 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
+                                                mrcReport: { spy.record($0) }) { _ in }
 
-        guard case let .compressed(_, after) = outcome.compress else {
-            return XCTFail("expected a plain compressed leg when gs wins, got \(outcome)")
+        guard case let .compressed(before, after) = outcome.compress,
+              let retained = outcome.runnerUp else {
+            return XCTFail("expected a gs winner with the losing hybrid retained, got \(outcome)")
         }
         XCTAssertEqual(after, tiny.count, "the shipped output is the gs candidate")
+        XCTAssertEqual(outcome.shippedVariant, .plain, "gs won the gate, so the plain variant shipped")
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
-                       "no runner-up is written when the hybrid loses (R7)")
-        XCTAssertTrue(spy.fired, "the report must still fire on a hybrid loss — it's the debugging record")
+        XCTAssertEqual(TestSupport.fileSize(output), after, "the shipped file is the gs candidate")
+
+        XCTAssertEqual(retained.kind, .mrc, "the PARKED variant is the hybrid, not the winner")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: alternate.path),
+                      "the losing hybrid must be parked as the runner-up (spec §5's R7 reversal)")
+        XCTAssertEqual(TestSupport.fileSize(alternate), retained.bytes,
+                       "the runner-up file holds the hybrid's own bytes")
+        XCTAssertGreaterThan(retained.bytes, after, "the retained hybrid is the one that LOST on size")
+        XCTAssertLessThan(retained.bytes, before,
+                          "a retained variant is always smaller than the input (spec §6.3)")
+
+        XCTAssertEqual(spy.count, 1, "the report fires exactly once, on the loss path")
         XCTAssertEqual(spy.report?.verdicts.count, 1)
+    }
+
+    /// The other half of the retention gate: a hybrid that loses AND fails validation is retained by
+    /// nothing — no file, no descriptor. Validation runs on the loser in the fall-through branch (it
+    /// is never hoisted above the size gate — that would cost every MRC document a page-render pass),
+    /// and this is what proves it runs at all. The fixture's second page is 5 pt across, so the
+    /// rebuild's ~20 px raster genuinely loses its content and the REAL `OutputValidator` rejects the
+    /// composed hybrid; the preconditions below pin both facts the assertion depends on — the hybrid
+    /// is BUILT and is smaller than the input (so the withhold rule is not what stops it), and it is
+    /// invalid.
+    func testInvalidHybridLostGateWritesNoRunnerUp() async throws {
+        let input = try Fixtures.microPageColourScanPDF()
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: try TestSupport.tinyValidPDF(matching: input)),
+                                    forceEligible: true, verifierOverride: Self.passingVerifier)
+        let (output, alternate) = try makeOutputURLs()
+        let spy = ReportSpy()
+
+        let composed = try await engine.mrcCompress(input, preset: .balanced, to: try makeWorkDir(),
+                                                    forceEligible: true,
+                                                    verifierOverride: Self.passingVerifier) { _ in }
+        let probe = try XCTUnwrap(composed, "precondition: this document must compose a hybrid at all")
+        XCTAssertLessThan(probe.bytes, TestSupport.fileSize(input),
+                          "precondition: the hybrid is smaller than the input, so only validation can stop it")
+        XCTAssertFalse(try OutputValidator().validate(input: input, output: probe.url, samplePages: 3),
+                       "precondition: the composed hybrid must be one the validator rejects")
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output,
+                                                alternateOutput: alternate,
+                                                mrcReport: { spy.record($0) }) { _ in }
+
+        guard case .compressed = outcome.compress else {
+            return XCTFail("expected the gs candidate to ship, got \(outcome)")
+        }
+        XCTAssertEqual(spy.count, 1, "a hybrid was built and lost — the report is its record")
+        XCTAssertNil(outcome.runnerUp, "an invalid variant is never offered as a version to switch to")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
+                       "an invalid hybrid must leave no runner-up file behind")
+    }
+
+    /// Spec §6.3's withhold rule: a would-be runner-up that is a COMPRESS variant ≥ the input is
+    /// withheld — no file, no descriptor — because a card advertising a version bigger than what the
+    /// user already has is a regression, whichever way they switch. (The untouched-original park is
+    /// NOT a compress artefact and is retained; that is the sibling test above.)
+    ///
+    /// The fixture's pages share one image XObject, so the input stays flat while the rebuild pays
+    /// its cost per page — the only dependable way to make a real hybrid exceed its own input. The
+    /// gs candidate is tiny and valid, so the delivery reaches the retention site; the report firing
+    /// exactly once is what proves a hybrid was genuinely built and weighed, so a future fixture
+    /// change that stopped producing one could not turn this into a vacuous pass.
+    func testRunnerUpAtOrAboveInputWithheld() async throws {
+        let input = try Fixtures.sharedImageColourScanPDF(pages: 3)
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: try TestSupport.tinyValidPDF(matching: input)),
+                                    forceEligible: true, verifierOverride: Self.passingVerifier)
+        let (output, alternate) = try makeOutputURLs()
+        let spy = ReportSpy()
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output,
+                                                alternateOutput: alternate,
+                                                mrcReport: { spy.record($0) }) { _ in }
+
+        guard case .compressed = outcome.compress else {
+            return XCTFail("expected the gs candidate to ship, got \(outcome)")
+        }
+        XCTAssertEqual(spy.count, 1, "a hybrid was built and lost — the report is its record")
+        XCTAssertNil(outcome.runnerUp,
+                     "a compress variant ≥ the input is withheld, never offered (spec §6.3)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path),
+                       "a withheld variant must leave no runner-up file behind")
+    }
+
+    /// Per-file opt-out (spec §7): `rebuildScan: false` skips the MRC leg on a document that would
+    /// otherwise take it and win. The gs candidate is the one from
+    /// `testHybridSmallerThanGsShipsHybridWithRunnerUp` — a byte under the input, which that test
+    /// proves the hybrid beats — so a report that never fires is proof the leg was never attempted
+    /// rather than proof it lost.
+    func testRebuildScanFalseSkipsMRCOnScanColour() async throws {
+        let input = try Fixtures.colourTextScanPDF(pages: 1)
+        let inputBytes = try Data(contentsOf: input)
+        let gsBytes = inputBytes.dropLast(1)
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: gsBytes))
+        let (output, alternate) = try makeOutputURLs()
+        let spy = ReportSpy()
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output,
+                                                alternateOutput: alternate, rebuildScan: false,
+                                                mrcReport: { spy.record($0) }) { _ in }
+
+        guard case let .compressed(_, after) = outcome.compress else {
+            return XCTFail("expected the gs output to ship, got \(outcome)")
+        }
+        XCTAssertEqual(spy.count, 0, "opting out must not attempt the hybrid at all")
+        XCTAssertEqual(after, gsBytes.count, "the shipped output is the gs candidate")
+        XCTAssertEqual(outcome.shippedVariant, .plain)
+        XCTAssertNil(outcome.runnerUp, "nothing was rebuilt, so there is nothing to park")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path))
+    }
+
+    /// Per-file opt-IN never overrides eligibility (spec §7, MRC R2): `rebuildScan: true` on a
+    /// born-digital document must not push it through the rebuild — the toggle can only narrow the
+    /// engine's own decision, never widen it past the classification that protects text and vector
+    /// content from being rasterised.
+    func testRebuildScanTrueDoesNotForceIneligible() async throws {
+        let input = try Fixtures.bornDigitalPDF(pages: 1)
+        XCTAssertNotEqual(try PDFService().classify(input), .scanColour,
+                          "precondition: this document is not MRC-eligible by classification")
+        let gsBytes = try TestSupport.tinyValidPDF(matching: input)
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: gsBytes))
+        let (output, alternate) = try makeOutputURLs()
+        let spy = ReportSpy()
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output,
+                                                alternateOutput: alternate, rebuildScan: true,
+                                                mrcReport: { spy.record($0) }) { _ in }
+
+        guard case let .compressed(_, after) = outcome.compress else {
+            return XCTFail("expected a plain Rung-1 delivery, got \(outcome)")
+        }
+        XCTAssertEqual(spy.count, 0, "opting in must never reach the hybrid on an ineligible document")
+        XCTAssertEqual(after, gsBytes.count, "the shipped output is the gs candidate")
+        XCTAssertEqual(outcome.shippedVariant, .plain)
+        XCTAssertNil(outcome.runnerUp)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path))
+    }
+
+    /// D3 survives the override (spec §7): `rebuildScan: true` at `.maximumQuality` still never
+    /// rebuilds. The gs candidate is a byte under the input — the stub the hybrid is proven to beat
+    /// — so this fails loudly if the preset guard ever moves below the override.
+    func testRebuildScanIgnoredAtMaximumQuality() async throws {
+        let input = try Fixtures.colourTextScanPDF(pages: 1)
+        let inputBytes = try Data(contentsOf: input)
+        let gsBytes = inputBytes.dropLast(1)
+        let engine = CompressEngine(runner: TestSupport.BytesRunner(bytes: gsBytes))
+        let (output, alternate) = try makeOutputURLs()
+        let spy = ReportSpy()
+
+        let outcome = try await engine.compress(input, preset: .maximumQuality, to: output,
+                                                alternateOutput: alternate, rebuildScan: true,
+                                                mrcReport: { spy.record($0) }) { _ in }
+
+        guard case let .compressed(_, after) = outcome.compress else {
+            return XCTFail("expected the gs output to ship, got \(outcome)")
+        }
+        XCTAssertEqual(spy.count, 0, "maximumQuality must never attempt a hybrid, opt-in or not (D3)")
+        XCTAssertEqual(after, gsBytes.count)
+        XCTAssertEqual(outcome.shippedVariant, .plain)
+        XCTAssertNil(outcome.runnerUp)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: alternate.path))
     }
 
     /// R6/R7: the hybrid beats gs, but gs's own candidate is *not* itself smaller than the input
@@ -270,7 +454,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { spy.fired = true; spy.report = $0 }) { _ in }
+                                                mrcReport: { spy.record($0) }) { _ in }
 
         guard case let .compressed(before, after) = outcome.compress,
               outcome.shippedVariant == .mrc,
@@ -300,7 +484,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .maximumQuality, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { _ in spy.fired = true }) { _ in }
+                                                mrcReport: { spy.record($0) }) { _ in }
 
         XCTAssertFalse(spy.fired, "maximumQuality must never attempt or ship a hybrid (D3)")
         XCTAssertNotEqual(outcome.shippedVariant, .mrc,
@@ -322,7 +506,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { _ in spy.fired = true }) { _ in }
+                                                mrcReport: { spy.record($0) }) { _ in }
 
         guard case let .compressed(before, after) = outcome.compress else {
             return XCTFail("a bilevel scan must be compressed by Rung 2, got \(outcome)")
@@ -349,7 +533,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { _ in spy.fired = true }) { _ in }
+                                                mrcReport: { spy.record($0) }) { _ in }
 
         guard case .compressed = outcome.compress else {
             return XCTFail("an MRC decline must ship the gs output, got \(outcome)")
@@ -372,7 +556,7 @@ final class CompressEngineRoutingTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output,
                                                 alternateOutput: alternate,
-                                                mrcReport: { _ in spy.fired = true }) { _ in }
+                                                mrcReport: { spy.record($0) }) { _ in }
 
         guard case let .noGain(bytes) = outcome.compress else {
             return XCTFail("expected a no-gain leg when neither beats the input, got \(outcome)")

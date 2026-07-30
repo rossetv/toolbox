@@ -1943,7 +1943,8 @@ final class CompressViewModelTests: XCTestCase {
         }
 
         func compress(_ input: URL, preset: CompressPreset, to output: URL,
-                      alternateOutput: URL?, mrcReport: ((MRCDocumentReport) -> Void)?,
+                      alternateOutput: URL?, rebuildScan: Bool?,
+                      mrcReport: ((MRCDocumentReport) -> Void)?,
                       progress: @escaping (Double) -> Void) async throws -> RowOutcome {
             // Increment, append and decide the throw/script outcome atomically, capturing locals so
             // no other concurrent call can observe or mutate state mid-decision.

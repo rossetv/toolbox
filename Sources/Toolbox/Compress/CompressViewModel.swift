@@ -484,8 +484,11 @@ final class CompressViewModel: ObservableObject {
                 // Captured here, per job invocation, so each concurrent job's report lands on
                 // that job's own `JobResult` rather than a shared/racing variable.
                 var capturedReport: MRCDocumentReport?
+                // `rebuildScan: nil` — the engine derives the MRC decision as it always has. The
+                // per-row override that will feed this arrives with the row settings surface.
                 let outcome = try await engine.compress(job.url, preset: chosen, to: output,
                                                         alternateOutput: alternate,
+                                                        rebuildScan: nil,
                                                         mrcReport: { capturedReport = $0 }) { report($0) }
                 // `.noGain` deliberately writes nothing, so there is no output file to point at.
                 if case .noGain = outcome.compress {
@@ -597,6 +600,7 @@ final class CompressViewModel: ObservableObject {
         do {
             let outcome = try await engine.compress(plan.url, preset: plan.target, to: plan.temp,
                                                     alternateOutput: plan.runnerUp,
+                                                    rebuildScan: nil,
                                                     mrcReport: { capturedReport = $0 },
                                                     progress: report)
             // The engine may return normally after its own final checkpoint (`CompressEngine`'s
@@ -905,9 +909,11 @@ final class CompressViewModel: ObservableObject {
     ///
     /// The estimator models the gs path only, so its figure is calibrated by what the engine
     /// actually did — but ONLY when the same path is expected to run again. `wantsMRC` is
-    /// `classification == .scanColour && preset != .maximumQuality`, so an MRC-shipped row crossing
-    /// to Maximum quality, or a gs-shipped row moving to an MRC-eligible preset, both change path
-    /// and take the raw estimate: a ratio learned on one path does not transfer to the other.
+    /// `classification == .scanColour && preset != .maximumQuality` (the engine's per-file
+    /// `rebuildScan` override can only narrow that, and this view model passes none), so an
+    /// MRC-shipped row crossing to Maximum quality, or a gs-shipped row moving to an MRC-eligible
+    /// preset, both change path and take the raw estimate: a ratio learned on one path does not
+    /// transfer to the other.
     func recompressPrediction(for job: ToolJob, at target: CompressPreset) -> Int? {
         // Ahead of everything: a confident number for a row that cannot run is the one thing R10
         // names explicitly ("and before arming shows a confident estimate").
@@ -1132,6 +1138,7 @@ final class CompressViewModel: ObservableObject {
             do {
                 let outcome = try await engine.compress(job.url, preset: chosen, to: freshShipped,
                                                          alternateOutput: runnerUp,
+                                                         rebuildScan: nil,
                                                          mrcReport: { capturedReport = $0 },
                                                          progress: report)
                 // The switch's post-regeneration step assumes the re-run reproduces the heavy
@@ -1206,6 +1213,7 @@ protocol Compressing: Sendable {
                   preset: CompressPreset,
                   to output: URL,
                   alternateOutput: URL?,
+                  rebuildScan: Bool?,
                   mrcReport: ((MRCDocumentReport) -> Void)?,
                   progress: @escaping (Double) -> Void) async throws -> RowOutcome
 }
