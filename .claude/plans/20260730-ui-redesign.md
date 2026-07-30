@@ -53,7 +53,8 @@ enum CompressOutcome: Equatable {
 enum OCROutcome: Equatable {
     case added(pages: Int, skipped: Int)
     case alreadySearchable
-    case tooFaint                                // ran, recognised nothing usable
+    case tooFaint                                // recognition completed, zero usable text runs on layer-less pages
+                                                 // (today's ocrAdded(pages: 0) fact; no confidence signal — spec §6.3)
     case cancelled                               // batch cancelled between legs — "Compressed · not searchable — cancelled before reading" (spec §6.5)
     case failed(String)                          // user-facing message
 }
