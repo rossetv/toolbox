@@ -7,17 +7,6 @@
 
 import Foundation
 
-/// Which engine leg produced a version. `.plain` covers every non-MRC engine result — the
-/// Ghostscript output and the Rung-2 CCITT rebuild alike — because the only distinction the
-/// estimate calibration needs (R16) is whether the MRC leg shipped this version.
-enum EngineVariant: Equatable {
-    case mrc
-    case plain
-    /// The untouched input, parked when the gs leg bloated and there was nothing legitimate to
-    /// offer as an alternative (R6/R7).
-    case original
-}
-
 /// One version of a row's file. The preset lives HERE, not on the job: a later batch at a
 /// different preset must never rewrite a finished row's preset (R14).
 struct FileVersion: Equatable {
