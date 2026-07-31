@@ -170,6 +170,28 @@ final class QueueViewStateTests: XCTestCase {
                        "a compress-only row must not claim searchable OR not-searchable: \(descriptor.meta)")
     }
 
+    // MARK: noGain composite copy (spec §6.5, DESIGN.md §11)
+
+    /// noGain compress with OCR `.tooFaint` renders the spec's pinned composite "Already optimised · too faint to read"
+    /// and marks the row degraded — this is the missing partition that describeDegraded now handles.
+    func testNoGainWithOCRTooFaintRendersExactComposite() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/test.pdf"))
+        let outcome = RowOutcome(
+            originalBytes: 1000,
+            finalBytes: 1000,
+            compress: .noGain(bytes: 1000),
+            ocr: .tooFaint,
+            shippedVariant: nil,
+            runnerUp: nil
+        )
+        job.state = .done(outcome)
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .finished)
+        XCTAssertEqual(descriptor.meta, "Already optimised · too faint to read",
+                       "noGain+OCR.tooFaint must render the spec's pinned composite (spec §6.5, DESIGN.md §11)")
+        XCTAssertEqual(descriptor.emphasis, .degraded, "noGain+tooFaint must be marked degraded")
+    }
+
     // MARK: helpers
 
     /// Every `QueueViewModel` this file constructs directly (not via `HeavyEnv`, which already

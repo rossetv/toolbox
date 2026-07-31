@@ -357,6 +357,24 @@ struct QueueRowsView: View {
             case .added: meta = "Couldn't be compressed — made searchable instead"
             default: meta = "Couldn't be compressed"   // .alreadySearchable/.tooFaint: rescue leg shipped nothing
             }
+        } else if case .noGain = outcome.compress {
+            // No compression needed, but OCR leg produced a degraded outcome (spec §6.5, DESIGN.md §11).
+            // The spec pins two composites: "Already optimised · made searchable" (.added, not degraded),
+            // and "Already optimised · too faint to read" (.tooFaint, degraded warn row).
+            switch outcome.ocr {
+            case .added:
+                meta = "Already optimised · made searchable"
+            case .tooFaint:
+                meta = "Already optimised · too faint to read"
+            case .alreadySearchable:
+                meta = "Already optimised"
+            case .cancelled:
+                meta = "Already optimised · cancelled before reading"
+            case .failed(let reason):
+                meta = "Already optimised — failed to read: \(reason)"
+            default:
+                meta = "Already optimised"
+            }
         } else if outcome.ocr == .cancelled {
             meta = "Compressed · not searchable — cancelled before reading"
         } else if outcome.ocr == .tooFaint {
