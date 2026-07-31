@@ -44,12 +44,15 @@ struct RootView: View {
         let modelBox = self.modelBox
         let updaterBox = self.updaterBox
         _model = StateObject(wrappedValue: {
-            let m = QueueViewModel(isUpdating: { updaterBox.value?.phase.isActiveUpdate ?? false })
+            // `?? true`: a nil box means the interlock isn't wired up yet (only possible during
+            // construction) — refuse the racing action rather than silently allow it. Fails
+            // closed, never open.
+            let m = QueueViewModel(isUpdating: { updaterBox.value?.phase.isActiveUpdate ?? true })
             modelBox.value = m
             return m
         }())
         _updater = StateObject(wrappedValue: {
-            let u = SelfUpdater(isBusy: { modelBox.value?.isRunning ?? false })
+            let u = SelfUpdater(isBusy: { modelBox.value?.isRunning ?? true })
             updaterBox.value = u
             return u
         }())
