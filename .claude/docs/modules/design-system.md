@@ -21,8 +21,8 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
 | File | Role |
 |------|------|
 | `Sources/Toolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography, Motion; `Color(light:dark:)` / `NSColor(hex:)` and the `themeFont(_:)` text helper |
-| `Sources/Toolbox/DesignSystem/Components.swift` | The app-wide primitives: `PrimaryButton`, `LinkButton`, `PDFThumbnail`, `SectionLabel`, and the `clearsClickFocus()`/`pointingHandCursor()` view modifiers |
-| `Sources/Toolbox/DesignSystem/QueueComponents.swift` | Everything the redesigned window is built from: `VerbChip`, `QueueRow` (+ `Emphasis`, `QueueRowSizeColumn`), `StatusIndicator`, `CapsuleProgressBar`, `CapsuleBadge`, `OptionCard`, `VariantCard`, `BatchCard`, `SecondaryButton`, `SegmentedRow`, `DropdownRow`, `ToggleRow`, `RadioRow`, `CheckRow`, `PopoverChrome`, `SheetChrome`, `UpdateBannerChrome`. Its head comment carries the per-screen component map (which component each of the design's screens uses, and what is deliberately *not* a component) |
+| `Sources/Toolbox/DesignSystem/Components.swift` | The app-wide primitives: `PrimaryButton`, `LinkButton`, `PDFThumbnail`, `SectionLabel`, `MotionButtonStyle` (the one press/hover style every button wears — plain rendering, `configuration.isPressed` scale, hover lift/fade, Reduce Motion gated) and the `clearsClickFocus()`/`pointingHandCursor()`/`continuousHover(_:)` view modifiers |
+| `Sources/Toolbox/DesignSystem/QueueComponents.swift` | Everything the redesigned window is built from: `VerbChip`, `QueueRow` (+ `Emphasis`, `QueueRowSizeColumn`), `StatusIndicator`, `CapsuleProgressBar`, `CapsuleBadge`, `OptionCard`, `VariantCard`, `BatchCard`, `SecondaryButton`, `SegmentedRow`, `DropdownRow`, `ToggleRow`, `RadioRow`, `CheckRow`, `PopoverChrome`, `SheetChrome`, `UpdateBannerChrome`, `QueueRowShimmer` (the active-row sweep, extracted so its `onAppear` fires when the row turns active). Its head comment carries the per-screen component map (which component each of the design's screens uses, and what is deliberately *not* a component) |
 
 ## Invariants
 
@@ -35,7 +35,7 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
   `sheet` (14) — root `DESIGN.md`'s Do/Don't caps rectangular corners at 12px, which
   every token but the redesign's sheet radius keeps. `input` (11) has no consumer left
   and is kept only as a token.
-- **Every `.buttonStyle(.plain)` control gets `clearsClickFocus()`** unless it
+- **Every plain-rendering button (all `MotionButtonStyle` sites) gets `clearsClickFocus()`** unless it
   deliberately keeps click focus: a click on any focusable SwiftUI control makes it
   first responder and macOS then draws a keyboard focus ring the user never asked for.
   Tab/arrow navigation is untouched (it assigns focus without a click), and the modifier

@@ -25,13 +25,14 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
 | File | Role |
 |------|------|
 | `Sources/Toolbox/Queue/QueueViewModel.swift` | `@MainActor` state for the whole queue: the verb set, preset/output folder, per-row `overrides`/`inspections`, the delivery reservations, the run (`compress()`, `cancel()`), leg progress + ETA, the consent queue, the version switch, the recompress phase |
-| `Sources/Toolbox/Queue/QueueView.swift` | The window's single content view: `QueueScreenState` (`empty`/`ready`/`working`/`finished`/`problems`) as one state machine, and constructs every popover/sheet it presents directly (Quality/OCR/per-file/versions/change-quality/scan-consent/recent-batches/About) — `RootView` only supplies `model`, `history` and the externally-owned `showAbout` binding (see [App](app.md)) |
+| `Sources/Toolbox/Queue/QueueView.swift` | The window's single content view: `QueueScreenState` (`empty`/`ready`/`working`/`finished`/`problems`) as one state machine derived through `QueueRowPartition.classify`, and constructs every popover/sheet it presents directly (Quality/OCR/per-file/versions/change-quality/scan-consent/recent-batches/About) — `RootView` only supplies `model`, `history` and the externally-owned `showAbout` binding (see [App](app.md)) |
 | `Sources/Toolbox/Queue/QueueHeaderView.swift` | Top strip in every non-empty state — title, verb chips, save-destination row, working progress bar, finished/problems headlines, and the `⋯` menu |
 | `Sources/Toolbox/Queue/QueueRowsView.swift` | The scrollable list: one row shape (`QueueRow`) whose trailing content and copy are composed per row; `QueueByteFormat` is the byte formatting the header/rows/footer share |
 | `Sources/Toolbox/Queue/QueueFooterView.swift` | Bottom bar in every non-empty state — estimate + Start, saved-so-far + Cancel, save location + Show in Finder/Change quality/Add More |
 | `Sources/Toolbox/Queue/EmptyStateView.swift` | First-run/idle screen: Choose Files…, the "nothing leaves this Mac" reassurance, and the two most recent batches |
 | `Sources/Toolbox/Queue/DragOverlayView.swift` | The full-bleed drag-over overlay, drawn atop whatever screen is underneath |
 | `Sources/Toolbox/Queue/RowInspection.swift` | `RowOverride` (sparse per-row settings) + `RowInspection` (what add-time inspection learned: page count, text layer, `RowProblem`) |
+| `Sources/Toolbox/Queue/QueueRowPartition.swift` | `QueueRowPartition.classify` — the ONE row-partition predicate (delivered / failedActionable / failedSkipped / problemUnresolved / problemSkipped / cleanPending / cleanSkipped / transient); `QueueView.screenState`, `QueueHeaderView`'s problems headline/subtitle and `QueueViewModel.healthyQueuedCount` all derive from it |
 | `Sources/Toolbox/Queue/BatchProgress.swift` | `BatchProgress` — the run's `fraction`, `etaSeconds` and `savedSoFarBytes`, the one figure the rows cannot cheaply re-derive per render |
 | `Sources/Toolbox/Queue/HistoryStore.swift` | `HistoryBatch` + `HistoryStore` — the schema-versioned recent-batches JSON and the lifetime savings counter |
 | `Sources/Toolbox/Queue/QualityPopover.swift`, `OCRPopover.swift` | The batch-level Quality (three priced presets) and OCR (language + accuracy) popovers |
@@ -129,9 +130,10 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
 - `ChangeQualitySheet` previews by genuinely (and reversibly) moving `model.preset` —
   the same batch preset the Quality popover writes — so `recompressState(for:)` and
   `recompressPrediction(for:at:)` re-arm live off `effectivePreset(for:)` rather than a
-  second parallel "candidate" preset; Cancel restores both the previous preset and
+  second parallel "candidate" preset; every exit that is not a confirmed start (Cancel,
+  Escape, the window closing) structurally restores both the previous preset and
   `model.armedExclusions` (the "Choose which files…" popover's own state, snapshotted
-  the same way).
+  the same way), and a confirm where nothing actually started restores them too.
 - Every screen accepts drops, including mid-run (`DragOverlayView` is drawn over
   whatever is underneath) — the drag-during-run path is the reason reservations happen
   at add time.
