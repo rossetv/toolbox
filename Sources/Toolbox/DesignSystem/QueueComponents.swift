@@ -184,7 +184,9 @@ struct StatusIndicator: View {
                 .stroke(Theme.Colors.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
-        .animation(reduceMotion ? nil : .linear(duration: 0.2), value: fraction)
+        // Stays animated under Reduce Motion, same as `CapsuleProgressBar`'s fill-width: this
+        // ring communicates real per-row progress, not decoration (DESIGN.md §8).
+        .animation(.linear(duration: 0.2), value: fraction)
     }
 
     private var dashedRing: some View {

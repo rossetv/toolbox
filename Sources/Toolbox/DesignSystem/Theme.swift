@@ -308,9 +308,11 @@ enum Theme {
 
         // MARK: Reduce Motion gates
         //
-        // Every animated surface asks one of these rather than writing its own
-        // `reduceMotion ? nil : …` ternary, so "Reduce Motion means static" is decided in one
-        // place and is directly testable (`ThemeTests`) without rendering a view.
+        // Every animated surface except the two real-progress fills (`CapsuleProgressBar`'s
+        // fill-width, `StatusIndicator.ring`'s per-row ring — DESIGN.md §8) asks one of these
+        // rather than writing its own `reduceMotion ? nil : …` ternary, so "Reduce Motion means
+        // static" is decided in one place and is directly testable (`ThemeTests`) without
+        // rendering a view.
 
         /// The hover curve, or `nil` (no animation — the state change still happens instantly).
         static func hoverCurve(reduceMotion: Bool) -> Animation? {

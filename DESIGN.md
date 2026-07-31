@@ -347,9 +347,9 @@ chrome therefore lives *inside* its `Button` label, where the style's scale can 
 
 **Reduce Motion**: every interactive `QueueComponents` view gates its transform/loop
 animations on `accessibilityReduceMotion`, substituting a plain or no transition — never
-skipping the underlying state change. The one exception is a progress bar's fill-width
-animation, which stays under Reduce Motion because it communicates real progress, not
-decoration.
+skipping the underlying state change. The exceptions are the two real-progress fills: a
+progress bar's fill-width animation and `StatusIndicator`'s per-row ring, both of which stay
+animated under Reduce Motion because they communicate real progress, not decoration.
 
 ## 9. Screens
 
