@@ -696,13 +696,18 @@ private var fileRowStateGallery: some View {
 struct PDFThumbnail: View {
     let url: URL?
     var width: CGFloat = 30
+    /// Suppresses the red "PDF" label band, leaving a bare page render — `QueueComponents`'
+    /// `VariantCard` (the scan-choice page-preview panel, F7) wants the page itself with no
+    /// file-type badge competing with it.
+    var plain: Bool = false
 
     @State private var preview: NSImage?
 
     private var height: CGFloat { (width * 1.3).rounded() }         // roughly A4/Letter proportions
     /// A fifth of the card. Deep enough to hold the label comfortably, shallow enough that the
     /// thumbnail still reads as a page with a footer rather than a label with a picture above it.
-    private var bandHeight: CGFloat { (height * 0.21).rounded() }
+    /// Zero in `plain` mode — there is no label band to reserve space for.
+    private var bandHeight: CGFloat { plain ? 0 : (height * 0.21).rounded() }
     private let radius: CGFloat = 4.5
 
     var body: some View {
@@ -710,12 +715,14 @@ struct PDFThumbnail: View {
             page
             // Flush to the card's edges and centred by its own frame, so the label sits in the
             // base of the document rather than floating under it.
-            Text("PDF")
-                .font(.system(size: 6, weight: .heavy))
-                .kerning(0.35)
-                .foregroundStyle(.white)
-                .frame(width: width, height: bandHeight)
-                .background(Theme.Colors.documentBadge)
+            if !plain {
+                Text("PDF")
+                    .font(.system(size: 6, weight: .heavy))
+                    .kerning(0.35)
+                    .foregroundStyle(.white)
+                    .frame(width: width, height: bandHeight)
+                    .background(Theme.Colors.documentBadge)
+            }
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))

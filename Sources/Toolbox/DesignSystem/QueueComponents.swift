@@ -1,0 +1,1350 @@
+// Toolbox
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// This file is part of Toolbox, released under the GNU Affero General
+// Public License v3.0 or later. See the LICENSE file in the project root.
+
+import AppKit
+import SwiftUI
+
+// MARK: - Per-screen component map (F7 step 0)
+//
+// Derived screen-by-screen from the 15 render files at
+// `$(git rev-parse --path-format=absolute --git-common-dir)/lcw/20260730-ui-redesign/handoff/renders/`
+// (`screen-01.png` … `screen-12.png`, 14 distinct window states — `screen-11-wide.png` is a
+// second, wider capture of screen 11 that also shows the update banner and About sheet
+// alongside the Recent-batches sheet) cross-checked against the handoff README's §Screens and,
+// for anything ambiguous, `Toolbox Final.dc.html` (the design source of truth). Assembling this
+// from memory instead is how three shapes went missing last time — every row below was checked
+// against a render or the html, not recalled.
+//
+// 01 Empty            — PrimaryButton (existing, "Choose Files…"); BatchCard ×2 with
+//                        `trailingLink` ("Open folder"); existing `SectionLabel` for
+//                        "EARLIER TODAY". The lock glyph + "Nothing leaves this Mac" line is
+//                        plain text, no component.
+// 02 Drag-over        — the existing `DropZone` component's own drag-fan presentation; no new
+//                        component (P-A restyles `DropZone`, not this task).
+// 03 Ready             — VerbChip ×2 (Compress on w/ suffix, OCR off); QueueRow ×N
+//                        (`.sizeArrow` trailing); PrimaryButton "Start". The "⋯" menu and
+//                        "Saving beside the originals ⌄" control are a native SwiftUI `Menu`
+//                        each — DELIBERATELY not componentised (see "Non-components" below).
+// 04 Quality popover   — PopoverChrome wrapping RadioRow ×3. NOT OptionCard: the plan's inline
+//                        comment groups this with screen 08, but `Toolbox Final.dc.html` draws
+//                        a vertical list with a right-aligned total and a RECOMMENDED capsule —
+//                        exactly RadioRow's `trailingValue`/`badge` fields (its own doc comment
+//                        cites this). OptionCard is screen 08's equal-width card row instead.
+// 04b OCR popover      — PopoverChrome wrapping: existing `SectionLabel` + DropdownRow
+//                        (language), existing `SectionLabel` + SegmentedRow (Fast/Accurate),
+//                        caption text, hairline, footnote.
+// 04c Per-file settings — PopoverChrome; header (thumbnail + filename + subtitle + close ×) is
+//                        composed by the caller from `PDFThumbnail` + text, not a sub-component;
+//                        SegmentedRow (quality); ToggleRow ×2 (rebuild scan / read text); footer
+//                        text + LinkButton ("Match the batch").
+// 05 Working          — CapsuleProgressBar (header); QueueRow using `StatusIndicator` in the
+//                        trailing slot for all three states (finished/active/queued).
+// 06 Finished          — the big header ("32.6 MB lighter" + check) is a P-A composition
+//                        (StatusIndicator.finished at a larger `size`, not a new component);
+//                        QueueRow with the versions CapsuleBadge embedded (`onVersionsCapsule`)
+//                        and `StatusIndicator.unchanged` for the no-op row; SecondaryButton ×2
+//                        + PrimaryButton (existing) footer.
+// 07 Versions popover  — PopoverChrome (anchored below the row) wrapping RadioRow ×3 — the ONE
+//                        place `showsUnselectedIndicator` is true (a hollow radio ring on the
+//                        unselected rows; screen 04's list shows none at all — see RadioRow's
+//                        doc comment); full-width SecondaryButton ("Compare versions…").
+// 08 Change quality    — OptionCard ×3 (equal-flex; confirmed NO badge in the html — unlike
+//                        screen 04, nothing here reads RECOMMENDED); PrimaryButton/SecondaryButton
+//                        footer.
+// 09 Scan choice       — VariantCard ×2. Their "BEST FOR SCANS"/"NOTHING REDRAWN" labels are
+//                        plain coloured `Text`, NOT `CapsuleBadge` — the html draws them with no
+//                        pill background at all (`font-size:10.5px;font-weight:600;color:…`,
+//                        nothing else), unlike the genuinely pill-shaped RECOMMENDED badge. The
+//                        page-preview panel uses `PDFThumbnail(plain: true)` per the plan (a
+//                        real rendered page, deliberately upgrading the html's abstract
+//                        line-mockup). The "Rebuild scans… without asking" control is a native
+//                        `Toggle` + label composed by the caller (no state-line, so it doesn't
+//                        fit `ToggleRow`'s shape) — not a missing component.
+// 10 Problems          — QueueRow's `.problemDanger`/`.problemWarn` emphasis (tinted bg) with
+//                        `trailing` composed from SecondaryButton ("Enter password…"/"Find
+//                        it…") + LinkButton ("Skip"/"Remove"); `.degraded` emphasis (no tint) +
+//                        `StatusIndicator.warn` for "Too faint to read" — see StatusIndicator's
+//                        doc comment for why this outline glyph deliberately differs from this
+//                        screen's own literal grey rendering (spec §6.5 pins it warn/degraded,
+//                        not "unchanged"). Header is a P-A composition, as screen 06's.
+// 11(+wide) Sheets     — SheetChrome ×2 (Recent batches 520px; About 330px) with the dim
+//                        overlay; BatchCard reused for sheet rows via its NEW `trailingValue`
+//                        field (mutually exclusive with `trailingLink`, which screen 01 uses —
+//                        see BatchCard's doc comment); existing `SectionLabel` for TODAY/
+//                        YESTERDAY; UpdateBannerChrome wrapping icon + text + LinkButton +
+//                        PrimaryButton + dismiss, all composed by the caller. The About sheet's
+//                        content (icon, version, links) is an App-track composition, not pinned.
+// 12 Dark              — no new components; exercises every token's dark variant through the
+//                        components above.
+//
+// Non-components (recorded so a track reads "no component" rather than "component missing"):
+// the "⋯" menu button and "Saving beside the originals ⌄" control (native `Menu`), `DropZone`'s
+// drag-fan (existing component, untouched here), the Finished/Problems screens' big headers
+// (P-A composes them from `StatusIndicator` + `Theme` text directly), screen 09's "without
+// asking" toggle row (native `Toggle` + label), the About sheet's content (App track).
+//
+// Flagged additions beyond the plan's literal text (all additive, defaulted, non-breaking —
+// see the implementer's report for the render evidence behind each):
+//   1. RadioRow: `showsUnselectedIndicator: Bool = true` — screen 04 draws no glyph at all for
+//      an unselected row; screen 07 draws a hollow ring. One component, two call sites.
+//   2. BatchCard: `trailingValue: (text: String, isMuted: Bool)? = nil` — screen 11's sheet rows
+//      show a plain trailing figure ("21.2 MB" / "no change"), not a link.
+//   3. StatusIndicator: `size: CGFloat = 18` — lets a screen's big finished/warn header reuse
+//      the same glyph at 30px instead of a second component (`ToolIconTile` already has this
+//      exact `size` pattern).
+//   4. `PDFThumbnail` (Components.swift): `plain: Bool = false` — suppresses the red "PDF" label
+//      band for `VariantCard`'s page-preview panel.
+//   5. CapsuleBadge: `icon: Image? = nil` — the "N versions" capsule (its one real usage) always
+//      carries a small stack glyph inside the same pill.
+
+// MARK: - VerbChip
+
+/// A batch-wide verb toggle (Compress/OCR) — a compound control: tapping the label toggles the
+/// verb on/off, tapping the suffix/chevron (only present once the verb is on and has options)
+/// opens that verb's options popover. Two separate VoiceOver actions/labels (spec §9).
+struct VerbChip: View {
+    let title: String
+    var suffix: String?
+    let isOn: Bool
+    let icon: Image
+    let toggle: () -> Void
+    var openOptions: (() -> Void)?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHoveringToggle = false
+    @State private var isHoveringOptions = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: toggle) {
+                HStack(spacing: 7) {
+                    icon.font(.system(size: 13, weight: .semibold))
+                    Text(title).themeFont(.bodyStrong)
+                    if let suffix {
+                        Text("· \(suffix)").themeFont(.body13).opacity(isOn ? 0.75 : 1)
+                    }
+                }
+                .foregroundStyle(isOn ? .white : Theme.Colors.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .clearsClickFocus()
+            .accessibilityLabel("\(title), \(isOn ? "on" : "off")")
+            .accessibilityHint(isOn ? "Double-tap to turn off" : "Double-tap to turn on")
+            .accessibilityAddTraits(isOn ? [.isSelected] : [])
+
+            if isOn, let openOptions {
+                Button(action: openOptions) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white.opacity(isHoveringOptions ? 1 : 0.85))
+                        .padding(.leading, 6)
+                        .padding(.trailing, 2)
+                }
+                .buttonStyle(.plain)
+                .clearsClickFocus()
+                .onHover { isHoveringOptions = $0 }
+                .accessibilityLabel("\(title) options")
+                .accessibilityHint("Opens \(title.lowercased()) settings")
+            }
+        }
+        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .background(
+            isOn ? Theme.Colors.accent : Color.clear,
+            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .strokeBorder(Theme.Colors.stroke, lineWidth: isOn ? 0 : 1)
+        )
+        .background(
+            (isOn ? Color.white.opacity(isHoveringToggle ? 0.12 : 0) : Theme.Colors.fill.opacity(isHoveringToggle ? 1 : 0)),
+            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+        )
+        .onHover { isHoveringToggle = $0 }
+        .pointingHandCursor()
+        .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.hover), value: isHoveringToggle)
+    }
+}
+
+#Preview("VerbChip – states") {
+    VStack(alignment: .leading, spacing: 12) {
+        HStack(spacing: 8) {
+            VerbChip(title: "Compress", suffix: "Balanced", isOn: true, icon: Image(systemName: "arrow.down.right.and.arrow.up.left"), toggle: {}, openOptions: {})
+            VerbChip(title: "OCR", suffix: nil, isOn: false, icon: Image(systemName: "doc.text.magnifyingglass"), toggle: {})
+        }
+        HStack(spacing: 8) {
+            VerbChip(title: "Compress", suffix: nil, isOn: false, icon: Image(systemName: "arrow.down.right.and.arrow.up.left"), toggle: {})
+            VerbChip(title: "OCR", suffix: "English", isOn: true, icon: Image(systemName: "doc.text.magnifyingglass"), toggle: {}, openOptions: {})
+        }
+    }
+    .padding(40)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - StatusIndicator
+
+/// The queue row's single trailing status glyph (spec §9: finished/working/waiting + detail, one
+/// VoiceOver label). `size` defaults to the row's 16–18px use but is overridable so a screen's
+/// big finished/warn header can reuse the same glyph (screens 06/10) rather than a second
+/// component — mirrors `ToolIconTile`'s own `size` pattern.
+struct StatusIndicator: View {
+    enum Kind: Equatable {
+        case finished
+        case active(Double)
+        case queued
+        /// A fully successful no-op row ("Already optimised") — an outline check, textTertiary.
+        case unchanged
+        /// A row-level degraded outcome (spec §6.5: rescued, tooFaint) — structurally the SAME
+        /// outline check as `.unchanged`, just tinted `Theme.Colors.warn`. This is deliberately
+        /// NOT the filled warn-disc + exclamation that `BatchCard`/a batch-summary header draws
+        /// for "this batch needs attention" (screen 10's own header, screen 11's warn sheet row)
+        /// — that is a different glyph shape entirely and is drawn by its own view, not this
+        /// case; embedding `StatusIndicator(.warn)` there would show the wrong icon.
+        case warn
+    }
+
+    let kind: Kind
+    var size: CGFloat = 18
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
+    @State private var isBreathing = false
+
+    var body: some View {
+        Group {
+            switch kind {
+            case .finished: filledCheck(Theme.Colors.success)
+            case .active(let fraction): ring(fraction: fraction)
+            case .queued: dashedRing
+            case .unchanged: outlineCheck(Theme.Colors.textTertiary)
+            case .warn: outlineCheck(Theme.Colors.warn)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityElement()
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        switch kind {
+        case .finished: return "Finished"
+        case .active(let fraction): return "Working, \(Int((fraction * 100).rounded())) percent"
+        case .queued: return "Waiting"
+        case .unchanged: return "Unchanged"
+        case .warn: return "Needs attention"
+        }
+    }
+
+    private func filledCheck(_ color: Color) -> some View {
+        ZStack {
+            Circle().fill(color)
+            Image(systemName: "checkmark")
+                .font(.system(size: size * 0.42, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .scaleEffect(hasAppeared || reduceMotion ? 1 : 0.4)
+        .onAppear {
+            guard !reduceMotion else { hasAppeared = true; return }
+            withAnimation(.spring(response: Theme.Motion.checkPop, dampingFraction: 0.58)) { hasAppeared = true }
+        }
+    }
+
+    private func ring(fraction: Double) -> some View {
+        ZStack {
+            Circle().stroke(Theme.Colors.track, lineWidth: 2)
+            Circle()
+                .trim(from: 0, to: max(0, min(1, fraction)))
+                .stroke(Theme.Colors.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .animation(reduceMotion ? nil : .linear(duration: 0.2), value: fraction)
+    }
+
+    private var dashedRing: some View {
+        Circle()
+            .stroke(Theme.Colors.textTertiary, style: StrokeStyle(lineWidth: 1.6, dash: [3, 3.4]))
+            .opacity(isBreathing ? 0.5 : 1)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) { isBreathing = true }
+            }
+    }
+
+    private func outlineCheck(_ color: Color) -> some View {
+        ZStack {
+            Circle().stroke(color, lineWidth: 1.4)
+            Image(systemName: "checkmark")
+                .font(.system(size: size * 0.4, weight: .semibold))
+                .foregroundStyle(color)
+        }
+    }
+}
+
+#Preview("StatusIndicator – every state") {
+    HStack(spacing: 20) {
+        VStack { StatusIndicator(kind: .finished); Text("finished").themeFont(.caption) }
+        VStack { StatusIndicator(kind: .active(0.62)); Text("active").themeFont(.caption) }
+        VStack { StatusIndicator(kind: .queued); Text("queued").themeFont(.caption) }
+        VStack { StatusIndicator(kind: .unchanged); Text("unchanged").themeFont(.caption) }
+        VStack { StatusIndicator(kind: .warn); Text("warn").themeFont(.caption) }
+        VStack { StatusIndicator(kind: .finished, size: 30); Text("finished @30").themeFont(.caption) }
+    }
+    .padding(40)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - CapsuleProgressBar
+
+/// The batch-wide progress bar on the Working screen — gradient accent fill, a glowing leading
+/// cap and a light sweep, both gated on Reduce Motion (the fill-width animation, driven by
+/// `fraction`, stays — it communicates real progress rather than decoration).
+struct CapsuleProgressBar: View {
+    let fraction: Double
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var sweepX: CGFloat = -0.3
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = max(0, min(1, fraction)) * geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.Colors.track)
+                Capsule()
+                    .fill(LinearGradient(
+                        colors: [Theme.Colors.accent.opacity(0.74), Theme.Colors.accent],
+                        startPoint: .leading, endPoint: .trailing
+                    ))
+                    .frame(width: width)
+                if !reduceMotion {
+                    Capsule()
+                        .fill(Color.white.opacity(0.4))
+                        .frame(width: geo.size.width * 0.26)
+                        .offset(x: sweepX * geo.size.width)
+                        .frame(width: width, alignment: .leading)
+                        .clipShape(Capsule())
+                        .onAppear {
+                            withAnimation(.linear(duration: 1.9).repeatForever(autoreverses: false)) { sweepX = 1.3 }
+                        }
+                }
+            }
+        }
+        .frame(height: 6)
+        .animation(reduceMotion ? nil : .linear(duration: 0.2), value: fraction)
+        .accessibilityElement()
+        .accessibilityLabel("Progress")
+        .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
+    }
+}
+
+#Preview("CapsuleProgressBar") {
+    VStack(spacing: 16) {
+        CapsuleProgressBar(fraction: 0.15)
+        CapsuleProgressBar(fraction: 0.52)
+        CapsuleProgressBar(fraction: 0.95)
+    }
+    .padding(40)
+    .frame(width: 400)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - OptionCard
+
+/// One of screen 08's equal-width quality cards: name, predicted total, delta caption, selection
+/// ring. NOT screen 04's quality popover (that's `RadioRow` — see the file-top map).
+struct OptionCard: View {
+    enum Tone {
+        case success, muted, plain
+        var color: Color {
+            switch self {
+            case .success: return Theme.Colors.success
+            case .muted: return Theme.Colors.textTertiary
+            case .plain: return Theme.Colors.textTertiary
+            }
+        }
+    }
+
+    let title: String
+    let value: String
+    let caption: String
+    var captionTone: Tone = .plain
+    let isSelected: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
+                HStack(alignment: .lastTextBaseline, spacing: 6) {
+                    Text(value)
+                        .font(.system(size: 16, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
+                    Text(caption)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(captionTone.color)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+        }
+        .buttonStyle(.plain)
+        .clearsClickFocus()
+        .background(
+            isSelected ? Theme.Colors.accent.opacity(0.08) : (isHovering ? Theme.Colors.background : Theme.Colors.surface),
+            in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                .strokeBorder(isSelected ? Theme.Colors.accent : Theme.Colors.stroke, lineWidth: isSelected ? 1.5 : 1)
+        )
+        .onHover { isHovering = $0 }
+        .pointingHandCursor()
+        .accessibilityLabel("\(title), \(value), \(caption)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+#Preview("OptionCard – every state") {
+    HStack(spacing: 8) {
+        OptionCard(title: "Smallest", value: "6.2 MB", caption: "4.2 MB less", captionTone: .success, isSelected: false, action: {})
+        OptionCard(title: "Balanced", value: "10.4 MB", caption: "what you have", captionTone: .muted, isSelected: false, action: {})
+        OptionCard(title: "High quality", value: "23.0 MB", caption: "for printing", captionTone: .plain, isSelected: true, action: {})
+    }
+    .padding(40)
+    .frame(width: 560)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - CapsuleBadge
+
+/// The "N versions" capsule embedded in a finished `QueueRow` (screens 06/07/12) — the only
+/// render that actually draws a pill-shaped badge with two tones (closed = muted fill/text2,
+/// open = solid accent/white). Screen 04's RECOMMENDED tag and screen 09's BEST FOR
+/// SCANS/NOTHING REDRAWN labels are NOT this component — the html draws them as plain coloured
+/// text with no capsule background at all (see the file-top map); forcing them through
+/// `CapsuleBadge` would draw an unwanted pill.
+struct CapsuleBadge: View {
+    enum Tone { case accent, muted }
+
+    let text: String
+    var tone: Tone = .accent
+    /// The small stack glyph accompanying "N versions" — optional so a future plain-text badge
+    /// use isn't forced to carry one.
+    var icon: Image? = nil
+
+    var body: some View {
+        HStack(spacing: 5) {
+            icon?.font(.system(size: 10, weight: .semibold))
+            Text(text).font(.system(size: 11.5, weight: .semibold))
+        }
+        .foregroundStyle(tone == .accent ? .white : Theme.Colors.textSecondary)
+        .padding(.vertical, 3)
+        .padding(.horizontal, 9)
+        .background(
+            tone == .accent ? Theme.Colors.accent : Theme.Colors.fill,
+            in: Capsule()
+        )
+    }
+}
+
+#Preview("CapsuleBadge") {
+    HStack(spacing: 10) {
+        CapsuleBadge(text: "3 versions", tone: .muted, icon: Image(systemName: "square.3.layers.3d"))
+        CapsuleBadge(text: "3 versions", tone: .accent, icon: Image(systemName: "square.3.layers.3d"))
+    }
+    .padding(40)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - QueueRow
+
+/// The queue's one row shape, covering every screen it appears on (03 ready, 05 working, 06/12
+/// finished, 07 mid-choice, 10 problems). Trailing content is generic — each screen composes
+/// whatever it needs (a size pair, a `StatusIndicator`, problem affordances) from the rest of
+/// this file — because the shapes genuinely differ screen to screen; what stays fixed here is
+/// the shared mechanics: hover/keyboard-focus, the leading thumbnail+name+meta, the hover- and
+/// focus-revealed gear, the versions capsule, problem-row tinting, and the context menu that
+/// mirrors every hover-only affordance for the non-hover/keyboard path (spec §9).
+struct QueueRow<Trailing: View>: View {
+    enum Emphasis {
+        case none
+        /// Rescued/tooFaint (spec §6.5) — no background tint; pair with `StatusIndicator.warn`
+        /// in `trailing`.
+        case degraded
+        /// Screen 10's danger-tinted problem row (locked file).
+        case problemDanger
+        /// Screen 10's warn-tinted problem row (moved/renamed file).
+        case problemWarn
+    }
+
+    let name: String
+    let meta: String
+    var metaAccent: String? = nil
+    var fileURL: URL? = nil
+    var emphasis: Emphasis = .none
+
+    var onOpen: (() -> Void)? = nil
+    var onGear: (() -> Void)? = nil
+    var onRemove: (() -> Void)? = nil
+    var versionsCapsuleTitle: String? = nil
+    var isVersionsCapsuleOpen: Bool = false
+    var onVersionsCapsule: (() -> Void)? = nil
+
+    @ViewBuilder var trailing: () -> Trailing
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            leading
+            Spacer(minLength: Theme.Spacing.small)
+            if onGear != nil, isHovering || isFocused {
+                gearButton
+            }
+            if let versionsCapsuleTitle {
+                Button(action: { onVersionsCapsule?() }) {
+                    CapsuleBadge(
+                        text: versionsCapsuleTitle,
+                        tone: isVersionsCapsuleOpen ? .accent : .muted,
+                        icon: Image(systemName: "square.3.layers.3d")
+                    )
+                }
+                .buttonStyle(.plain)
+                .clearsClickFocus()
+                .pointingHandCursor()
+                .accessibilityLabel("Choose a version, \(versionsCapsuleTitle)")
+            }
+            trailing()
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .background(backgroundColor, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                .strokeBorder(Theme.Colors.accent, lineWidth: isFocused ? 2 : 0)
+        )
+        .contentShape(Rectangle())
+        .focusable(onOpen != nil)
+        .focused($isFocused)
+        .onHover { isHovering = $0 }
+        .modifier(RowOpenModifier(onOpen: onOpen))
+        .onKeyPress(.return) {
+            guard let onOpen else { return .ignored }
+            onOpen()
+            return .handled
+        }
+        .contextMenu {
+            if let onGear {
+                Button("Settings…", action: onGear)
+            }
+            if let onVersionsCapsule {
+                Button("Versions…", action: onVersionsCapsule)
+            }
+            if let onRemove {
+                Button("Remove", role: .destructive, action: onRemove)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var leading: some View {
+        HStack(spacing: 13) {
+            PDFThumbnail(url: fileURL).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).themeFont(.rowName).foregroundStyle(Theme.Colors.text)
+                    .lineLimit(1).truncationMode(.middle)
+                HStack(spacing: 4) {
+                    Text(meta).themeFont(.meta).foregroundStyle(Theme.Colors.textTertiary)
+                    if let metaAccent {
+                        Text(metaAccent).themeFont(.meta).foregroundStyle(Theme.Colors.accent).lineLimit(1)
+                    }
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var gearButton: some View {
+        Button(action: { onGear?() }) {
+            Image(systemName: "gearshape")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .frame(width: 26, height: 26)
+                .background(Theme.Colors.surface, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .clearsClickFocus()
+        .pointingHandCursor()
+        .accessibilityLabel("Settings for \(name)")
+    }
+
+    private var backgroundColor: Color {
+        switch emphasis {
+        case .none, .degraded:
+            return isHovering ? Theme.Colors.background : .clear
+        case .problemDanger:
+            return Theme.Colors.danger.opacity(0.07)
+        case .problemWarn:
+            return Theme.Colors.warn.opacity(0.1)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        var label = "\(name), \(meta)"
+        if let metaAccent { label += ", \(metaAccent)" }
+        switch emphasis {
+        case .problemDanger, .problemWarn: label += ", needs attention"
+        case .degraded: label += ", needs attention"
+        case .none: break
+        }
+        return label
+    }
+}
+
+#Preview("QueueRow – ready (size arrow)") {
+    VStack(spacing: 2) {
+        QueueRow(name: "Annual-Report-2025.pdf", meta: "48 pages, mostly photographs", onOpen: {}, onGear: {}) {
+            HStack(spacing: 9) {
+                Text("24.1 MB").themeFont(.body13).foregroundStyle(Theme.Colors.textTertiary)
+                Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.Colors.textTertiary)
+                Text("6.3 MB").themeFont(.rowName).foregroundStyle(Theme.Colors.textSecondary).frame(width: 70, alignment: .trailing)
+            }
+        }
+    }
+    .padding(24)
+    .frame(width: 620)
+    .background(Theme.Colors.surface)
+}
+
+#Preview("QueueRow – working (finished/active/queued)") {
+    VStack(spacing: 2) {
+        QueueRow(name: "Annual-Report-2025.pdf", meta: "75% smaller · finished in 12 seconds") {
+            HStack(spacing: 9) {
+                Text("6.1 MB").themeFont(.rowName).foregroundStyle(Theme.Colors.text)
+                StatusIndicator(kind: .finished)
+            }
+        }
+        QueueRow(name: "Scanned-Contract.pdf", meta: "Reading page 19 of 32") {
+            HStack(spacing: 9) {
+                Text("8s left").themeFont(.body13).foregroundStyle(Theme.Colors.textTertiary)
+                StatusIndicator(kind: .active(0.6))
+            }
+        }
+        QueueRow(name: "Product-Brochure.pdf", meta: "Next") {
+            HStack(spacing: 9) {
+                Text("1.4 MB").themeFont(.rowName).foregroundStyle(Theme.Colors.textTertiary)
+                StatusIndicator(kind: .queued)
+            }
+        }
+    }
+    .padding(24)
+    .frame(width: 620)
+    .background(Theme.Colors.surface)
+}
+
+#Preview("QueueRow – finished w/ versions + unchanged") {
+    VStack(spacing: 2) {
+        QueueRow(
+            name: "Scanned-Contract.pdf", meta: "Rebuilt and searchable · 78% smaller",
+            onOpen: {}, versionsCapsuleTitle: "3 versions", onVersionsCapsule: {}
+        ) {
+            HStack(spacing: 9) {
+                Text("4.1 MB").themeFont(.rowName).foregroundStyle(Theme.Colors.text)
+                StatusIndicator(kind: .finished)
+            }
+        }
+        QueueRow(name: "Meeting-Notes.pdf", meta: "Already optimised", onOpen: {}) {
+            HStack(spacing: 9) {
+                Text("184 KB").themeFont(.rowName).foregroundStyle(Theme.Colors.textTertiary)
+                StatusIndicator(kind: .unchanged)
+            }
+        }
+    }
+    .padding(24)
+    .frame(width: 620)
+    .background(Theme.Colors.surface)
+}
+
+#Preview("QueueRow – problems + degraded") {
+    VStack(spacing: 2) {
+        QueueRow(name: "Bank-Statement.pdf", meta: "Needs a password to open", emphasis: .problemDanger) {
+            HStack(spacing: 10) {
+                SecondaryButton(title: "Enter password…", action: {})
+                LinkButton(title: "Skip", action: {})
+            }
+        }
+        QueueRow(name: "Site-Survey.pdf", meta: "Moved or renamed since you added it", emphasis: .problemWarn) {
+            HStack(spacing: 10) {
+                SecondaryButton(title: "Find it…", action: {})
+                LinkButton(title: "Remove", action: {})
+            }
+        }
+        QueueRow(name: "Faxed-Order.pdf", meta: "Too faint to read — compressed, but not searchable", emphasis: .degraded, onOpen: {}) {
+            HStack(spacing: 9) {
+                Text("0.8 MB").themeFont(.rowName).foregroundStyle(Theme.Colors.text)
+                StatusIndicator(kind: .warn)
+            }
+        }
+    }
+    .padding(24)
+    .frame(width: 640)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - BatchCard
+
+/// A recent-batch summary tile — the empty-state history strip (screen 01, `trailingLink`
+/// "Open folder") and the Recent-batches sheet's rows (screen 11, `trailingValue`, a plain
+/// savings figure since the WHOLE row opens the folder there — see the file-top map). The two
+/// trailing fields are mutually exclusive; a caller supplies at most one.
+struct BatchCard: View {
+    let icon: StatusIndicator.Kind
+    let title: String
+    let subtitle: String
+    var trailingLink: (title: String, action: () -> Void)? = nil
+    var trailingValue: (text: String, isMuted: Bool)? = nil
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                badge
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
+                        .lineLimit(1).truncationMode(.tail)
+                    Text(subtitle).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+                }
+                Spacer(minLength: Theme.Spacing.small)
+                if let trailingLink {
+                    LinkButton(title: trailingLink.title, action: trailingLink.action)
+                }
+                if let trailingValue {
+                    Text(trailingValue.text)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(trailingValue.isMuted ? Theme.Colors.textTertiary : Theme.Colors.success)
+                }
+            }
+            .padding(.vertical, 9)
+            .padding(.horizontal, 10)
+        }
+        .buttonStyle(.plain)
+        .clearsClickFocus()
+        .background(isHovering ? Theme.Colors.background : Color.clear, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+        .onHover { isHovering = $0 }
+        .pointingHandCursor()
+        .accessibilityLabel("\(title), \(subtitle)")
+    }
+
+    /// The 26px tinted rounded-square badge — a filled disc + glyph, distinct from
+    /// `StatusIndicator`'s row-level outline glyphs (see `StatusIndicator.warn`'s doc comment).
+    private var badge: some View {
+        let (tint, symbol): (Color, String) = {
+            switch icon {
+            case .finished: return (Theme.Colors.success, "checkmark")
+            case .warn: return (Theme.Colors.warn, "exclamationmark")
+            default: return (Theme.Colors.textTertiary, "checkmark")
+            }
+        }()
+        return RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(tint.opacity(0.16))
+            .frame(width: 26, height: 26)
+            .overlay(
+                ZStack {
+                    Circle().fill(tint)
+                    Image(systemName: symbol).font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
+                }
+                .frame(width: 16, height: 16)
+            )
+    }
+}
+
+#Preview("BatchCard – empty-state strip + sheet row") {
+    VStack(spacing: 8) {
+        BatchCard(icon: .finished, title: "3 files in Contracts", subtitle: "14:22 · 21.2 MB smaller",
+                  trailingLink: (title: "Open folder", action: {}), action: {})
+        BatchCard(icon: .warn, title: "4 of 5 files in Invoices", subtitle: "11:05 · one was password-locked",
+                  trailingLink: (title: "Open folder", action: {}), action: {})
+        Divider()
+        BatchCard(icon: .finished, title: "3 files in Contracts", subtitle: "14:22 · Balanced · one made searchable",
+                  trailingValue: (text: "21.2 MB", isMuted: false), action: {})
+        BatchCard(icon: .finished, title: "12 scans in Desktop › Scans", subtitle: "18:40 · OCR only · all searchable",
+                  trailingValue: (text: "no change", isMuted: true), action: {})
+    }
+    .padding(24)
+    .frame(width: 480)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - VariantCard
+
+/// One of screen 09's two scan-choice cards. The "BEST FOR SCANS"/"NOTHING REDRAWN" label is
+/// plain coloured `Text` (see the file-top map for why this is not `CapsuleBadge`).
+struct VariantCard: View {
+    let title: String
+    let badgeText: String
+    var badgeIsAccent: Bool = true
+    let sizeText: String
+    let percentText: String
+    let explanation: String
+    let previewURL: URL?
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.Colors.text)
+                    Text(badgeText)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(badgeIsAccent ? Theme.Colors.accent : Theme.Colors.textTertiary)
+                }
+                HStack(alignment: .lastTextBaseline, spacing: 8) {
+                    Text(sizeText).font(.system(size: 22, weight: .semibold)).monospacedDigit()
+                        .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
+                    Text(percentText).font(.system(size: 12)).foregroundStyle(Theme.Colors.success)
+                }
+                HStack {
+                    Spacer(minLength: 0)
+                    PDFThumbnail(url: previewURL, width: 76, plain: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                .padding(.top, 8)
+
+                Text(explanation)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 3)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+        }
+        .buttonStyle(.plain)
+        .clearsClickFocus()
+        .background(
+            isSelected ? Theme.Colors.accent.opacity(0.07) : Theme.Colors.background,
+            in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                .strokeBorder(isSelected ? Theme.Colors.accent : .clear, lineWidth: 1.5)
+        )
+        .pointingHandCursor()
+        .accessibilityLabel("\(title), \(sizeText), \(percentText). \(explanation)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+#Preview("VariantCard – both choices") {
+    HStack(alignment: .top, spacing: 14) {
+        VariantCard(
+            title: "Rebuilt in layers", badgeText: "BEST FOR SCANS", badgeIsAccent: true,
+            sizeText: "4.1 MB", percentText: "78% smaller",
+            explanation: "Letters are traced and stay crisp at any zoom. The paper behind them is flattened, so grain, shadows and coffee rings disappear.",
+            previewURL: nil, isSelected: true, action: {}
+        )
+        VariantCard(
+            title: "Left as photographs", badgeText: "NOTHING REDRAWN", badgeIsAccent: false,
+            sizeText: "6.8 MB", percentText: "64% smaller",
+            explanation: "Each page stays a picture of the paper, just lighter. Choose this when the sheet itself is evidence — signatures, stamps, handwriting.",
+            previewURL: nil, isSelected: false, action: {}
+        )
+    }
+    .padding(24)
+    .frame(width: 640)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - SecondaryButton
+
+/// A neutral filled button — "Show in Finder", "Enter password…", "Compare versions…". Dark
+/// mode's `#3a3a3c` is a component-local pair, not a `Theme` token: it is NOT the same as
+/// `Theme.Colors.surface`'s dark value (`#242426`) — the handoff genuinely uses a lighter grey
+/// for these buttons than the window surface.
+struct SecondaryButton: View {
+    private static let background = Color(light: NSColor(hex: 0xFFFFFF), dark: NSColor(hex: 0x3A3A3C))
+
+    let title: String
+    var icon: Image? = nil
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                icon?.font(.system(size: 12, weight: .medium))
+                Text(title).themeFont(.bodyStrong)
+            }
+            .foregroundStyle(Theme.Colors.text)
+            .padding(.vertical, 9)
+            .padding(.horizontal, 14)
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .clearsClickFocus()
+        .background(
+            isHovering ? Theme.Colors.background : Self.background,
+            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 1.5, x: 0, y: 0.5)
+        .onHover { isHovering = $0 }
+        .pointingHandCursor()
+    }
+}
+
+#Preview("SecondaryButton") {
+    HStack(spacing: 10) {
+        SecondaryButton(title: "Show in Finder", icon: Image(systemName: "folder"), action: {})
+        SecondaryButton(title: "Change quality", action: {})
+        SecondaryButton(title: "Cancel", action: {})
+    }
+    .padding(40)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - SegmentedRow
+
+/// A compact 2- or 3-way segmented control (screen 04b's Fast/Accurate, screen 04c's quality).
+/// Custom-drawn rather than native `.segmented`, matching the design system's own buttons/chips
+/// rather than AppKit's chrome.
+struct SegmentedRow: View {
+    let options: [String]
+    @Binding var selection: Int
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options.indices, id: \.self) { index in
+                let isSelected = index == selection
+                Button {
+                    if reduceMotion {
+                        selection = index
+                    } else {
+                        withAnimation(.easeOut(duration: Theme.Motion.hover)) { selection = index }
+                    }
+                } label: {
+                    Text(options[index])
+                        .themeFont(.bodyStrong)
+                        .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 7)
+                        .background(
+                            isSelected ? Theme.Colors.surface : Color.clear,
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.control - 2, style: .continuous)
+                        )
+                        .shadow(color: isSelected ? .black.opacity(0.12) : .clear, radius: 1, x: 0, y: 0.5)
+                }
+                .buttonStyle(.plain)
+                .clearsClickFocus()
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            }
+        }
+        .padding(2)
+        .background(Theme.Colors.fill, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .pointingHandCursor()
+    }
+}
+
+#Preview("SegmentedRow – 2-way and 3-way") {
+    VStack(spacing: 16) {
+        SegmentedRow(options: ["Fast", "Accurate"], selection: .constant(1))
+        SegmentedRow(options: ["Smallest", "Balanced", "High"], selection: .constant(2))
+    }
+    .padding(40)
+    .frame(width: 320)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - DropdownRow
+
+/// A labelled system dropdown (screen 04b's language picker) — reuses the existing
+/// `SectionLabel` for the group label rather than duplicating its uppercase+tracking logic.
+struct DropdownRow: View {
+    let label: String
+    let options: [String]
+    @Binding var selection: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SectionLabel(label)
+            Picker(selection: $selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(option).tag(option)
+                }
+            } label: { EmptyView() }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .font(Theme.Typography.body13.font)
+        }
+    }
+}
+
+#Preview("DropdownRow") {
+    DropdownRow(label: "Language on the page", options: ["English", "German", "Spanish", "French"], selection: .constant("English"))
+        .padding(40)
+        .frame(width: 320)
+        .background(Theme.Colors.surface)
+}
+
+// MARK: - ToggleRow
+
+/// A titled system toggle with a state-line beneath it (screen 04c's "Rebuild the scan"/"Read
+/// the text (OCR)").
+struct ToggleRow: View {
+    let title: String
+    let stateLine: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
+                Text(stateLine).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+            }
+            Spacer(minLength: Theme.Spacing.small)
+            Toggle("", isOn: $isOn)
+                .toggleStyle(.switch)
+                .tint(Theme.Colors.accent)
+                .labelsHidden()
+                .accessibilityLabel(title)
+        }
+    }
+}
+
+#Preview("ToggleRow – on and off") {
+    VStack(spacing: 16) {
+        ToggleRow(title: "Rebuild the scan", stateLine: "Off — stamps stay photographic", isOn: .constant(false))
+        ToggleRow(title: "Read the text (OCR)", stateLine: "English · Accurate", isOn: .constant(true))
+    }
+    .padding(40)
+    .frame(width: 320)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - RadioRow
+
+/// A single-select row used by two different popovers (screen 04's quality list, screen 07's
+/// versions list) with genuinely different unselected-state chrome, confirmed against
+/// `Toolbox Final.dc.html`: screen 04 draws NO glyph at all on an unselected row; screen 07
+/// draws a hollow radio ring. `showsUnselectedIndicator` (default `true`, matching screen 07 —
+/// the more common "choosing among existing things" case) is the flag; screen 04's popover
+/// passes `false`.
+struct RadioRow: View {
+    enum Tone { case plain, accent }
+
+    let title: String
+    let subtitle: String
+    let isSelected: Bool
+    var subtitleTone: Tone = .plain
+    var trailingValue: String? = nil
+    var badge: String? = nil
+    var showsUnselectedIndicator: Bool = true
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    /// Whether this row reserves a leading indicator slot at all — screen 04's unselected rows
+    /// have no glyph AND no reserved space (title sits flush with the row's padding); only
+    /// screen 07's hollow-ring rows (and any selected row) get the 14pt slot + gap.
+    private var reservesIndicatorSlot: Bool { isSelected || showsUnselectedIndicator }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: reservesIndicatorSlot ? 10 : 0) {
+                if reservesIndicatorSlot { indicator }
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 7) {
+                        Text(title).font(.system(size: 13, weight: isSelected ? .semibold : .regular)).foregroundStyle(Theme.Colors.text)
+                        if let badge {
+                            Text(badge)
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(Theme.Colors.accent)
+                                .padding(.vertical, 1.5)
+                                .padding(.horizontal, 6)
+                                .background(Theme.Colors.accent.opacity(0.14), in: Capsule())
+                        }
+                    }
+                    Text(subtitle)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(subtitleTone == .accent ? Theme.Colors.accent : Theme.Colors.textTertiary)
+                }
+                Spacer(minLength: Theme.Spacing.small)
+                if let trailingValue {
+                    Text(trailingValue)
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
+                }
+            }
+            .padding(.vertical, 9)
+            .padding(.horizontal, 10)
+        }
+        .buttonStyle(.plain)
+        .clearsClickFocus()
+        .background(
+            isSelected ? Theme.Colors.accent.opacity(0.09) : (isHovering ? Theme.Colors.background : .clear),
+            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+        )
+        .onHover { isHovering = $0 }
+        .pointingHandCursor()
+        .accessibilityLabel("\(title), \(subtitle)")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    @ViewBuilder
+    private var indicator: some View {
+        if isSelected {
+            ZStack {
+                Circle().fill(Theme.Colors.accent)
+                Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.white)
+            }
+            .frame(width: 14, height: 14)
+        } else {
+            Circle().stroke(Theme.Colors.stroke, lineWidth: 1.4).frame(width: 14, height: 14)
+        }
+    }
+}
+
+#Preview("RadioRow – quality popover (no unselected glyph)") {
+    VStack(spacing: 1) {
+        RadioRow(title: "Smallest", subtitle: "For email limits. Photographs soften.", isSelected: false,
+                 trailingValue: "8.4 MB", showsUnselectedIndicator: false, action: {})
+        RadioRow(title: "Balanced", subtitle: "Indistinguishable on screen.", isSelected: true,
+                 trailingValue: "12.6 MB", badge: "RECOMMENDED", showsUnselectedIndicator: false, action: {})
+        RadioRow(title: "High quality", subtitle: "Safe to print at full size.", isSelected: false,
+                 trailingValue: "24.9 MB", showsUnselectedIndicator: false, action: {})
+    }
+    .padding(10)
+    .frame(width: 330)
+    .background(Theme.Colors.surface)
+}
+
+#Preview("RadioRow – versions popover (hollow ring)") {
+    VStack(spacing: 1) {
+        RadioRow(title: "Rebuilt · 4.1 MB", subtitle: "In use. Text sharp, paper texture smoothed.",
+                  isSelected: true, subtitleTone: .accent, action: {})
+        RadioRow(title: "Photographs · 6.8 MB", subtitle: "Pages untouched, only lighter.", isSelected: false, action: {})
+        RadioRow(title: "Original · 18.7 MB", subtitle: "Never modified, still in its folder.", isSelected: false, action: {})
+    }
+    .padding(10)
+    .frame(width: 312)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - CheckRow
+
+/// A plain checkbox row (screen 08's "Choose which files…" file-selection list).
+struct CheckRow: View {
+    let title: String
+    @Binding var isChecked: Bool
+
+    var body: some View {
+        Button {
+            isChecked.toggle()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 15))
+                    .foregroundStyle(isChecked ? Theme.Colors.accent : Theme.Colors.textTertiary)
+                Text(title).themeFont(.body13).foregroundStyle(Theme.Colors.text)
+                Spacer(minLength: 0)
+            }
+        }
+        .buttonStyle(.plain)
+        .clearsClickFocus()
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isChecked ? [.isSelected] : [])
+    }
+}
+
+#Preview("CheckRow") {
+    VStack(alignment: .leading, spacing: 10) {
+        CheckRow(title: "Annual-Report-2025.pdf", isChecked: .constant(true))
+        CheckRow(title: "Scanned-Contract.pdf", isChecked: .constant(false))
+    }
+    .padding(40)
+    .frame(width: 320)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - Chrome: PopoverChrome / SheetChrome / UpdateBannerChrome
+
+/// Shared popover container — background, corner radius, shadow, anchor tail, and the fade +
+/// scale + rise entrance (Reduce Motion: appears instantly, no transform).
+struct PopoverChrome<Content: View>: View {
+    var width: CGFloat
+    /// Horizontal offset of the tail from the popover's leading edge, matching the anchor.
+    var tailOffset: CGFloat = 24
+    var tailEdge: Edge = .top
+    @ViewBuilder var content: () -> Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
+
+    var body: some View {
+        content()
+            .padding(7)
+            .frame(width: width)
+            .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                    .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
+            )
+            .overlay(alignment: tailEdge == .top ? .topLeading : .bottomLeading) { tail }
+            .shadow(color: .black.opacity(0.24), radius: 23, x: 0, y: 16)
+            .scaleEffect(hasAppeared || reduceMotion ? 1 : 0.95)
+            .opacity(hasAppeared || reduceMotion ? 1 : 0)
+            .offset(y: hasAppeared || reduceMotion ? 0 : (tailEdge == .top ? -7 : 7))
+            .onAppear {
+                guard !reduceMotion else { hasAppeared = true; return }
+                withAnimation(.easeOut(duration: Theme.Motion.popover)) { hasAppeared = true }
+            }
+    }
+
+    private var tail: some View {
+        Rectangle()
+            .fill(Theme.Colors.surface)
+            .frame(width: 12, height: 12)
+            .overlay(Rectangle().strokeBorder(Theme.Colors.stroke, lineWidth: 0.5))
+            .rotationEffect(.degrees(45))
+            .offset(x: tailOffset, y: tailEdge == .top ? -6 : 6)
+    }
+}
+
+#Preview("PopoverChrome") {
+    PopoverChrome(width: 260) {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Popover content").themeFont(.bodyStrong)
+            Text("Any content composed by the caller.").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+        }
+        .padding(8)
+    }
+    .padding(60)
+    .background(Theme.Colors.background)
+}
+
+/// Shared sheet container — dim overlay, centred card, corner radius, shadow, and the fade +
+/// rise + scale entrance (Reduce Motion: appears instantly).
+struct SheetChrome<Content: View>: View {
+    var width: CGFloat
+    var topOffset: CGFloat = 52
+    @ViewBuilder var content: () -> Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(hasAppeared || reduceMotion ? 0.22 : 0)
+                .ignoresSafeArea()
+            content()
+                .frame(width: width)
+                .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.sheet, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.Radius.sheet, style: .continuous)
+                        .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(0.34), radius: 30, x: 0, y: 26)
+                .padding(.top, topOffset)
+                .scaleEffect(hasAppeared || reduceMotion ? 1 : 0.965)
+                .opacity(hasAppeared || reduceMotion ? 1 : 0)
+                .offset(y: hasAppeared || reduceMotion ? 0 : 14)
+        }
+        .onAppear {
+            guard !reduceMotion else { hasAppeared = true; return }
+            withAnimation(.easeOut(duration: Theme.Motion.sheet)) { hasAppeared = true }
+        }
+    }
+}
+
+#Preview("SheetChrome") {
+    SheetChrome(width: 420) {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sheet title").themeFont(.sheetTitle)
+            Text("Sheet content composed by the caller.").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+        }
+        .padding(20)
+    }
+    .frame(width: 700, height: 500)
+    .background(Theme.Colors.background)
+}
+
+/// Shared update-banner container — full-width strip under the titlebar, bottom hairline, and
+/// the slide-down entrance (Reduce Motion: appears instantly, no slide).
+struct UpdateBannerChrome<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
+
+    var body: some View {
+        content()
+            .padding(.vertical, 9)
+            .padding(.horizontal, 20)
+            .frame(maxWidth: .infinity)
+            .background(Theme.Colors.accent.opacity(0.09))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(Theme.Colors.hairline).frame(height: 0.5)
+            }
+            .offset(y: hasAppeared || reduceMotion ? 0 : -40)
+            .onAppear {
+                guard !reduceMotion else { hasAppeared = true; return }
+                withAnimation(.easeOut(duration: Theme.Motion.banner).delay(0.15)) { hasAppeared = true }
+            }
+    }
+}
+
+#Preview("UpdateBannerChrome") {
+    UpdateBannerChrome {
+        HStack {
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(Theme.Colors.accent)
+            Text("A newer version v1.4 is available").themeFont(.body13)
+            Spacer()
+            LinkButton(title: "See what changed", action: {})
+            PrimaryButton(title: "Update", action: {})
+        }
+    }
+    .frame(width: 700)
+    .background(Theme.Colors.surface)
+}
+
+// MARK: - Shared row helpers
+
+/// Backs `QueueRow`'s click-to-open — mirrors `Components.swift`'s `RowOpenModifier` for
+/// `FileRow`, duplicated rather than shared across files because `FileRow` predates the
+/// redesign and is slated for deletion in Phase I, not a dependency this task should introduce.
+private struct RowOpenModifier: ViewModifier {
+    let onOpen: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        if let onOpen {
+            content.onTapGesture(perform: onOpen).pointingHandCursor().help("Open this PDF")
+        } else {
+            content
+        }
+    }
+}
