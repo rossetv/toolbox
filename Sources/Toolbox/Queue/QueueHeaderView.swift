@@ -157,7 +157,11 @@ struct QueueHeaderView: View {
     }
 
     private func workingStatusText(_ progress: BatchProgress) -> String {
-        let percent = Int((progress.fraction * 100).rounded())
+        // This text renders only on screen 05 (`state == .working`), so the batch is by
+        // definition not finished yet — a row's own live fraction can round to 100 a beat before
+        // its terminal state lands (e.g. OCR's last-page report), and the honest-progress rule
+        // (spec §6.8) forbids a done-claim ahead of reality.
+        let percent = min(99, Int((progress.fraction * 100).rounded()))
         guard let eta = progress.etaSeconds else { return "\(percent)%" }
         return "\(percent)% · about \(eta) second\(eta == 1 ? "" : "s") left"
     }

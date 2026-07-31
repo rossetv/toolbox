@@ -412,7 +412,11 @@ struct QueueRowsView: View {
                 let verb = row?.shipped?.variant == .mrc ? "Rebuilt" : "Compressed"
                 meta = "\(verb) and searchable · \(percent)"
             } else if state == .working, let duration = model.rowDuration(for: job.id) {
-                meta = "\(percent) · finished in \(Int(duration.rounded())) second\(Int(duration.rounded()) == 1 ? "" : "s")"
+                // The honest-progress rule (spec §6.8) floors here too: a sub-second row rounds
+                // to zero, and "finished in 0 seconds" reads as a broken timer rather than a fast one.
+                let seconds = Int(duration.rounded())
+                let durationText = seconds < 1 ? "under a second" : "\(seconds) second\(seconds == 1 ? "" : "s")"
+                meta = "\(percent) · finished in \(durationText)"
             } else {
                 // The STORE's shipped file first: it is the authoritative
                 // delivered path, ahead of the reservation ledger or the queue's own `resultURL`.
