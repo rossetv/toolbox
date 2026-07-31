@@ -243,13 +243,17 @@ struct QueueRowsView: View {
                 ?? QueueByteFormat.size(of: job.url).map(QueueByteFormat.string) ?? ""
             return RowDescriptor(meta: "Next", trailing: .status(text: current, kind: .queued), canOpen: true)
         }
+        // Per-file override (spec §7, DESIGN.md §9 04c): an overridden row's meta gets the
+        // accent "Its own settings" — the popover's own "Match the batch" is what clears it.
+        let metaAccent = model.overrides[job.id] != nil ? "Its own settings" : nil
         guard let estimate = job.estimate, let inputBytes = QueueByteFormat.size(of: job.url) else {
-            return RowDescriptor(meta: meta, trailing: .sizeColumn(current: "—", target: "—", targetColor: nil),
+            return RowDescriptor(meta: meta, metaAccent: metaAccent,
+                                  trailing: .sizeColumn(current: "—", target: "—", targetColor: nil),
                                   canOpen: true, canConfigure: true, canRemove: true)
         }
         let marker = estimate.isFallback ? "~" : "\u{2248}"
         return RowDescriptor(
-            meta: meta,
+            meta: meta, metaAccent: metaAccent,
             trailing: .sizeColumn(current: QueueByteFormat.string(inputBytes),
                                   target: "\(marker)\(QueueByteFormat.string(estimate.predictedBytes))",
                                   targetColor: nil),

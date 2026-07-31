@@ -192,6 +192,46 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(descriptor.emphasis, .degraded, "noGain+tooFaint must be marked degraded")
     }
 
+    // MARK: per-file override surfacing (spec §7, DESIGN.md §9 04c)
+
+    /// An overridden queued row's meta gets the accent "Its own settings" — the popover's own
+    /// "Match the batch" is what clears it.
+    func testOverriddenRowGetsItsOwnSettingsMetaAccent() throws {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        model.add([try Fixtures.bornDigitalPDF()])
+        let job = try XCTUnwrap(model.jobs.first)
+        model.setOverride(RowOverride(rebuildScan: true), for: job.id)
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .ready)
+        XCTAssertEqual(descriptor.metaAccent, "Its own settings")
+    }
+
+    /// A row matching the batch (no override) never gets the accent.
+    func testUnoverriddenRowHasNoMetaAccent() throws {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        model.add([try Fixtures.bornDigitalPDF()])
+        let job = try XCTUnwrap(model.jobs.first)
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .ready)
+        XCTAssertNil(descriptor.metaAccent)
+    }
+
+    /// The ready footer's subline notes the divergence iff any row has its own settings — singular
+    /// wording is the handoff's pinned string (DESIGN.md §9 04c/§15); several overrides get a
+    /// truthful plural, recorded as a divergence (no plural form is pinned).
+    func testReadyFooterNotesDivergenceOnlyWhenOverridesExist() throws {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        model.add([try Fixtures.bornDigitalPDF(), try Fixtures.bornDigitalPDF()])
+        XCTAssertEqual(model.jobs.count, 2)
+        XCTAssertEqual(QueueFooterView.readySubline(model: model), "Your originals stay exactly where they are.")
+
+        model.setOverride(RowOverride(rebuildScan: true), for: model.jobs[0].id)
+        XCTAssertEqual(QueueFooterView.readySubline(model: model),
+                       "One file has its own settings, so its estimate differs from the batch.")
+
+        model.setOverride(RowOverride(rebuildScan: true), for: model.jobs[1].id)
+        XCTAssertEqual(QueueFooterView.readySubline(model: model),
+                       "2 files have their own settings, so their estimates differ from the batch.")
+    }
+
     // MARK: helpers
 
     /// Every `QueueViewModel` this file constructs directly (not via `HeavyEnv`, which already

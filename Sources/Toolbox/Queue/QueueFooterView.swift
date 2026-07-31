@@ -38,7 +38,7 @@ struct QueueFooterView: View {
         case .ready:
             VStack(alignment: .leading, spacing: 1) {
                 Text(Self.readyHeadline(model: model)).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
-                Text("Your originals stay exactly where they are.").themeFont(.meta).foregroundStyle(Theme.Colors.textTertiary)
+                Text(Self.readySubline(model: model)).themeFont(.meta).foregroundStyle(Theme.Colors.textTertiary)
             }
         case .working:
             VStack(alignment: .leading, spacing: 1) {
@@ -95,6 +95,18 @@ struct QueueFooterView: View {
         guard before > 0 else { return "Ready to start" }
         guard counted == model.jobs.count else { return "\(QueueByteFormat.string(before)) total" }
         return "\(QueueByteFormat.string(before)) \u{2192} about \(QueueByteFormat.string(predicted))"
+    }
+
+    /// Screen 03's subline: the divergence note (DESIGN.md §9 04c/§15) whenever any row has its
+    /// own per-file settings, else the plain originals-are-safe reassurance. Only the singular
+    /// wording is pinned by the handoff; a truthful plural is a recorded divergence.
+    static func readySubline(model: QueueViewModel) -> String {
+        let overridden = model.jobs.filter { model.overrides[$0.id] != nil }.count
+        guard overridden > 0 else { return "Your originals stay exactly where they are." }
+        if overridden == 1 {
+            return "One file has its own settings, so its estimate differs from the batch."
+        }
+        return "\(overridden) files have their own settings, so their estimates differ from the batch."
     }
 
     static func startTitle(model: QueueViewModel) -> String {
