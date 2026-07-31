@@ -25,10 +25,11 @@ import SwiftUI
 //                        plain text, no component.
 // 02 Drag-over        — the existing `DropZone` component's own drag-fan presentation; no new
 //                        component (P-A restyles `DropZone`, not this task).
-// 03 Ready             — VerbChip ×2 (Compress on w/ suffix, OCR off); QueueRow ×N
-//                        (`.sizeArrow` trailing); PrimaryButton "Start". The "⋯" menu and
-//                        "Saving beside the originals ⌄" control are a native SwiftUI `Menu`
-//                        each — DELIBERATELY not componentised (see "Non-components" below).
+// 03 Ready             — VerbChip ×2 (Compress on w/ suffix, OCR off); QueueRow ×N (trailing:
+//                        `QueueRowSizeColumn`, the shared 70pt current→predicted column);
+//                        PrimaryButton "Start". The "⋯" menu and "Saving beside the originals ⌄"
+//                        control are a native SwiftUI `Menu` each — DELIBERATELY not
+//                        componentised (see "Non-components" below).
 // 04 Quality popover   — PopoverChrome wrapping RadioRow ×3. NOT OptionCard: the plan's inline
 //                        comment groups this with screen 08, but `Toolbox Final.dc.html` draws
 //                        a vertical list with a right-aligned total and a RECOMMENDED capsule —
@@ -100,6 +101,14 @@ import SwiftUI
 //      band for `VariantCard`'s page-preview panel.
 //   5. CapsuleBadge: `icon: Image? = nil` — the "N versions" capsule (its one real usage) always
 //      carries a small stack glyph inside the same pill.
+//   6. `QueueRowSizeColumn` — a small NEW view (not in the plan's inventory) owning the 70pt
+//      current→target size column shared by screens 03 and 08, so tracks compose the same
+//      column rather than each re-deriving the 70pt width independently.
+//
+// Correction against the plan's prose (verified against the html, not a missing component):
+// VariantCard carries NO `action`/`Button` — screen 09's two cards are the one place in the
+// whole handoff with neither `cursor:pointer` nor a hover style; selection happens only through
+// the footer's "Keep photographs"/"Keep rebuilt" buttons. `isSelected` drives the ring/tint only.
 
 // MARK: - VerbChip
 
@@ -465,6 +474,38 @@ struct CapsuleBadge: View {
     .background(Theme.Colors.surface)
 }
 
+// MARK: - QueueRowSizeColumn
+
+/// The 70pt right-aligned trailing size column (README §Screens 03: "predicted size … in a 70px
+/// right-aligned column") used by every "current → target size" `QueueRow.trailing`
+/// composition — screen 03's ready rows, screen 08's per-file mechanism lines. One definition so
+/// every screen sharing this shape uses the same column width rather than three tracks each
+/// re-deriving the 70pt magic number independently.
+struct QueueRowSizeColumn: View {
+    let current: String
+    let target: String
+    /// Accent when the row is an instant switch already on disk (screen 08); `textSecondary`
+    /// (default) for an ordinary predicted/finished size.
+    var targetColor: Color = Theme.Colors.textSecondary
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Text(current).themeFont(.body13).foregroundStyle(Theme.Colors.textTertiary)
+            Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.Colors.textTertiary)
+            Text(target).themeFont(.rowName).foregroundStyle(targetColor).frame(width: 70, alignment: .trailing)
+        }
+    }
+}
+
+#Preview("QueueRowSizeColumn") {
+    VStack(alignment: .trailing, spacing: 8) {
+        QueueRowSizeColumn(current: "24.1 MB", target: "6.3 MB")
+        QueueRowSizeColumn(current: "4.1 MB", target: "8.9 MB", targetColor: Theme.Colors.accent)
+    }
+    .padding(24)
+    .background(Theme.Colors.surface)
+}
+
 // MARK: - QueueRow
 
 /// The queue's one row shape, covering every screen it appears on (03 ready, 05 working, 06/12
@@ -613,14 +654,10 @@ struct QueueRow<Trailing: View>: View {
     }
 }
 
-#Preview("QueueRow – ready (size arrow)") {
+#Preview("QueueRow – ready (size column)") {
     VStack(spacing: 2) {
         QueueRow(name: "Annual-Report-2025.pdf", meta: "48 pages, mostly photographs", onOpen: {}, onGear: {}) {
-            HStack(spacing: 9) {
-                Text("24.1 MB").themeFont(.body13).foregroundStyle(Theme.Colors.textTertiary)
-                Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.Colors.textTertiary)
-                Text("6.3 MB").themeFont(.rowName).foregroundStyle(Theme.Colors.textSecondary).frame(width: 70, alignment: .trailing)
-            }
+            QueueRowSizeColumn(current: "24.1 MB", target: "6.3 MB")
         }
     }
     .padding(24)
@@ -794,6 +831,12 @@ struct BatchCard: View {
 
 /// One of screen 09's two scan-choice cards. The "BEST FOR SCANS"/"NOTHING REDRAWN" label is
 /// plain coloured `Text` (see the file-top map for why this is not `CapsuleBadge`).
+///
+/// Deliberately NOT a button: unlike every other interactive element in
+/// `Toolbox Final.dc.html`, neither card carries `cursor:pointer` nor a hover style — selection
+/// happens exclusively through the footer's two equal-weight buttons ("Keep photographs"/"Keep
+/// rebuilt"), composed by the caller from `SecondaryButton`/`PrimaryButton`. `isSelected` only
+/// drives the accent ring/tint that previews which choice is currently leading.
 struct VariantCard: View {
     let title: String
     let badgeText: String
@@ -803,42 +846,37 @@ struct VariantCard: View {
     let explanation: String
     let previewURL: URL?
     let isSelected: Bool
-    let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.Colors.text)
-                    Text(badgeText)
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(badgeIsAccent ? Theme.Colors.accent : Theme.Colors.textTertiary)
-                }
-                HStack(alignment: .lastTextBaseline, spacing: 8) {
-                    Text(sizeText).font(.system(size: 22, weight: .semibold)).monospacedDigit()
-                        .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
-                    Text(percentText).font(.system(size: 12)).foregroundStyle(Theme.Colors.success)
-                }
-                HStack {
-                    Spacer(minLength: 0)
-                    PDFThumbnail(url: previewURL, width: 76, plain: true)
-                    Spacer(minLength: 0)
-                }
-                .padding(12)
-                .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-                .padding(.top, 8)
-
-                Text(explanation)
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.Colors.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 3)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.Colors.text)
+                Text(badgeText)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(badgeIsAccent ? Theme.Colors.accent : Theme.Colors.textTertiary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
+            HStack(alignment: .lastTextBaseline, spacing: 8) {
+                Text(sizeText).font(.system(size: 22, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
+                Text(percentText).font(.system(size: 12)).foregroundStyle(Theme.Colors.success)
+            }
+            HStack {
+                Spacer(minLength: 0)
+                PDFThumbnail(url: previewURL, width: 76, plain: true)
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .padding(.top, 8)
+
+            Text(explanation)
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 3)
         }
-        .buttonStyle(.plain)
-        .clearsClickFocus()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
         .background(
             isSelected ? Theme.Colors.accent.opacity(0.07) : Theme.Colors.background,
             in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
@@ -847,7 +885,7 @@ struct VariantCard: View {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .strokeBorder(isSelected ? Theme.Colors.accent : .clear, lineWidth: 1.5)
         )
-        .pointingHandCursor()
+        .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(sizeText), \(percentText). \(explanation)")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -859,13 +897,13 @@ struct VariantCard: View {
             title: "Rebuilt in layers", badgeText: "BEST FOR SCANS", badgeIsAccent: true,
             sizeText: "4.1 MB", percentText: "78% smaller",
             explanation: "Letters are traced and stay crisp at any zoom. The paper behind them is flattened, so grain, shadows and coffee rings disappear.",
-            previewURL: nil, isSelected: true, action: {}
+            previewURL: nil, isSelected: true
         )
         VariantCard(
             title: "Left as photographs", badgeText: "NOTHING REDRAWN", badgeIsAccent: false,
             sizeText: "6.8 MB", percentText: "64% smaller",
             explanation: "Each page stays a picture of the paper, just lighter. Choose this when the sheet itself is evidence — signatures, stamps, handwriting.",
-            previewURL: nil, isSelected: false, action: {}
+            previewURL: nil, isSelected: false
         )
     }
     .padding(24)
@@ -1330,6 +1368,117 @@ struct UpdateBannerChrome<Content: View>: View {
     }
     .frame(width: 700)
     .background(Theme.Colors.surface)
+}
+
+// MARK: - Dark-mode previews
+//
+// Chrome (bg/surface/stroke/shadow) and the `#3a3a3c` SecondaryButton pair are exercised here
+// rather than as individual per-component twins, since three of these are full-bleed dim/overlay
+// containers that don't compose into one small gallery.
+
+#Preview("PopoverChrome – Dark") {
+    PopoverChrome(width: 260) {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Popover content").themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
+            Text("Any content composed by the caller.").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+        }
+        .padding(8)
+    }
+    .padding(60)
+    .background(Theme.Colors.background)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("SheetChrome – Dark") {
+    SheetChrome(width: 420) {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sheet title").themeFont(.sheetTitle).foregroundStyle(Theme.Colors.text)
+            Text("Sheet content composed by the caller.").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+        }
+        .padding(20)
+    }
+    .frame(width: 700, height: 500)
+    .background(Theme.Colors.background)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("UpdateBannerChrome – Dark") {
+    UpdateBannerChrome {
+        HStack {
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(Theme.Colors.accent)
+            Text("A newer version v1.4 is available").themeFont(.body13).foregroundStyle(Theme.Colors.text)
+            Spacer()
+            LinkButton(title: "See what changed", action: {})
+            PrimaryButton(title: "Update", action: {})
+        }
+    }
+    .frame(width: 700)
+    .background(Theme.Colors.surface)
+    .preferredColorScheme(.dark)
+}
+
+/// Every remaining component, once, in dark mode — backs the file-top map's "12 Dark …
+/// exercises every token's dark variant through the components above" claim (dark `background`
+/// #1c1c1e, `surface` #242426, `accent` #0a84ff, `success` #32d74b, the asymmetric `fill`, and
+/// `SecondaryButton`'s local `#3a3a3c`).
+#Preview("Dark gallery") {
+    ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 8) {
+                VerbChip(title: "Compress", suffix: "Balanced", isOn: true, icon: Image(systemName: "arrow.down.right.and.arrow.up.left"), toggle: {}, openOptions: {})
+                VerbChip(title: "OCR", suffix: nil, isOn: false, icon: Image(systemName: "doc.text.magnifyingglass"), toggle: {})
+            }
+            HStack(spacing: 20) {
+                StatusIndicator(kind: .finished)
+                StatusIndicator(kind: .active(0.6))
+                StatusIndicator(kind: .queued)
+                StatusIndicator(kind: .unchanged)
+                StatusIndicator(kind: .warn)
+            }
+            CapsuleProgressBar(fraction: 0.52).frame(width: 300)
+            HStack(spacing: 8) {
+                OptionCard(title: "Smallest", value: "6.2 MB", caption: "4.2 MB less", captionTone: .success, isSelected: false, action: {})
+                OptionCard(title: "High quality", value: "23.0 MB", caption: "for printing", captionTone: .plain, isSelected: true, action: {})
+            }
+            HStack(spacing: 10) {
+                CapsuleBadge(text: "3 versions", tone: .muted, icon: Image(systemName: "square.3.layers.3d"))
+                CapsuleBadge(text: "3 versions", tone: .accent, icon: Image(systemName: "square.3.layers.3d"))
+            }
+            QueueRow(
+                name: "Scanned-Contract.pdf", meta: "Rebuilt and searchable · 78% smaller",
+                onOpen: {}, versionsCapsuleTitle: "3 versions", onVersionsCapsule: {}
+            ) {
+                HStack(spacing: 9) {
+                    Text("4.1 MB").themeFont(.rowName).foregroundStyle(Theme.Colors.text)
+                    StatusIndicator(kind: .finished)
+                }
+            }
+            .frame(width: 560)
+            BatchCard(icon: .warn, title: "4 of 5 files in Invoices", subtitle: "11:05 · one was password-locked",
+                      trailingLink: (title: "Open folder", action: {}), action: {})
+                .frame(width: 480)
+            HStack(alignment: .top, spacing: 14) {
+                VariantCard(title: "Rebuilt in layers", badgeText: "BEST FOR SCANS", badgeIsAccent: true,
+                            sizeText: "4.1 MB", percentText: "78% smaller",
+                            explanation: "Letters are traced and stay crisp at any zoom.",
+                            previewURL: nil, isSelected: true)
+            }
+            .frame(width: 300)
+            HStack(spacing: 10) {
+                SecondaryButton(title: "Show in Finder", icon: Image(systemName: "folder"), action: {})
+                SecondaryButton(title: "Cancel", action: {})
+            }
+            SegmentedRow(options: ["Fast", "Accurate"], selection: .constant(1)).frame(width: 200)
+            DropdownRow(label: "Language on the page", options: ["English", "German"], selection: .constant("English")).frame(width: 260)
+            ToggleRow(title: "Read the text (OCR)", stateLine: "English · Accurate", isOn: .constant(true)).frame(width: 260)
+            RadioRow(title: "Rebuilt · 4.1 MB", subtitle: "In use. Text sharp, paper texture smoothed.", isSelected: true, subtitleTone: .accent, action: {})
+                .frame(width: 300)
+            CheckRow(title: "Annual-Report-2025.pdf", isChecked: .constant(true)).frame(width: 260)
+        }
+        .padding(24)
+    }
+    .background(Theme.Colors.surface)
+    .preferredColorScheme(.dark)
 }
 
 // MARK: - Shared row helpers
