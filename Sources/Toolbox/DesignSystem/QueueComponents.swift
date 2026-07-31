@@ -494,12 +494,24 @@ struct QueueRowSizeColumn: View {
     /// Accent when the row is an instant switch already on disk (screen 08); `textSecondary`
     /// (default) for an ordinary predicted/finished size.
     var targetColor: Color = Theme.Colors.textSecondary
+    /// Screen 08's nothing-to-change row (html: `only-08.html` 649-655): the arrow collapses to
+    /// a same-width spacer (keeping the 70pt column aligned with changed rows) and `target`
+    /// drops to the SAME grey/small styling as `current` — never `targetColor`, which is only
+    /// meaningful when the row actually changes.
+    var sameSize: Bool = false
 
     var body: some View {
         HStack(spacing: 9) {
             Text(current).themeFont(.body13).foregroundStyle(Theme.Colors.textTertiary)
-            Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.Colors.textTertiary)
-            Text(target).themeFont(.rowName).foregroundStyle(targetColor).frame(width: 70, alignment: .trailing)
+            if sameSize {
+                Color.clear.frame(width: 9, height: 1)
+            } else {
+                Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.Colors.textTertiary)
+            }
+            Text(target)
+                .themeFont(sameSize ? .body13 : .rowName)
+                .foregroundStyle(sameSize ? Theme.Colors.textTertiary : targetColor)
+                .frame(width: 70, alignment: .trailing)
         }
     }
 }

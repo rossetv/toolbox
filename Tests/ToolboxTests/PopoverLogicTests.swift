@@ -290,6 +290,40 @@ final class PopoverLogicTests: XCTestCase {
                       "Already optimised — nothing to change")
     }
 
+    // MARK: ChangeQualitySheet size pinning / CTA gating (render 08 nothing-to-change rows)
+
+    func testRowIsUnchangedForNoneAndFutileOnly() {
+        XCTAssertTrue(ChangeQualitySheet.rowIsUnchanged(.none))
+        XCTAssertTrue(ChangeQualitySheet.rowIsUnchanged(.futile(.balanced)))
+        XCTAssertFalse(ChangeQualitySheet.rowIsUnchanged(.armed(.balanced)))
+        XCTAssertFalse(ChangeQualitySheet.rowIsUnchanged(.instantSwitch(.balanced)))
+    }
+
+    /// The bug this fixes: a "nothing to change" row must never show a changed projection,
+    /// even when a stale/different estimator prediction is available.
+    func testRowTargetBytesPinsToCurrentWhenUnchanged() {
+        XCTAssertEqual(ChangeQualitySheet.rowTargetBytes(state: .none, currentBytes: 66_000, prediction: 83_000),
+                      66_000)
+        XCTAssertEqual(ChangeQualitySheet.rowTargetBytes(state: .futile(.balanced), currentBytes: 184_000,
+                                                         prediction: 200_000), 184_000)
+    }
+
+    func testRowTargetBytesUsesPredictionWhenChanged() {
+        XCTAssertEqual(ChangeQualitySheet.rowTargetBytes(state: .armed(.balanced), currentBytes: 66_000,
+                                                         prediction: 83_000), 83_000)
+        // No confident estimate: falls back to current bytes, same as the footer's `total`.
+        XCTAssertEqual(ChangeQualitySheet.rowTargetBytes(state: .armed(.balanced), currentBytes: 66_000,
+                                                         prediction: nil), 66_000)
+    }
+
+    func testCanSwitchFalseWhenEveryRowIsUnchanged() {
+        XCTAssertFalse(ChangeQualitySheet.canSwitch([.none, .futile(.balanced), .none]))
+    }
+
+    func testCanSwitchTrueWhenAnyRowWouldChange() {
+        XCTAssertTrue(ChangeQualitySheet.canSwitch([.none, .armed(.smallestSize), .futile(.balanced)]))
+    }
+
     // MARK: ScanConsentSheet
 
     func testScanConsentResolvedPairFindsMRCAndPlainEitherOrder() {

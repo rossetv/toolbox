@@ -100,16 +100,20 @@ struct ChangeQualitySheet: View {
         VStack(spacing: 2) {
             ForEach(eligibleJobs) { job in
                 if let row = model.versions(for: job) {
+                    let state = model.recompressState(for: job)
+                    let currentBytes = row.shipped?.bytes ?? row.originalBytes
+                    let target = Self.rowTargetBytes(
+                        state: state, currentBytes: currentBytes,
+                        prediction: model.recompressPrediction(for: job, at: model.preset))
                     QueueRow(name: job.url.lastPathComponent,
                             meta: Self.mechanismLine(
-                                state: model.recompressState(for: job),
-                                preset: model.preset,
+                                state: state, preset: model.preset,
                                 measuredRate: model.measuredPageRate(for: job.id),
                                 pageCount: model.inspections[job.id]?.pageCount)) {
                         QueueRowSizeColumn(
-                            current: QueueByteFormat.string(row.shipped?.bytes ?? row.originalBytes),
-                            target: QueueByteFormat.string(model.recompressPrediction(for: job, at: model.preset)
-                                                    ?? (row.shipped?.bytes ?? row.originalBytes)))
+                            current: QueueByteFormat.string(currentBytes),
+                            target: QueueByteFormat.string(target),
+                            sameSize: Self.rowIsUnchanged(state))
                     }
                 }
             }
@@ -122,6 +126,7 @@ struct ChangeQualitySheet: View {
         let summaries = eligibleJobs.compactMap(summary(for:))
         let current = Self.total(summaries, at: nil)
         let predicted = Self.total(summaries, at: model.preset)
+        let canSwitch = Self.canSwitch(eligibleJobs.map { model.recompressState(for: $0) })
         return HStack {
             VStack(alignment: .leading, spacing: 1) {
                 Text("\(QueueByteFormat.string(current)) → about \(QueueByteFormat.string(predicted))")
@@ -134,7 +139,7 @@ struct ChangeQualitySheet: View {
                 model.preset = initialPreset
                 dismiss()
             }
-            PrimaryButton(title: "Switch to \(model.preset.title)") {
+            PrimaryButton(title: "Switch to \(model.preset.title)", isEnabled: canSwitch) {
                 model.compress()
                 dismiss()
             }
@@ -217,6 +222,33 @@ struct ChangeQualitySheet: View {
         case .futile, .none:
             return "Already optimised — nothing to change"
         }
+    }
+
+    /// Whether a row's recompress state is "nothing to change" (screen 08's grey/no-arrow
+    /// rows) — the SAME predicate `mechanismLine` reads for its "Already optimised — nothing
+    /// to change" caption, so the subtitle and the size pair can never disagree (the render-08
+    /// finding this fixes).
+    static func rowIsUnchanged(_ state: QueueViewModel.RowRecompressState) -> Bool {
+        switch state {
+        case .futile, .none: return true
+        case .armed, .instantSwitch: return false
+        }
+    }
+
+    /// The row's projected size at the current preset selection: pinned to its own current
+    /// bytes (no estimator pass) when nothing would actually change, otherwise the prediction
+    /// (falling back to current bytes when no confident estimate exists, same as the footer's
+    /// `total`).
+    static func rowTargetBytes(state: QueueViewModel.RowRecompressState, currentBytes: Int,
+                               prediction: Int?) -> Int {
+        rowIsUnchanged(state) ? currentBytes : (prediction ?? currentBytes)
+    }
+
+    /// The footer CTA is only a genuine switch when at least one eligible row would actually
+    /// change (spec §7): every row reading "nothing to change" makes "Switch to X" a no-op that
+    /// must not be offered as if it did something.
+    static func canSwitch(_ states: [QueueViewModel.RowRecompressState]) -> Bool {
+        states.contains { !rowIsUnchanged($0) }
     }
 
 }
