@@ -106,9 +106,10 @@ struct QueueRowsView: View {
     /// (this method's callers, `QueueRow`'s own modifier chain) fighting over a single opaque type.
     private func trailing(for job: ToolJob, descriptor: RowDescriptor) -> AnyView {
         switch descriptor.trailing {
-        case .sizeColumn(let current, let target, let targetColor, let kind):
+        case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize):
             let column = QueueRowSizeColumn(current: current, target: target,
-                                              targetColor: targetColor ?? Theme.Colors.textSecondary)
+                                              targetColor: targetColor ?? Theme.Colors.textSecondary,
+                                              sameSize: sameSize)
             if let kind {
                 return AnyView(HStack(spacing: 9) {
                     column
@@ -150,7 +151,7 @@ struct QueueRowsView: View {
     /// exercises directly (a SwiftUI body cannot be unit-tested; this can).
     struct RowDescriptor: Equatable {
         enum Trailing: Equatable {
-            case sizeColumn(current: String, target: String, targetColor: Color?, kind: StatusIndicator.Kind? = nil)
+            case sizeColumn(current: String, target: String, targetColor: Color?, kind: StatusIndicator.Kind? = nil, sameSize: Bool = false)
             case status(text: String?, kind: StatusIndicator.Kind)
             case problem(primary: RowAction?, link: RowAction)
             case problemPair(RowAction, RowAction)
@@ -158,8 +159,8 @@ struct QueueRowsView: View {
 
             static func == (lhs: Trailing, rhs: Trailing) -> Bool {
                 switch (lhs, rhs) {
-                case (.sizeColumn(let a, let b, let c, let d), .sizeColumn(let e, let f, let g, let h)):
-                    return a == e && b == f && c == g && d == h
+                case (.sizeColumn(let a, let b, let c, let d, let i), .sizeColumn(let e, let f, let g, let h, let j)):
+                    return a == e && b == f && c == g && d == h && i == j
                 case (.status(let a, let b), .status(let c, let d)):
                     return a == c && b == d
                 case (.problem(let a, let b), .problem(let c, let d)):
@@ -350,8 +351,14 @@ struct QueueRowsView: View {
             // noGain+OCR-added sibling (`row` recorded, `shipped` nil — spec §6.5's grey sizes).
             let isSearchable = row?.searchableByCard[.shipped] == true
             let meta = isSearchable ? "Already optimised · made searchable" : "Already optimised"
-            let sizeText = row.map { QueueByteFormat.string($0.originalBytes) }
-            return RowDescriptor(meta: meta, emphasis: .none, trailing: .status(text: sizeText, kind: .unchanged),
+            // DESIGN.md §9 06 / spec §6.5: a no-op (or OCR-only) finished row shows a grey SIZE
+            // PAIR keyed on its actual bytes, no savings claim — the same arrowless same-size
+            // treatment the change-quality sheet's nothing-to-change rows use
+            // (`QueueRowSizeColumn.sameSize`), not a single figure.
+            let sizeText = row.map { QueueByteFormat.string($0.originalBytes) } ?? "—"
+            return RowDescriptor(meta: meta, emphasis: .none,
+                                 trailing: .sizeColumn(current: sizeText, target: sizeText, targetColor: nil,
+                                                        kind: .unchanged, sameSize: true),
                                  canOpen: true, capsuleTitle: capsuleTitle(row))
         }
         let isSearchable = row?.searchableByCard[.shipped] == true

@@ -278,6 +278,61 @@ final class QueueViewStateTests: XCTestCase {
                        "a compress-only row must not claim searchable OR not-searchable: \(descriptor.meta)")
     }
 
+    /// DESIGN.md §9 06 / spec §6.5: a no-op (compress-only, no OCR) finished row renders a grey
+    /// SIZE PAIR (same figure twice, no arrow) + `StatusIndicator(.unchanged)` — never a single
+    /// figure.
+    func testCompressOnlyRowRendersGreySizePairNotASingleFigure() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/test.pdf"))
+        let outcome = RowOutcome(
+            originalBytes: 1000,
+            finalBytes: 1000,
+            compress: .noGain(bytes: 1000),
+            ocr: nil,
+            shippedVariant: nil,
+            runnerUp: nil
+        )
+        job.state = .done(outcome)
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .finished)
+        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+            return XCTFail("expected .sizeColumn trailing for a no-op finished row, got \(descriptor.trailing)")
+        }
+        XCTAssertEqual(current, target, "no-op row must show the SAME figure twice, not before/after")
+        XCTAssertTrue(sameSize, "no-op row must use the arrowless same-size treatment")
+        XCTAssertNil(targetColor)
+        XCTAssertEqual(kind, .unchanged)
+    }
+
+    /// The noGain+OCR-added sibling (spec §6.5): OCR made the file searchable but there's still
+    /// no shipped-version savings claim — the row must render the SAME grey size pair keyed on
+    /// its actual bytes, not a single figure.
+    func testAllOCRRowRendersGreySizePairKeyedOnActualBytes() async throws {
+        let pageText: [Int: [PositionedText]] = [0: [PositionedText(
+            text: "HELLO", boundingBox: CGRect(x: 0.1, y: 0.8, width: 0.5, height: 0.04))]]
+        let added = RecognisedDocument(pageText: pageText,
+                                       geometry: [0: PageGeometry(mediaBox: Fixtures.letter, rotation: 0)],
+                                       pagesRecognised: 1, pagesSkipped: 0, pageCount: 1)
+        let ocr = StubOCREngine(document: added)
+        let env = try HeavyEnv(ocrEngine: ocr)
+        env.model.ocrOn = true
+        env.stub.script = { _, _ in
+            .init(outcome: .noGain(bytes: 9_000), shippedBytes: nil, runnerUpBytes: nil)
+        }
+        _ = try await env.addRow()
+        env.model.compress()
+        try await waitUntil(timeout: 15) { !env.model.isRunning }
+        let job = try XCTUnwrap(env.model.jobs.first)
+
+        let descriptor = QueueRowsView.describe(job: job, model: env.model, state: .finished)
+        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+            return XCTFail("expected .sizeColumn trailing for an OCR-only finished row, got \(descriptor.trailing)")
+        }
+        XCTAssertEqual(current, target, "OCR-only row must show the SAME figure twice, no savings claim")
+        XCTAssertTrue(sameSize, "OCR-only row must use the arrowless same-size treatment")
+        XCTAssertNil(targetColor)
+        XCTAssertEqual(kind, .unchanged)
+    }
+
     // MARK: noGain composite copy (spec §6.5, DESIGN.md §11)
 
     /// noGain compress with OCR `.tooFaint` renders the spec's pinned composite "Already optimised · too faint to read"
