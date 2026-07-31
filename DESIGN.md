@@ -299,7 +299,7 @@ Standard curve: the handoff's `cubic-bezier(.2,.8,.25,1)`, reproduced as
 | `hoverOpacity` | 0.9 | Filled-button hover fade (handoff `opacity:.9`) |
 | `hoverLift` | −1pt | Filled-CTA hover rise (handoff `transform:translateY(-1px)`) |
 | `pressScale` | 0.97 | Pressed scale for every button (handoff `transform:translateY(0) scale(.97)` — the lift returns to rest as the scale lands) |
-| `linkHoverOpacity` | 0.6 | Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel" spans) |
+| `linkHoverOpacity` | 0.6 | Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel" spans; the handoff's `opacity:.65` on "See what changed" is consolidated into this same token — a 0.05 delta nobody can see is scatter, not fidelity) |
 | `capGlow` | 1.6s | Progress bar leading-cap glow pulse (handoff `@keyframes capGlow`, opacity .35→.95, ease-in-out, autoreversing) |
 
 The handoff writes `scale(.97)` on four of its six primary buttons and `scale(.98)` on the
