@@ -847,6 +847,7 @@ struct BatchCard: View {
             }
             .padding(.vertical, 9)
             .padding(.horizontal, 10)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .clearsClickFocus()
@@ -1209,6 +1210,7 @@ struct RadioRow: View {
             }
             .padding(.vertical, 9)
             .padding(.horizontal, 10)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .clearsClickFocus()
