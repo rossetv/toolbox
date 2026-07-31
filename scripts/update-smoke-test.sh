@@ -206,6 +206,6 @@ grep -q "UPDATE-SMOKE RELAUNCHED" "$RESULT_LOG" || fail "relaunched instance did
 # The relaunched instance exits itself (checkRelaunchIfMarked calls exit()) — but give it a
 # moment and clean up defensively so nothing lingers after this script exits.
 sleep 1
-pkill -f "Toolbox\.app/Contents/MacOS/Toolbox" 2>/dev/null || true
+pkill -f "$INSTALLED_APP/Contents/MacOS/Toolbox" 2>/dev/null || true
 
 echo "==> PASS: old PID $OLD_PID exited, bundle swapped v$OLD_VERSION -> v$SWAPPED_VERSION, relaunch confirmed"
