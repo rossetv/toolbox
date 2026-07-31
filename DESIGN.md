@@ -135,7 +135,8 @@ All defined in `Sources/Toolbox/DesignSystem/QueueComponents.swift`.
   options) opens that verb's options popover — two separate VoiceOver actions, never one
   ambiguous control.
 - **`StatusIndicator`** — the queue row's one trailing status glyph. `finished` (filled
-  check, pops in), `active(fraction)` (rotating accent arc), `queued` (breathing dashed
+  check, pops in), `active(fraction)` (accent arc trimmed to `fraction`, starting at
+  twelve o'clock — it does not spin, §11), `queued` (breathing dashed
   ring), `unchanged` (outline check, `textTertiary` — a fully successful no-op row),
   `warn` (the *same* outline-check shape as `unchanged`, only re-tinted `warn` — this is
   deliberately **not** the filled warn-disc a batch-summary header draws for "this batch
@@ -312,11 +313,29 @@ buttons and rows/cards/radio rows hover to `bg`; the `⋯` button and an off ver
 
 Motion not backed by a named `Theme.Motion` constant, still part of the law and driven by
 local component state: the progress bar's 1.9s light sweep; the
-Working row's shimmer (~2.4s); the active status ring's rotation (0.9s linear); the
+Working row's shimmer (~2.4s); the active status ring's arc, which animates its trim
+0.2s linear as `fraction` ticks and never rotates (§11); the
 queued dashed ring's breathing (~2s–2.2s); the drag-over fan's entrance + float loop
 (70ms stagger in, 2.6–3.2s float); the empty-state icon's pointer parallax (~90ms follow,
 ±11°/±13° rotation, ±7px translate, 1.05 scale, glow moving in counter-phase, settling
 back over 0.5s on exit).
+
+One-shot transition transforms are likewise un-tokenised, and deliberately so: the curve
+they ride *is* a token (`standard`), and a `Theme.Motion` constant with a single caller is
+scatter, not vocabulary. The full set, each with its home:
+
+- the header's title row settles from −8pt and its verb-chip row from −6pt, and the
+  progress bar grows out of the hairline from scale 0.4 anchored leading
+  (`QueueHeaderView`);
+- the empty↔queue screen swap cross-fades ±10pt (+10 for the empty side, −10 for the
+  queue) (`QueueView`);
+- a queue row lands from +26pt and leaves at scale 0.96 (`QueueRowsView`);
+- the row gear fades in from scale 0.7 (`QueueRow`);
+- a radio row's selection dot springs from scale 0.1 (`RadioRow`) and a tick box's mark
+  from 0.92 (`CheckRow`).
+
+Of these the handoff itself pins the −8pt header settle (`@keyframes landHead`) and the
++26pt row landing (`@keyframes landRow`); the rest are this app's own (§11).
 
 Press states are carried by one shared `MotionButtonStyle` (`Components.swift`) rather than
 per-component gesture handling, so every button in the app presses identically; a component's
@@ -620,12 +639,39 @@ A divergence is recorded here or it does not exist (`CODE_GUIDELINES.md` §8.4).
   hover style for most controls but an *active* (pressed) style for only its six primary
   buttons, and none at all for secondary buttons, links, chips, rows, cards, radio rows,
   tick boxes or the versions capsule. Every button in the app therefore gets the §8
-  `pressScale` press state, and the controls the handoff leaves entirely static (the tick
-  box's draw, a radio row's selection dot, the row gear's fade-in, screen-state and row
-  insertion/removal transitions) gain motion in the same token vocabulary. Where the handoff
-  *does* state a value it is reproduced verbatim — this divergence adds motion, it never
-  re-values motion the handoff pins. Authority: the human instruction above, recorded in
-  `.claude/DECISIONS.md` (2026-08-01).
+  `pressScale` press state.
+
+  It does pin two entrance motions and one hover reveal, and those are reproduced rather
+  than invented: rows land rising 26px (`@keyframes landRow`, .45s on the standard curve,
+  90ms per-row stagger, also scaling .985→1), the header settles from −8px
+  (`@keyframes landHead`, .4s), and the row gear fades in on hover (README: "a 26px gear
+  button fades in before the sizes"). The app carries the 26pt row rise
+  (`QueueRowsView`), the −8pt header settle (`QueueHeaderView`) and the gear's fade
+  (`QueueRow`) on the shared `standard` curve, with two deliberate simplifications: one
+  spring drives the whole list rather than a per-row stagger, and `landRow`'s .985 scale
+  is dropped (the gear's fade gains a 0.7 scale instead).
+
+  What the handoff leaves genuinely static or undefined is the rest — the tick box's draw
+  (the handoff draws no tick box anywhere), a radio row's selection dot, row *removal*,
+  and the change between screen states (the prototype renders one static screen per state
+  and defines no transition between them, in markup or in `support.js`) — and those gain
+  motion here in the §8 vocabulary. Beyond the two `landRow` details named above, where the
+  handoff *does* state a value it is reproduced verbatim — this divergence adds motion, it
+  never re-values motion the handoff pins. Authority: the human instruction above, recorded
+  in `.claude/DECISIONS.md` (2026-08-01).
+
+- **The active status ring does not rotate** — `StatusIndicator`'s `active(fraction)`
+  (`ring(fraction:)`) draws a determinate accent arc trimmed to the row's progress, starting
+  at twelve o'clock (a static −90°) and animating its trim 0.2s linear as `fraction` ticks.
+  The handoff's README states "ring arc rotates .9s linear", but the handoff's own markup
+  draws that arc static — a fixed `stroke-dasharray`/`stroke-dashoffset` pair under
+  `transform="rotate(-90 9 9)"`, no animation — and its `@keyframes ringTurn` is defined in
+  every prototype HTML and applied to nothing. The markup is followed over the prose: the
+  arc's length already carries the file's progress, and spinning it would make that length
+  harder to read. The same precedence settles the one other place the two disagree: the
+  README says the bar's "light sweep crossing every 1.6s" where the markup writes
+  `animation:sweep 1.9s linear` (1.6s being the `capGlow` pulse's value), so §8 pins 1.9s.
+  Authority: review-team r6 adjudication, `.claude/DECISIONS.md` (2026-08-01 addendum).
 
 **Reported, not resolved** (found while writing this document; for whoever owns the
 named surface next):

@@ -796,3 +796,44 @@ here and in DESIGN.md §11 rather than applied silently.
 **Affects:** DESIGN.md (§8, §11), Sources/Toolbox/DesignSystem/Theme.swift (`Theme.Motion`),
 Sources/Toolbox/DesignSystem/Components.swift (`MotionButtonStyle`),
 Sources/Toolbox/DesignSystem/QueueComponents.swift, Sources/Toolbox/Queue/*
+
+## 2026-08-01 — Addendum: motion law reconciled with the code after the motion wave
+
+Amends (does not replace) the 2026-08-01 entry above, "Motion polish across the redesign is
+human-authorised, including beyond-handoff additions". Three of its statements were checked
+against the shipped code and the handoff and are corrected here.
+
+**Decision:**
+
+1. **Shared values are tokenised; one-shot per-component transforms are enumerated.** The
+   earlier entry's "everything added beyond them is expressed in the same `Theme.Motion` token
+   vocabulary rather than as per-component literals" overstates what was built. The durations
+   and curves the added motion rides *are* tokens (`standard`, `hover`, `press`, `checkPop`,
+   `capGlow`, …), and every value used by more than one component is one. The transition
+   *transforms* — the header's −8/−6pt settles, the bar's 0.4 leading scale, the screen swap's
+   ±10pt, the row's +26pt landing and 0.96 removal, the gear's 0.7, the radio dot's 0.1, the
+   tick box's 0.92 — are per-component literals, each with a single caller, and stay that way:
+   a token with one caller is scatter, not vocabulary. They are law all the same, enumerated in
+   DESIGN.md §8 with their homes so the set is auditable in one place.
+
+2. **`StatusIndicator`'s active arc does not rotate.** The handoff's README states a 0.9s
+   linear ring rotation; the handoff's own markup draws the arc static and determinate, and its
+   `@keyframes ringTurn` is applied to nothing. The code follows the markup — a trim tied to
+   the row's progress, 0.2s linear on change — and DESIGN.md §4.2/§8 now say so, with the
+   README divergence recorded in §11.
+
+3. **The handoff is not silent on row insertion or the header.** The earlier entry's "no motion
+   at all for tick boxes, radio selection, row insertion or screen changes" holds for tick
+   boxes, radio selection and screen changes, but not for row insertion: the handoff pins
+   `@keyframes landRow` (.45s, 90ms stagger, 26px rise, .985 scale), `@keyframes landHead`
+   (−8px) and a hover fade-in for the row gear. DESIGN.md §11 now states exactly what the
+   handoff animates, what the app reproduces, and the two `landRow` details it simplifies away
+   (no per-row stagger, no .985 scale).
+
+**Why:** review-team r6 findings against DESIGN.md §8/§11 — the law and the code disagreed on
+three motions and the record above claimed a property the code does not have
+(`CODE_GUIDELINES.md` §8.4: divergence is recorded, never silent). Append-only, so the original
+entry stands as written and this is its correction.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§8 Motion)
+**Affects:** DESIGN.md (§4.2, §8, §11)
