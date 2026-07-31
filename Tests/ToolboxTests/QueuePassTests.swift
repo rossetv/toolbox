@@ -934,6 +934,18 @@ final class QueuePassTests: XCTestCase {
 
         XCTAssertTrue(model.pendingConsents.isEmpty,
                       "a consent must not outlive the row it is about")
+
+        // `⊗ Clear` is the OTHER lifecycle path and a different line of code: `remove` purges
+        // explicitly because `queue.remove` is a no-op on a finished row, while Clear goes through
+        // the queue's republish and the live-rows sweep.
+        let third = try await env.addRow(try Fixtures.blankPDF())
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, third) != nil }
+        XCTAssertEqual(model.pendingConsents, [third])
+
+        model.clearFinished()
+
+        XCTAssertTrue(model.pendingConsents.isEmpty, "⊗ Clear takes the row's consent with it")
     }
 
     /// The sheet arrives as each file's delivery completes, mid-run (spec §7) — not at the end of

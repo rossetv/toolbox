@@ -438,7 +438,23 @@ final class QueueViewModel: ObservableObject {
         // The toggle's promise (spec §7): keep the rebuilt one. Nothing to do when it is already
         // the file the user has — the size gate only ordered the provisional delivery.
         guard shipped != .mrc else { return }
+        // The guard is taken HERE, synchronously, and never inside the task: between this sink and
+        // the task's first line the batch can end, and `useVersion`'s `!isRunning` guard stops
+        // covering a row whose swap has not yet announced itself. A capsule tap landing in that
+        // window would run a second `switchVersions` over the same pair, and a `⊗ Clear` would
+        // discard the parked file this swap is about to move.
+        guard beginSwitch(id) else { return }
         Task { await keepVariant(.mrc, for: id) }
+    }
+
+    /// Take the row's switch guard, or refuse because something else already holds it. Every
+    /// caller that hands the actual switch to a task must take it in its own synchronous prefix —
+    /// a flag set after the first suspension is not a guard (`useVersion`'s note).
+    /// `keepVariant`'s `defer` is the one release.
+    private func beginSwitch(_ id: ToolJob.ID) -> Bool {
+        guard !switchesInFlight.contains(id) else { return false }
+        switchesInFlight.insert(id)
+        return true
     }
 
     /// The sheet's two buttons: Keep rebuilt / Keep photographs (spec §7). Both files are already
@@ -451,24 +467,26 @@ final class QueueViewModel: ObservableObject {
     /// instead, and the versions capsule still offers the same switch.
     func resolveConsent(_ id: ToolJob.ID, keepRebuilt: Bool) async {
         pendingConsents.removeAll { $0 == id }
+        // Taken before the first suspension, exactly as `useVersion` takes it: two taps on the
+        // sheet's buttons must land one switch.
+        guard beginSwitch(id) else { return }
         await keepVariant(keepRebuilt ? .mrc : .plain, for: id)
     }
 
-    /// Make `kind` the delivered file, when the row is not already shipping it.
+    /// Make `kind` the delivered file, when the row is not already shipping it. The caller holds
+    /// the row's `switchesInFlight` membership (`beginSwitch`); this releases it.
     ///
-    /// Runs mid-batch on a row whose own delivery is complete and banked, so it takes
-    /// `switchesInFlight` rather than `useVersion`'s `!isRunning` guard: that guard exists to keep
-    /// a switch away from a recompress commit for the same row, and this row's work is over.
-    /// Membership is what keeps a later popover switch from interleaving with this one.
+    /// Runs mid-batch on a row whose own delivery is complete and banked, so it relies on that
+    /// membership rather than `useVersion`'s `!isRunning` guard: that guard exists to keep a switch
+    /// away from a recompress commit for the same row, and this row's work is over. Membership is
+    /// also what keeps a later popover switch, and `⊗ Clear`, from interleaving with this one.
     private func keepVariant(_ kind: EngineVariant, for id: ToolJob.ID) async {
-        guard !switchesInFlight.contains(id) else { return }
+        defer { switchesInFlight.remove(id) }
         guard let job = jobs.first(where: { $0.id == id }),
               let row = versions(for: job),
               let shipped = row.shipped, shipped.variant != kind,
               let parked = row.runnerUp, parked.variant == kind else { return }
 
-        switchesInFlight.insert(id)
-        defer { switchesInFlight.remove(id) }
         do {
             try await store.switchVersions(shipped: shipped.url, runnerUp: parked.url)
             // `swapShipped`, never a bespoke exchange of the two descriptions: it also PERMUTES the
