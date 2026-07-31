@@ -167,6 +167,8 @@ struct PerFileSettingsPopover: View {
 /// documented reasoning for not introducing cross-file plumbing this task doesn't need.
 struct PopoverCloseButton: View {
     let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
     var body: some View {
@@ -175,15 +177,16 @@ struct PopoverCloseButton: View {
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(isHovering ? Theme.Colors.text : Theme.Colors.textSecondary)
                 .frame(width: 20, height: 20)
-                .background(Circle().fill(Theme.Colors.fill))
+                .background(Circle().fill(isHovering ? Theme.Colors.track : Theme.Colors.fill))
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
         .pointingHandCursor()
         .keyboardShortcut(.cancelAction)
         .help("Close")
         .onHover { isHovering = $0 }
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .accessibilityLabel("Close")
     }
 }

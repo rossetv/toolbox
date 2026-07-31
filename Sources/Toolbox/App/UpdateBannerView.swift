@@ -30,6 +30,8 @@ struct UpdateBannerView: View {
     let isRunning: Bool
     @ObservedObject private var updater: SelfUpdater
     @AppStorage(UpdateBannerView.dismissKey) private var dismissedVersion: String = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHoveringDismiss = false
 
     init(release: UpdateChecker.Release, updater: SelfUpdater, isRunning: Bool,
          store: UserDefaults = .standard) {
@@ -80,12 +82,15 @@ struct UpdateBannerView: View {
         Button(action: dismiss) {
             Image(systemName: "xmark")
                 .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(Theme.Colors.textTertiary)
+                .foregroundStyle(isHoveringDismiss ? Theme.Colors.textSecondary : Theme.Colors.textTertiary)
                 .frame(width: 22, height: 22)
+                .background(Circle().fill(isHoveringDismiss ? Theme.Colors.fill : .clear))
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
+        .onHover { isHoveringDismiss = $0 }
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringDismiss)
         .pointingHandCursor()
         .accessibilityLabel("Dismiss this update")
         .help("Don't show this version again")

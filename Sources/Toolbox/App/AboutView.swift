@@ -94,6 +94,8 @@ struct AboutView: View {
 /// so every focusable control here independently refuses the ring AppKit auto-assigns on open.
 private struct CloseButton: View {
     let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
     var body: some View {
@@ -107,14 +109,15 @@ private struct CloseButton: View {
                 )
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .focusEffectDisabled()
         .pointingHandCursor()
         .keyboardShortcut(.cancelAction)
         .help("Close")
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.12)) { isHovering = hovering }
-        }
+        .onHover { isHovering = $0 }
+        // Was a bare 0.12s literal that ran regardless of Reduce Motion — the one animation in
+        // the app that never asked.
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .accessibilityLabel("Close")
     }
 }

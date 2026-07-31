@@ -28,6 +28,10 @@ struct QueueHeaderView: View {
     @Binding var qualityPresented: Bool
     @Binding var ocrPresented: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHoveringEllipsis = false
+    @State private var isHoveringDestination = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             switch state {
@@ -113,10 +117,13 @@ struct QueueHeaderView: View {
                 Text(destinationLabel).themeFont(.body13)
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
             }
-            .foregroundStyle(Theme.Colors.textTertiary)
+            // Handoff: `transition:color .15s`, hovering `text3` → `text2`.
+            .foregroundStyle(isHoveringDestination ? Theme.Colors.textSecondary : Theme.Colors.textTertiary)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .onHover { isHoveringDestination = $0 }
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringDestination)
         .accessibilityLabel("Save destination, \(destinationLabel)")
         .accessibilityHint("Opens a menu to change where files are saved")
     }
@@ -243,12 +250,18 @@ struct QueueHeaderView: View {
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Theme.Colors.textSecondary)
+                .foregroundStyle(isHoveringEllipsis ? Theme.Colors.text : Theme.Colors.textSecondary)
                 .frame(width: 28, height: 28)
-                .background(Theme.Colors.fill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                // Handoff: `transition:background .15s`, the fill deepening on hover. A `Menu`
+                // has no `configuration.isPressed` to read, so this control is hover-only — the
+                // one interactive surface in the app without a press state (DESIGN.md §11).
+                .background(isHoveringEllipsis ? Theme.Colors.track : Theme.Colors.fill,
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .onHover { isHoveringEllipsis = $0 }
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringEllipsis)
         .accessibilityLabel("More")
     }
 }
