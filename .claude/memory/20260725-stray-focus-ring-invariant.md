@@ -5,8 +5,8 @@ button is macOS keyboard focus, not selection. It has exactly two sources, and e
 one fixed remedy — apply the remedy at build time, never a one-off patch:
 
 1. **Click focus.** On modern macOS a mouse click makes any focusable SwiftUI control
-   (`.buttonStyle(.plain)` included) first responder, and the system draws a keyboard
-   focus ring the user never asked for. **Rule: every `.buttonStyle(.plain)` control
+   (`MotionButtonStyle` included) first responder, and the system draws a keyboard
+   focus ring the user never asked for. **Rule: every `MotionButtonStyle` control
    gets `.clearsClickFocus()`** (`DesignSystem/Components.swift`,
    `ClearsClickFocusModifier`) unless it deliberately keeps click focus. Never
    re-implement the fix with a local `@FocusState` clear — that per-control

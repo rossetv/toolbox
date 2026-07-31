@@ -392,7 +392,7 @@ extension View {
     /// ring around it even though the user never touched the keyboard. Tab/arrow-key navigation
     /// is untouched: it assigns focus without a click, so its ring still shows, per DESIGN.md.
     ///
-    /// House rule (see .claude/memory): EVERY `.buttonStyle(.plain)` control gets this modifier
+    /// House rule (see .claude/memory): EVERY `MotionButtonStyle` control gets this modifier
     /// unless it deliberately keeps click focus. Pair with `WindowSetup`'s key-window
     /// first-responder clear, which handles the rings AppKit assigns without any click.
     func clearsClickFocus() -> some View {
@@ -415,8 +415,8 @@ extension View {
 /// Known gap: `TapGesture` ends only on a press and release *inside* the control, while AppKit
 /// takes first responder on mouse-DOWN — so pressing a control, dragging off it and releasing
 /// leaves the ring behind. A zero-distance `DragGesture` would catch that, but this modifier is
-/// attached to every plain-style control in the app, and a drag recogniser on all of them has
-/// far more blast radius (scrolling, the queue list) than the case it closes.
+/// attached to every `MotionButtonStyle` control in the app, and a drag recogniser on all of them
+/// has far more blast radius (scrolling, the queue list) than the case it closes.
 private struct ClearsClickFocusModifier: ViewModifier {
     @FocusState private var isFocused: Bool
 

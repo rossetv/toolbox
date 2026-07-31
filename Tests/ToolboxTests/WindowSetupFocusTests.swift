@@ -54,14 +54,14 @@ final class WindowSetupFocusTests: XCTestCase {
         return window
     }
 
-    /// A REAL production control: `.buttonStyle(.plain)` + `.clearsClickFocus()`, hosted so it
+    /// A REAL production control: `MotionButtonStyle()` + `.clearsClickFocus()`, hosted so it
     /// actually accepts first responder (a bare `NSView` does not, by default — an assignment
     /// to one would silently no-op and any assertion built on it would pass for the wrong
     /// reason).
     private func makeClearsClickFocusProbe() -> NSHostingView<AnyView> {
         let host = NSHostingView(rootView: AnyView(
             Button("Probe") {}
-                .buttonStyle(.plain)
+                .buttonStyle(MotionButtonStyle())
                 .clearsClickFocus()
                 .frame(width: 120, height: 32)
         ))
@@ -115,9 +115,9 @@ final class WindowSetupFocusTests: XCTestCase {
                       + "net")
     }
 
-    // MARK: - A `.plain`-styled probe control
+    // MARK: - A `MotionButtonStyle`-styled probe control
 
-    /// The house rule (memory: stray-focus-ring invariant) is "every `.buttonStyle(.plain)`
+    /// The house rule (memory: stray-focus-ring invariant) is "every `MotionButtonStyle`
     /// control gets `.clearsClickFocus()`". This builds a control with that exact incantation
     /// and hosts it for real inside a window `WindowSetup` protects directly (no arming-observer
     /// timing involved — the window exists before `applyMinimumSize` runs, so its net attaches
@@ -126,7 +126,7 @@ final class WindowSetupFocusTests: XCTestCase {
     /// — and confirms the net still clears it. This does NOT exercise `.clearsClickFocus()`'s
     /// own `TapGesture`-driven clear (no display server here to recognise a real click); that
     /// leg is V1's manual keyboard walk.
-    func testPlainStyledProbeControlLosesNonKeyDownFocusInsideTheNet() {
+    func testMotionStyledProbeControlLosesNonKeyDownFocusInsideTheNet() {
         let probe = makeClearsClickFocusProbe()
         let window = makeWindow(content: probe)
         probe.layoutSubtreeIfNeeded()
@@ -138,7 +138,7 @@ final class WindowSetupFocusTests: XCTestCase {
                       + "test to prove anything")
 
         let cleared = poll(timeout: 3) { window.firstResponder !== probe }
-        XCTAssertTrue(cleared, "a .plain-styled, .clearsClickFocus()-carrying control's "
+        XCTAssertTrue(cleared, "a MotionButtonStyle-styled, .clearsClickFocus()-carrying control's "
                       + "non-keyDown first responder should be cleared by WindowSetup's net")
     }
 }
