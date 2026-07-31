@@ -287,8 +287,9 @@ struct QueueHeaderView: View {
                 .foregroundStyle(isHoveringEllipsis ? Theme.Colors.text : Theme.Colors.textSecondary)
                 .frame(width: 28, height: 28)
                 // Handoff: `transition:background .15s`, the fill deepening on hover. A `Menu`
-                // has no `configuration.isPressed` to read, so this control is hover-only — the
-                // one interactive surface in the app without a press state (DESIGN.md §11).
+                // has no `configuration.isPressed` to read, so this and `saveDestinationMenu`
+                // are hover-only — the two native `Menu`s (DESIGN.md §4.3) are the only
+                // interactive surfaces in the app without a press state.
                 .background(isHoveringEllipsis ? Theme.Colors.fill : Theme.Colors.background,
                             in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
