@@ -94,7 +94,7 @@ final class QueueViewModel: ObservableObject {
     /// "Rebuild scans from now on without asking" (spec §7). Persisted, so the promise outlives the
     /// session that made it: no further sheets, and the REBUILT variant is kept whenever one exists
     /// — the retained descriptor is that evidence, since the engine only retains a variant that
-    /// passed validation (F2's retention rule). The versions capsule stays as the undo.
+    /// passed validation (the engine's retention rule). The versions capsule stays as the undo.
     @Published var rebuildWithoutAsking: Bool {
         didSet {
             guard rebuildWithoutAsking != oldValue else { return }
@@ -153,8 +153,8 @@ final class QueueViewModel: ObservableObject {
     /// outcome. A row with a retained runner-up states in its capsule which version is on disk and
     /// how big it is; when that claim can no longer be backed — the delivered file is gone, or the
     /// swap left it parked under a hidden name — the row must say so rather than keep labelling a
-    /// file that is not there (the F6 mislabel: heavy content under "Normal compression" and gs's
-    /// bytes).
+    /// file that is not there (the stale-label bug class: heavy content under "Normal compression"
+    /// and gs's bytes).
     private var switchFailures: [ToolJob.ID: String] = [:]
     /// The in-flight batch's runner-up cache names, snapshotted from the ledger at run start. NOT
     /// the ledger itself: this is the set `cancel` sweeps for FILES the store has not claimed, so
@@ -328,7 +328,7 @@ final class QueueViewModel: ObservableObject {
     private var rowDurations: [ToolJob.ID: TimeInterval] = [:]
     /// The compress leg's OWN elapsed time, recorded when it completes — whether or not an OCR
     /// leg follows. `measuredPageRate` divides THIS by page count, never the whole row's
-    /// duration: P-B's change-quality preview re-runs compress alone, and OCR (the far slower
+    /// duration: the change-quality preview re-runs compress alone, and OCR (the far slower
     /// leg) would badly over-predict its time if the two were conflated.
     private var compressLegDurations: [ToolJob.ID: TimeInterval] = [:]
 
@@ -519,7 +519,7 @@ final class QueueViewModel: ObservableObject {
                 futileAttempts.insert(futileKey(job.id, at: preset))
             case .skipped:
                 // A rescued row (spec §6.5) delivers a file that carries no compression and is
-                // never recorded in the VersionStore (F6's note: `describeDegraded` reads
+                // never recorded in the VersionStore (`describeDegraded` reads
                 // `outcome.finalBytes` directly for exactly this reason) — there is no version
                 // PAIR to offer and no saving to claim, and no card exists for this leg's
                 // searchability flags to land on.
@@ -728,7 +728,7 @@ final class QueueViewModel: ObservableObject {
                 // dragging the rest of the batch's genuine savings negative.
                 savedBytes += max(0, sizes.before - sizes.after)
             }
-            // The "N" in the handoff's "4 of 5 files in Invoices" (F6b) — also stands in for the
+            // The "N" in the handoff's "4 of 5 files in Invoices" — also stands in for the
             // old `banked` bool below (`successCount > 0` is exactly that check).
             if job.resultURL != nil { successCount += 1 }
             switch job.state {
@@ -771,7 +771,7 @@ final class QueueViewModel: ObservableObject {
             partial: partial, problem: problem, cancelled: runCancelled))
     }
 
-    /// The batch card's failure phrase (design screens 01/11, F6b): the FIRST problem row's
+    /// The batch card's failure phrase (design screens 01/11): the FIRST problem row's
     /// condition, in `runIDs` order — never `runQueuedIDs`'s own `Set` order, which is
     /// unspecified. "one was password-locked" is the handoff's own copy; the other two cover
     /// conditions the handoff has no string for, mirroring `RowInspection.metaLine`'s own
@@ -825,7 +825,7 @@ final class QueueViewModel: ObservableObject {
     }
 
     /// Whether this row's compress leg attempts the scan rebuild (Rung 2/3) — mirrors
-    /// `CompressEngine`'s own `wantsMRC`/`wantsBilevel` derivation (spec §6.7/F2) from the same
+    /// `CompressEngine`'s own `wantsMRC`/`wantsBilevel` derivation (spec §6.7) from the same
     /// inputs available here: the ESTIMATOR's own analysis, which can legitimately never arrive
     /// (it is time-boxed), never the engine's runtime classification. This is a display label,
     /// not a delivery decision, so an absent analysis just reads as "assume no rebuild" — the
@@ -868,7 +868,7 @@ final class QueueViewModel: ObservableObject {
     /// seconds").
     func rowDuration(for id: ToolJob.ID) -> TimeInterval? { rowDurations[id] }
 
-    /// Seconds per page from this row's own completed compress leg (spec §6.7: P-B's change-
+    /// Seconds per page from this row's own completed compress leg (spec §6.7: the change-
     /// quality duration preview derives "about Ns" from the row's own measured run, never a
     /// fabrication). Nil unless the row is `.done`: one that ultimately failed proves nothing
     /// about its compress leg's speed, whatever partial time got recorded for it.
@@ -1951,7 +1951,7 @@ final class QueueViewModel: ObservableObject {
             // Surface the store's message (it carries the park path) and drop the row's version
             // record, exactly as the switch path does: `reportSwitchFailure` sets
             // `switchFailures[id]`, and `versions(for:)` returns nil while that is set, so the row
-            // stops advertising a delivered file it can no longer back (the F6 mislabel).
+            // stops advertising a delivered file it can no longer back (the stale-label bug class above).
             discardArtefacts(of: plan)
             reportSwitchFailure(plan.id, stranded.localizedDescription)
         } catch {
@@ -2389,7 +2389,7 @@ final class QueueViewModel: ObservableObject {
     // MARK: heavy-version switch (R8–R11)
 
     /// The versions available for `job`, or nil when the row has none to show. A row whose switch
-    /// could not be honoured stops advertising versions it can no longer back (the F6 mislabel).
+    /// could not be honoured stops advertising versions it can no longer back (the stale-label bug class above).
     func versions(for job: ToolJob) -> RowVersions? {
         guard switchFailures[job.id] == nil else { return nil }
         return versionStore.versions(for: job.id)

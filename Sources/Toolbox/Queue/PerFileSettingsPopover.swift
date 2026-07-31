@@ -62,7 +62,7 @@ struct PerFileSettingsPopover: View {
         }
     }
 
-    // MARK: rebuild-scan toggle domain (spec §7's UI half — F2 owns the engine half)
+    // MARK: rebuild-scan toggle domain (spec §7's UI half)
 
     /// Where the toggle stands for this row right now (spec §7, pinned): hidden off a
     /// `.scanColour` row entirely, disabled with an explanatory caption at Maximum quality (MRC
@@ -138,7 +138,7 @@ struct PerFileSettingsPopover: View {
     // MARK: estimate (advisor: reuse the model's own re-priced analysis — never a second estimator)
 
     /// The row's own predicted size at its own effective preset — the SAME `analyse(_:mrcEligible:)`
-    /// pass `QueueViewModel.setOverride` re-schedules whenever the rebuild opt-out flips (F4), so
+    /// pass `QueueViewModel.setOverride` re-schedules whenever the rebuild opt-out flips, so
     /// this always reads the number the row itself would show, never a second, independently
     /// computed one.
     private func estimateText(for job: ToolJob) -> String {

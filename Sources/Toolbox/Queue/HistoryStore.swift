@@ -35,7 +35,7 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
     /// (screens 01/11). Never more than `fileCount`; less than it exactly when a row failed
     /// outright, or a cancel left some rows untouched.
     let successCount: Int
-    /// One short human phrase naming the FIRST problem row's cause (F6b) — nil when nothing
+    /// One short human phrase naming the FIRST problem row's cause — nil when nothing
     /// failed. "one was password-locked" is the handoff's own copy (screens 01/11); the other two
     /// are recorded divergences the handoff has no string for, mirroring `RowInspection.metaLine`'s
     /// own `.unreadable`/`.compressFailed` fallthrough.
@@ -80,7 +80,7 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
         self.cancelled = cancelled
     }
 
-    // MARK: Codable — `successCount`/`failureNote` are additive (F6b): older on-disk v1 batches
+    // MARK: Codable — `successCount`/`failureNote` are additive: older on-disk v1 batches
     // predate them, so decode defaults rather than failing (schema stays version 1, spec §6.9).
     private enum CodingKeys: String, CodingKey {
         case id, date, folderName, folderURL, fileCount, presetTitle, compressOn, ocrOn,

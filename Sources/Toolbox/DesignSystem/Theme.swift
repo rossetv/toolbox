@@ -14,7 +14,7 @@ import SwiftUI
 /// `Spacing.small/medium/large`) so Tracks B/C could style early views without depending on
 /// Track D; those names and types are preserved unchanged below — only expanded.
 ///
-/// ## Handoff → identifier mapping (F7)
+/// ## Handoff → identifier mapping
 ///
 /// The redesign handoff (`$(git rev-parse --path-format=absolute --git-common-dir)/lcw/…/handoff/README.md`
 /// §Design Tokens) names its tokens differently to this file's incumbents. Every handoff name
@@ -163,7 +163,7 @@ enum Theme {
     /// Generic elevation shadow retained from before the redesign. DESIGN.md §11 flags this
     /// token as having no per-context counterpart in the handoff — every context §6 actually
     /// names (popover/sheet/secondary-button/`PDFThumbnail`) sizes its own inline shadow — and
-    /// with `Card` deleted at I1b this has no current consumer; kept as-is pending that
+    /// with `Card` deleted this has no current consumer; kept as-is pending that
     /// follow-up. Never stack multiple shadows if it is ever revived.
     enum Shadow {
         static let color = Color.black.opacity(0.22)
@@ -187,7 +187,7 @@ enum Theme {
         case displayHero, sectionHeading, tileHeading, cardTitle, subheading
         case navHeading, subNav, body, bodyEmphasis, buttonLarge, button
         case link, caption, captionBold, micro, microBold, nano
-        /// NEW cases (F7) — handoff shapes with no incumbent. See the mapping comment atop
+        /// NEW cases — handoff shapes with no incumbent. See the mapping comment atop
         /// `Theme` for why `caption` (11.5) and `meta` (12) are deliberately two sizes apart.
         case windowHeadline, sheetTitle, rowName, bodyStrong, body13, meta, sectionLabel
 
@@ -205,7 +205,7 @@ enum Theme {
             case .buttonLarge: return .system(size: 18, weight: .light)
             case .button: return .system(size: 17, weight: .regular)
             case .link: return .system(size: 14, weight: .regular)
-            // Re-valued (F7): handoff captions run 11.5–12; 11.5 is the size actually used
+            // Re-valued: handoff captions run 11.5–12; 11.5 is the size actually used
             // throughout (popover/radio-row subtitles, batch-card timestamps) — `meta` (below)
             // takes the other end of that range, so the two roles stay visually distinct.
             case .caption: return .system(size: 11.5, weight: .regular)
@@ -213,7 +213,7 @@ enum Theme {
             case .micro: return .system(size: 12, weight: .regular)
             case .microBold: return .system(size: 12, weight: .semibold)
             case .nano: return .system(size: 10, weight: .regular)
-            // NEW (F7):
+            // NEW:
             case .windowHeadline: return .system(size: 22, weight: .semibold)   // "3 files", "32.6 MB lighter"
             case .sheetTitle: return .system(size: 17, weight: .semibold)       // "Recent batches", "Different quality for these 3 files"
             case .rowName: return .system(size: 15, weight: .semibold)         // queue row filename
@@ -239,14 +239,14 @@ enum Theme {
             case .buttonLarge: return 0
             case .button: return 0
             case .link: return -0.224
-            // Re-valued (F7): the handoff's document-wide default tracking (-0.2px), which every
+            // Re-valued: the handoff's document-wide default tracking (-0.2px), which every
             // caption-sized text in it inherits rather than overriding individually.
             case .caption: return -0.2
             case .captionBold: return -0.224
             case .micro: return -0.12
             case .microBold: return -0.12
             case .nano: return -0.08
-            // NEW (F7): handoff explicit trackings per role; unlabelled small text inherits the
+            // NEW: handoff explicit trackings per role; unlabelled small text inherits the
             // document's -0.2px default, which `bodyStrong`/`body13`/`meta` also use.
             case .windowHeadline: return -0.3
             case .sheetTitle: return -0.2
@@ -262,7 +262,7 @@ enum Theme {
     /// Animation durations, the transform values that go with them, and the Reduce Motion gates
     /// every animated surface asks — from the handoff's "Animations (durations & easings)"
     /// section and its per-control hover/active CSS (DESIGN.md §8). No incumbent tokens existed
-    /// for motion before F7; the values and gates below arrived with the 2026-08-01 motion-polish
+    /// for motion before this redesign; the values and gates below arrived with the 2026-08-01 motion-polish
     /// mandate (DECISIONS.md). Every interactive view gates its use of these on
     /// `accessibilityReduceMotion`, substituting a plain (or no) transition rather than skipping
     /// the state change itself.

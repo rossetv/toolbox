@@ -22,9 +22,9 @@ enum QueueByteFormat {
 
 /// The scrollable queue list: every row across screens 03 (ready)/05 (working)/06 (finished)/10
 /// (problems), one shape (`QueueRow`) whose trailing content and copy this view composes per row
-/// from the model (binding carry #1: `displayedSizes`/`searchableByCard[.shipped]`, never
-/// `job.state`'s `RowOutcome` alone — the outcome is stale after a re-run and disagrees by design
-/// on the all-lossy path).
+/// from the model (`displayedSizes`/`searchableByCard[.shipped]`, never `job.state`'s
+/// `RowOutcome` alone — the outcome is stale after a re-run and disagrees by design on the
+/// all-lossy path).
 struct QueueRowsView: View {
     @ObservedObject var model: QueueViewModel
     let state: QueueScreenState
@@ -225,7 +225,7 @@ struct QueueRowsView: View {
                 && lhs.capsuleTitle == rhs.capsuleTitle
         }
 
-        /// `QueueRow.Emphasis` (F7, `QueueComponents.swift`) has no associated values but was
+        /// `QueueRow.Emphasis` (`QueueComponents.swift`) has no associated values but was
         /// never declared `Equatable` there — this file cannot add the conformance (out of
         /// scope), so a plain case-by-case comparison stands in for it.
         private static func emphasisEqual(_ a: QueueRow<AnyView>.Emphasis, _ b: QueueRow<AnyView>.Emphasis) -> Bool {
@@ -248,7 +248,7 @@ struct QueueRowsView: View {
     }
 
     /// Builds one row's descriptor. `model` methods only — never `job.state`'s `RowOutcome` for a
-    /// size or a searchability word (binding carry #1).
+    /// size or a searchability word (the model's values are never stale; the job state's can be).
     static func describe(job: ToolJob, model: QueueViewModel, state: QueueScreenState) -> RowDescriptor {
         switch job.state {
         case .queued, .analysing:
@@ -297,7 +297,7 @@ struct QueueRowsView: View {
 
     /// Locked/moved/unreadable rows (spec §6.6/§7). Password unlock is deferred (D3, non-goal §3):
     /// the locked row gets Skip/Remove only, never an "Enter password…" affordance. "Unreadable"
-    /// gets the same Skip/Remove treatment as locked (recorded divergence, P-A) — it names a file
+    /// gets the same Skip/Remove treatment as locked (recorded divergence) — it names a file
     /// that IS present but is not a usable PDF, which "Find it…" (a re-pick for a file that has
     /// MOVED) does not describe; "Moved or renamed" is the one case with an in-app fix, so it
     /// alone gets `.problemWarn` + "Find it…".
@@ -325,7 +325,7 @@ struct QueueRowsView: View {
         case .locked, .unreadable:
             return RowDescriptor(meta: meta, emphasis: .problemDanger, trailing: .problemPair(skip, remove))
         case .compressFailed:
-            // Unreachable from add-time inspection (F4's own note) — never produced here.
+            // Unreachable from add-time inspection — never produced here.
             return RowDescriptor(meta: meta, emphasis: .problemDanger, trailing: .problemPair(skip, remove))
         }
     }
@@ -400,7 +400,7 @@ struct QueueRowsView: View {
         } else {
             let percent = percentSmaller(before: sizes.before, after: sizes.after)
             if isSearchable {
-                // The STORE's shipped variant, never `outcome.shippedVariant` (binding carry #1):
+                // The STORE's shipped variant, never `outcome.shippedVariant`:
                 // a change-quality re-run overwrites the store's card but leaves `outcome` as the
                 // FIRST run left it, so a Balanced-MRC row re-run at Maximum quality (a plain gs
                 // file) would otherwise still read "Rebuilt".
@@ -409,7 +409,7 @@ struct QueueRowsView: View {
             } else if state == .working, let duration = model.rowDuration(for: job.id) {
                 meta = "\(percent) · finished in \(Int(duration.rounded())) second\(Int(duration.rounded()) == 1 ? "" : "s")"
             } else {
-                // The STORE's shipped file first (binding carry #1): it is the authoritative
+                // The STORE's shipped file first: it is the authoritative
                 // delivered path, ahead of the reservation ledger or the queue's own `resultURL`.
                 let name = row?.shipped?.url.lastPathComponent
                     ?? model.reservedDelivery(for: job.id)?.lastPathComponent
@@ -435,7 +435,7 @@ struct QueueRowsView: View {
         let sizes = model.displayedSizes(for: job)
         let meta: String
         if case .skipped = outcome.compress {
-            // The compress-failure OCR rescue (F5a-owned copy; P-A renders).
+            // The compress-failure OCR rescue.
             switch outcome.ocr {
             case .added: meta = "Couldn't be compressed — made searchable instead"
             default: meta = "Couldn't be compressed"   // .alreadySearchable/.tooFaint: rescue leg shipped nothing
@@ -470,15 +470,15 @@ struct QueueRowsView: View {
             }
         } else if case .failed(let reason) = outcome.ocr {
             // No handoff/spec string for a read that fails AFTER a successful compress delivery
-            // (recorded divergence, P-A): names the compress fact plus the OCR failure reason.
+            // (recorded divergence): names the compress fact plus the OCR failure reason.
             meta = "Compressed, but not searchable — \(reason)"
         } else {
             meta = "Compressed, but not searchable"
         }
         // `displayedSizes` is nil for the whole rescue family (compress `.skipped` never gets a
-        // `VersionStore` row — F6's note) — never stale to read `outcome.finalBytes` directly
+        // `VersionStore` row) — never stale to read `outcome.finalBytes` directly
         // there, because a row with no store entry can never re-arm and so never disagrees with
-        // this figure later (the one documented exception to binding carry #1's staleness rule).
+        // this figure later (the one documented exception to the model-vs-outcome staleness rule above).
         let sizeText = sizes.map { QueueByteFormat.string($0.after) } ?? QueueByteFormat.string(outcome.finalBytes)
         return RowDescriptor(meta: meta, emphasis: .degraded,
                              trailing: .status(text: sizeText, kind: .warn),

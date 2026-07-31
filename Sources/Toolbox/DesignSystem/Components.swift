@@ -14,7 +14,7 @@ import SwiftUI
 /// Presentation-only: none of these depend on `ToolJob`/`CompressPreset`/view-model state, so
 /// they stay reusable across the app. Consumed by the unified queue's views (`QueueComponents.swift`,
 /// `Queue/*`) and the app chrome (`App/*`) — the per-tool `CompressView`/`OCRView`/`SidebarView`
-/// this comment once named were retired at I1b in favour of the single-window queue (`QueueView`).
+/// this comment once named were retired in favour of the single-window queue (`QueueView`).
 
 // MARK: - Hover tracking
 
@@ -113,7 +113,7 @@ struct PrimaryButton: View {
 
     var body: some View {
         Button(action: action) {
-            // 14/600 (F7 retoken): the handoff's "Choose Files…"/"Start" buttons — `.button`
+            // 14/600: the handoff's "Choose Files…"/"Start" buttons — `.button`
             // (17/regular) predates the redesign and is a different, larger role.
             Text(title)
                 .font(.system(size: 14, weight: .semibold))
@@ -222,7 +222,7 @@ struct PDFThumbnail: View {
     let url: URL?
     var width: CGFloat = 30
     /// Suppresses the red "PDF" label band, leaving a bare page render — `QueueComponents`'
-    /// `VariantCard` (the scan-choice page-preview panel, F7) wants the page itself with no
+    /// `VariantCard` (the scan-choice page-preview panel) wants the page itself with no
     /// file-type badge competing with it.
     var plain: Bool = false
 

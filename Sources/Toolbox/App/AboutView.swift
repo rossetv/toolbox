@@ -12,10 +12,9 @@ import SwiftUI
 /// later" clause is static — it names this project's actual `project.yml` deployment target,
 /// not a fact the running bundle can report about itself.
 ///
-/// `init()` stays no-arg: `SidebarView` still presents this exact construction via `.sheet(…)`
-/// until I1b deletes it, so the double chrome that produces (this view's own `SheetChrome` INSIDE
-/// the system sheet) is a known, temporary artefact of that legacy call site — the eventual
-/// unified-queue shell (I1a) presents it directly, without the system sheet wrapper.
+/// `init()` stays no-arg: `QueueView` presents this exact construction via `.sheet(item:)`, so
+/// this view's own `SheetChrome` sits inside the system sheet — the double chrome is a known,
+/// accepted shape of that call site, not a temporary artefact.
 struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
 

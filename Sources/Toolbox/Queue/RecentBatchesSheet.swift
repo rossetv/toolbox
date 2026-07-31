@@ -67,9 +67,9 @@ struct RecentBatchesSheet: View {
     }
 
     /// "14:22 · Balanced · one made searchable" for a clean run; "11:05 · Smallest · one was
-    /// password-locked" for a batch with a problem row (screen 11, F6b's `failureNote`) — falls
-    /// back to a generic clause only for a batch recorded before `failureNote` existed (on-disk
-    /// schema predates F6b).
+    /// password-locked" for a batch with a problem row (screen 11, `failureNote`) — falls
+    /// back to a generic clause only for a batch recorded before `failureNote` existed (an
+    /// older on-disk schema).
     static func subtitle(for batch: HistoryBatch) -> String {
         var parts = [Self.timeFormatter.string(from: batch.date)]
         if batch.compressOn, let preset = batch.presetTitle {
@@ -94,7 +94,7 @@ struct RecentBatchesSheet: View {
     }
 
     /// The trailing figure: green savings, or grey "no change" for an OCR-only/no-saving batch
-    /// (binding carry: OCR-only reads grey, never a bare "0 MB").
+    /// (OCR-only reads grey, never a bare "0 MB").
     static func savedText(_ batch: HistoryBatch) -> String {
         batch.savedBytes <= 0 ? "no change" : QueueByteFormat.string(batch.savedBytes)
     }

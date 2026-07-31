@@ -161,8 +161,8 @@ struct EmptyStateView: View {
     private var recentBatches: [HistoryBatch] { Array(history.batches.prefix(2)) }
 
     /// "14:22 · 21.2 MB smaller" for a clean run; "11:05 · one was password-locked" for a batch
-    /// with a problem row (screen 01, F6b's `failureNote`) — falls back to a generic line only for
-    /// a batch recorded before `failureNote` existed (on-disk schema predates F6b).
+    /// with a problem row (screen 01, `failureNote`) — falls back to a generic line only for
+    /// a batch recorded before `failureNote` existed (an older on-disk schema).
     static func subtitle(for batch: HistoryBatch) -> String {
         let time = batch.date.formatted(date: .omitted, time: .shortened)
         if let note = batch.failureNote { return "\(time) · \(note)" }

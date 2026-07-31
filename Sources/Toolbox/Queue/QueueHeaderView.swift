@@ -9,8 +9,8 @@ import SwiftUI
 
 /// The window's top strip across every non-empty screen state: screen 03's title + verb chips +
 /// save-destination row, screen 05's working title + progress bar, and screens 06/10's big
-/// finished/problems headlines. Owns the `⋯` button and its three-item menu (spec P-A task:
-/// Recent batches…, Where files are saved…, About Toolbox) in every state that shows it.
+/// finished/problems headlines. Owns the `⋯` button and its three-item menu (Recent batches…,
+/// Where files are saved…, About Toolbox) in every state that shows it.
 struct QueueHeaderView: View {
     @ObservedObject var model: QueueViewModel
     let state: QueueScreenState
@@ -162,8 +162,7 @@ struct QueueHeaderView: View {
         return "\(percent)% · about \(eta) second\(eta == 1 ? "" : "s") left"
     }
 
-    // MARK: Finished / Problems big headlines (P-A composition — no handoff component; see
-    // `QueueComponents.swift`'s per-screen map)
+    // MARK: Finished / Problems big headlines (composed here directly — no handoff component)
 
     private enum HeadlineKind { case finished, warn }
 
@@ -214,9 +213,9 @@ struct QueueHeaderView: View {
         return "\(totals). \(searchable == 1 ? "One is" : "\(searchable) are") now searchable."
     }
 
-    /// Rows OCR made searchable (mirrors `HistoryStore`'s own `searchableCount` derivation,
-    /// binding carry #1: the STORE's flag, never `job.state`'s outcome, which is stale after a
-    /// re-run and disagrees by design on the all-lossy path).
+    /// Rows OCR made searchable (mirrors `HistoryStore`'s own `searchableCount` derivation: the
+    /// STORE's flag, never `job.state`'s outcome, which is stale after a re-run and disagrees by
+    /// design on the all-lossy path).
     private var searchableRowCount: Int {
         model.jobs.filter { model.versions(for: $0)?.searchableByCard[.shipped] == true }.count
     }

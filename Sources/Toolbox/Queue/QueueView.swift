@@ -105,8 +105,8 @@ struct QueueView: View {
             }
         }
         // Drives the FIFO: any change to the queue's head re-targets `activeSheet`. If the head
-        // becomes nil while a consent sheet is up (the user resolved it through P-B's own content,
-        // which pops the queue), clear it too. A user who dismisses the sheet directly (Escape) —
+        // becomes nil while a consent sheet is up (the user resolved it through the sheet's own
+        // content, which pops the queue), clear it too. A user who dismisses the sheet directly (Escape) —
         // rather than resolving it — leaves that row's consent unresolved with no forced re-prompt;
         // the versions capsule remains the undo path per spec §7, so this is accepted, not a gap.
         .onChange(of: model.pendingConsents.first) { _, newHead in

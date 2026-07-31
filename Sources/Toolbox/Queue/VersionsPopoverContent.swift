@@ -11,8 +11,7 @@ import SwiftUI
 /// The versions popover (handoff screen 07), opened from a finished row's "N versions" capsule:
 /// up to four radio rows — the file in use, this run's alternative, a previous recompress, and
 /// the untouched original — any of which can be switched to with one tap. Replaces the legacy
-/// `Compress/VersionsPopover.swift`, which stays untouched until `CompressView` (its only
-/// consumer) is deleted at I1b.
+/// `Compress/VersionsPopover.swift`, since deleted along with its only consumer, `CompressView`.
 struct VersionsPopoverContent: View {
     @ObservedObject var model: QueueViewModel
     let jobID: ToolJob.ID
