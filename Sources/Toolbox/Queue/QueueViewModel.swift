@@ -779,8 +779,20 @@ final class QueueViewModel: ObservableObject {
     func setOverride(_ override: RowOverride?, for id: ToolJob.ID) {
         let normalised = (override?.isEmpty ?? true) ? nil : override
         guard overrides[id] != normalised else { return }
+        let rebuildChanged = (overrides[id]?.rebuildScan ?? true) != (normalised?.rebuildScan ?? true)
         overrides[id] = normalised
         invalidateReservation(for: id)
+        // The analysis is cached per FILE but priced against the row's rebuild opt-out (spec
+        // §6.7), so a flip must re-price the row — the sibling of the reservation invalidation
+        // above. Only a `rebuildScan` change: a preset change is priced from the same analysis
+        // (every preset is predicted in one pass), and re-analysing on one would blank the whole
+        // list back into its "analysing" state on every click. Unlike the reservation, a row that
+        // has already shipped is re-priced too: `recompressPrediction` reads these same estimates
+        // for the armed re-run, and a stale rebuild-path figure there is exactly the over-promise
+        // the calibration exists to remove.
+        if rebuildChanged, !isRunning, let job = queue.jobs.first(where: { $0.id == id }) {
+            scheduleEstimate(for: job)
+        }
         publishJobs()
     }
 
@@ -1821,10 +1833,14 @@ final class QueueViewModel: ObservableObject {
         estimationTasks[job.id]?.cancel()
         analysingIDs.insert(job.id)
         publishJobs()
+        // The estimator prices every preset in one pass, so the preset half of the rebuild rule
+        // is its own; what only this side knows is the row's opt-out (spec §6.7 honesty — a row
+        // that will not be rebuilt must not be priced from the rebuild's reduction).
+        let mrcEligible = overrides[job.id]?.rebuildScan ?? true
 
         estimationTasks[job.id] = Task { [weak self] in
             guard let self else { return }
-            let analysis = await self.estimator.analyse(job.url)
+            let analysis = await self.estimator.analyse(job.url, mrcEligible: mrcEligible)
             guard !Task.isCancelled else { return }
             self.analyses[job.id] = analysis
             // Inspection's second pass (spec §6.6): the classification behind the Ready screen's
@@ -2011,12 +2027,13 @@ final class QueueViewModel: ObservableObject {
     /// the row then reads "may not shrink" (R16). The "≈" marker is the view's, and stays whatever
     /// this returns: the figure is always approximate.
     ///
-    /// The estimator models the gs path only, so its figure is calibrated by what the engine
-    /// actually did — but ONLY when the same path is expected to run again. `wantsMRC` is
-    /// `classification == .scanColour && preset != .maximumQuality` (the engine's per-file
-    /// `rebuildScan` override can only narrow that, and this view model passes none), so an
-    /// MRC-shipped row crossing to Maximum quality, or a gs-shipped row moving to an MRC-eligible
-    /// preset, both change path and take the raw estimate: a ratio learned on one path does not
+    /// The estimator's figure is calibrated by what the engine actually did — but ONLY when the
+    /// same path is expected to run again. The path test is the engine's own `wantsMRC`
+    /// conjunction, all three terms (`attemptsScanRebuild` reads the same three for the leg
+    /// label): the row's `rebuildScan` opt-out, `.scanColour`, and a preset other than
+    /// `.maximumQuality`. So an MRC-shipped row crossing to Maximum quality, a gs-shipped row
+    /// moving to an MRC-eligible preset, and an MRC-shipped row whose rebuild has since been
+    /// turned OFF all change path and take the raw estimate: a ratio learned on one path does not
     /// transfer to the other.
     func recompressPrediction(for job: ToolJob, at target: CompressPreset) -> Int? {
         // Ahead of everything: a confident number for a row that cannot run is the one thing R10
@@ -2038,7 +2055,8 @@ final class QueueViewModel: ObservableObject {
            // effective classification even when the analysis itself came back unknown; otherwise
            // withhold calibration rather than silently reading "unknown" as "not scanColour".
            let classification = analysis.contentType ?? (shipped.variant == .mrc ? .scanColour : nil) {
-            let targetWantsMRC = classification == .scanColour && target != .maximumQuality
+            let targetWantsMRC = (overrides[job.id]?.rebuildScan ?? true)
+                && classification == .scanColour && target != .maximumQuality
             let shippedWasMRC = shipped.variant == .mrc
             if targetWantsMRC == shippedWasMRC {
                 predicted = Int((Double(shipped.bytes) / Double(baseline)) * Double(raw))

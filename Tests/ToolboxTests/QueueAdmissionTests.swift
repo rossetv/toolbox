@@ -401,6 +401,32 @@ final class QueueAdmissionTests: XCTestCase {
                           "the futile record belongs to the verb set that produced it")
     }
 
+    /// The analysis is cached per FILE but priced against the row's rebuild opt-out (spec §6.7),
+    /// so flipping "Rebuild the scan" while the queue is idle must RE-PRICE the row: the cached
+    /// figure was the rebuild's, and the row will now take the gs-only path. Sibling of the
+    /// reservation invalidation asserted above.
+    func testRebuildOptOutRepricesRowEstimate() async throws {
+        let env = try HeavyEnv(contentType: .scanColour, timeBudget: 5)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await addOne(env)
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+        let rebuilt = try XCTUnwrap(model.jobs.first?.estimate?.predictedBytes)
+
+        model.setOverride(RowOverride(rebuildScan: false), for: id)
+        try await waitUntil(timeout: 5) {
+            (model.jobs.first?.estimate?.predictedBytes ?? rebuilt) != rebuilt
+        }
+
+        XCTAssertGreaterThan(try XCTUnwrap(model.jobs.first?.estimate?.predictedBytes), rebuilt,
+                             "a row that will not be rebuilt must be priced on the gs-only path")
+
+        model.setOverride(nil, for: id)
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate?.predictedBytes == rebuilt }
+        XCTAssertEqual(model.jobs.first?.estimate?.predictedBytes, rebuilt,
+                       "opting back in restores the rebuild's own figure")
+    }
+
     /// The row's displayed estimate is keyed by the row's own preset — showing the batch preset's
     /// number on an overridden row is two different figures for one file.
     func testOverriddenRowEstimateUsesRowPreset() async throws {
