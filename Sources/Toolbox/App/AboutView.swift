@@ -30,9 +30,10 @@ struct AboutView: View {
 
     var body: some View {
         SheetChrome(width: 330, topOffset: 130) {
-            // Centre alignment throughout is a deliberate DESIGN.md §7 exception: this is the
-            // macOS About-panel idiom (the system's own About windows centre icon, name,
-            // version and copyright), not body copy.
+            // Centre alignment throughout follows the macOS About-panel idiom (the system's own
+            // About windows centre icon, name, version and copyright), not body copy — the
+            // rewritten DESIGN.md (D4) carries no general no-centre rule for this to except
+            // itself from.
             VStack(spacing: Theme.Spacing.small) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
@@ -85,8 +86,9 @@ struct AboutView: View {
     }
 }
 
-/// The modal close affordance: a quiet circular ✕ that brightens on hover, per DESIGN.md's
-/// dark-modal close-button hover token. Esc closes too (`cancelAction`). Its own
+/// The modal close affordance: a quiet circular ✕ that brightens on hover — the About sheet's
+/// content is app-layer composition, not a DESIGN.md-pinned component (§4.3). Esc closes too
+/// (`cancelAction`). Its own
 /// `.focusEffectDisabled()` is the THIRD of this file's three (with the two link groups above)
 /// — this sheet gets no `WindowSetup` stray-focus clearing (memory: stray-focus-ring invariant),
 /// so every focusable control here independently refuses the ring AppKit auto-assigns on open.

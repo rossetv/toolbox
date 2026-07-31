@@ -8,8 +8,8 @@
 // Draws the app icon and writes an .iconset for `iconutil`. Run via scripts/make-app-icon.sh.
 //
 // The mark follows DESIGN.md: the app's blue as the tile, a white document sheet, and the
-// document-red badge used elsewhere for PDF iconography — the same visual language as the
-// sidebar's tool tiles, so the icon reads as part of the app rather than bolted on.
+// document-red badge used elsewhere for PDF iconography (§2's `documentBadge` token), so the
+// icon reads as part of the app rather than bolted on.
 
 import AppKit
 import CoreGraphics

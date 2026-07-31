@@ -8,8 +8,8 @@
 import AppKit
 import SwiftUI
 
-/// The app's design tokens — built from `DESIGN.md` (Apple's design language, the law) and
-/// the Claude Design mockup, kept outside this repository (matching its feel).
+/// The app's design tokens — matching `DESIGN.md`'s token tables (the law), itself rewritten
+/// for the unified-queue redesign from the Claude Design handoff, kept outside this repository.
 /// Phase 0 shipped a stub (`Colors.background/text/accent`, `Radius.pill/card/control`,
 /// `Spacing.small/medium/large`) so Tracks B/C could style early views without depending on
 /// Track D; those names and types are preserved unchanged below — only expanded.
@@ -160,9 +160,11 @@ enum Theme {
         static let large: CGFloat = 24
     }
 
-    /// DESIGN.md §6 — one soft, sparse shadow, used only where an element needs to visually
-    /// lift off its surface. Most elements have none; opt in per-component (e.g. `Card(elevated:
-    /// true)`), never stack multiple shadows.
+    /// Generic elevation shadow retained from before the redesign. DESIGN.md §11 flags this
+    /// token as having no per-context counterpart in the handoff — every context §6 actually
+    /// names (popover/sheet/secondary-button/`PDFThumbnail`) sizes its own inline shadow — and
+    /// with `Card` deleted at I1b this has no current consumer; kept as-is pending that
+    /// follow-up. Never stack multiple shadows if it is ever revived.
     enum Shadow {
         static let color = Color.black.opacity(0.22)
         static let radius: CGFloat = 15

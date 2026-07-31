@@ -21,11 +21,11 @@ import SwiftUI
 /// The primary call-to-action. Filled with `Theme.Colors.accent`, white label, disabled/hover
 /// states.
 ///
-/// Radius is DESIGN.md §4's 8px "Primary Blue (CTA)" button, not the 980px pill: the pill
-/// radius is reserved for *link* CTAs ("Learn more"/"Shop") and compact badges, and the Claude
+/// Radius is DESIGN.md §5's `control` token (8px), not the `pill` token (980px): pill radius
+/// is reserved for *link* CTAs ("Learn more"/"Shop") and compact badges, and the Claude
 /// Design mockup draws both of its primary actions ("Choose Files…", "Compress N PDFs") as
 /// small-radius buttons too. The design system's earlier pill reading of "CTA radius" was the
-/// wrong half of §4.
+/// wrong half of §5.
 struct PrimaryButton: View {
     let title: String
     var isEnabled: Bool = true
@@ -48,8 +48,8 @@ struct PrimaryButton: View {
         }
         .buttonStyle(.plain)
         .clearsClickFocus()
-        // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §4's "Primary
-        // Blue (CTA)" is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) — the one
+        // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §2's `accent`
+        // token is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) — the one
         // system shadow is the card's. The gradient (with its raw #0A84FF literal) and the
         // accent-tinted glow this replaces were an unrecorded divergence: DECISIONS.md holds no
         // entry for either.

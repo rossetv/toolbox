@@ -23,8 +23,9 @@ import SwiftUI
 //                        `trailingLink` ("Open folder"); existing `SectionLabel` for
 //                        "EARLIER TODAY". The lock glyph + "Nothing leaves this Mac" line is
 //                        plain text, no component.
-// 02 Drag-over        — the existing `DropZone` component's own drag-fan presentation; no new
-//                        component (P-A restyles `DropZone`, not this task).
+// 02 Drag-over        — `DragOverlayView` (Queue/DragOverlayView.swift, P-A's new full-bleed
+//                        drag-fan overlay; the pre-redesign `DropZone` it replaces is deleted);
+//                        no new DesignSystem component.
 // 03 Ready             — VerbChip ×2 (Compress on w/ suffix, OCR off); QueueRow ×N (trailing:
 //                        `QueueRowSizeColumn`, the shared 70pt current→predicted column);
 //                        PrimaryButton "Start". The "⋯" menu and "Saving beside the originals ⌄"
@@ -83,10 +84,11 @@ import SwiftUI
 //                        components above.
 //
 // Non-components (recorded so a track reads "no component" rather than "component missing"):
-// the "⋯" menu button and "Saving beside the originals ⌄" control (native `Menu`), `DropZone`'s
-// drag-fan (existing component, untouched here), the Finished/Problems screens' big headers
-// (P-A composes them from `StatusIndicator` + `Theme` text directly), screen 09's "without
-// asking" toggle row (native `Toggle` + label), the About sheet's content (App track).
+// the "⋯" menu button and "Saving beside the originals ⌄" control (native `Menu`), screen 02's
+// drag-fan (`DragOverlayView`, a Queue-track view, not a DesignSystem component), the
+// Finished/Problems screens' big headers (P-A composes them from `StatusIndicator` + `Theme`
+// text directly), screen 09's "without asking" toggle row (native `Toggle` + label), the About
+// sheet's content (App track).
 //
 // Flagged additions beyond the plan's literal text (all additive, defaulted, non-breaking —
 // see the implementer's report for the render evidence behind each):

@@ -536,8 +536,10 @@ struct CompressEngine {
     /// the routing gate converts it to a whole-document decline at the call site (same catch shape as
     /// Rung 2's `bilevelCompress` caller). Only `CancellationError` may pass through that call-site catch.
     ///
-    /// Reached directly by tests until the routing/D7 gate (Task 15) wires it behind `compress`; it
-    /// is `internal` rather than `private` for exactly that reason. `forceEligible` and
+    /// `internal` rather than `private` so `CompressEngineMRCTests` can reach it directly,
+    /// isolated from the gs race and the routing/D7 gate (Task 15, wired) that `compress` calls
+    /// it behind in production (`CompressEngineRoutingTests` exercises that wired path).
+    /// `forceEligible` and
     /// `verifierOverride` are test-only seams (both default off): the former pushes a page past the
     /// classifier envelope, the latter rewrites a page's verifier score so the verify→fallback swap
     /// (spec §9) can be exercised deterministically. `compress` forwards the engine's own

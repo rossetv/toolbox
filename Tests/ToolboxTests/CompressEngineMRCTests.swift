@@ -10,9 +10,9 @@ import XCTest
 @testable import Toolbox
 
 /// Rung-3 (`mrcCompress`) per-page driver. The driver never touches Ghostscript, so these tests
-/// call it directly with a no-op runner. It is reached directly rather than through `compress`
-/// because the routing/D7 gate (Task 15) is not yet wired — until then `compress` ignores the MRC
-/// parameters and these tests are the only entry point.
+/// call it directly with a no-op runner, isolating the per-page mechanics from the gs race and
+/// the routing/D7 gate (Task 15) that `compress` wires it behind in production —
+/// `CompressEngineRoutingTests` below exercises that wired path end to end.
 final class CompressEngineMRCTests: XCTestCase {
 
     /// The driver needs no gs; this runner exists only to satisfy the `CompressEngine`
@@ -163,10 +163,11 @@ final class CompressEngineMRCTests: XCTestCase {
 
 // MARK: - Routing, the D7 document gate and runner-up delivery (through `compress`)
 
-/// Task 15: the whole-`compress` behaviour behind the MRC parameters — content routing to Rung 3,
-/// the D7 winner gate, and the runner-up cache copy. The gs leg is stubbed (`BytesRunner`) so the
-/// gs candidate's size is deterministic; the MRC leg runs for real (it never touches Ghostscript),
-/// so the two competing sizes are one measured value and one fixed value, never a race.
+/// The whole-`compress` behaviour behind the MRC parameters — content routing to Rung 3, the D7
+/// winner gate, and the runner-up cache copy (Task 15, wired). The gs leg is stubbed
+/// (`BytesRunner`) so the gs candidate's size is deterministic; the MRC leg runs for real (it
+/// never touches Ghostscript), so the two competing sizes are one measured value and one fixed
+/// value, never a race.
 final class CompressEngineRoutingTests: XCTestCase {
 
     /// Captures the side effect a routing test cares about: whether the MRC report callback fired
