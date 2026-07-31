@@ -12,10 +12,9 @@ import SwiftUI
 /// newer release exists, above the unified queue.
 ///
 /// This is where the app's long-lived objects are owned — the queue view model, the update
-/// checker and the self-updater — and where `QueueView`'s frozen nine-slot seam is plugged:
-/// the queue composes none of its own popovers or sheets, so every one of them is constructed
-/// here against the single `model` instance. `showAbout` is owned higher still, by `ToolboxApp`,
-/// because the app menu's About command toggles the same presentation state as the `⋯` menu's.
+/// checker and the self-updater. `QueueView` constructs its own popovers and sheets against
+/// `model` directly; `showAbout` is owned higher still, by `ToolboxApp`, because the app menu's
+/// About command toggles the same presentation state as the `⋯` menu's.
 struct RootView: View {
     @Binding private var showAbout: Bool
     @StateObject private var model: QueueViewModel
@@ -46,18 +45,7 @@ struct RootView: View {
                 // keep looking live until something unrelated redrew the banner.
                 UpdateBannerView(release: release, updater: updater, isRunning: model.isRunning)
             }
-            QueueView(
-                model: model, history: model.history,
-                quality: { AnyView(QualityPopover(model: model)) },
-                ocrOptions: { AnyView(OCRPopover(model: model)) },
-                perFile: { AnyView(PerFileSettingsPopover(model: model, jobID: $0)) },
-                versions: { AnyView(VersionsPopoverContent(model: model, jobID: $0)) },
-                changeQuality: { AnyView(ChangeQualitySheet(model: model)) },
-                scanConsent: { AnyView(ScanConsentSheet(model: model, jobID: $0)) },
-                recentBatches: { AnyView(RecentBatchesSheet(history: model.history)) },
-                about: { AnyView(AboutView()) },
-                showAbout: $showAbout
-            )
+            QueueView(model: model, history: model.history, showAbout: $showAbout)
         }
         // The content hint alone cannot hold the window open at this size — `.frame` constrains
         // the CONTENT, so a window restored smaller simply clips. `applyMinimumSize` below is

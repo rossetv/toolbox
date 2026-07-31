@@ -28,46 +28,20 @@ enum QueueScreenState: Equatable {
 
 /// The main window's single content view (handoff: "the window is one thing"). Hosts every
 /// screen the design specifies as one state machine over `QueueViewModel` + `HistoryStore`,
-/// presenting the eight sibling-track popovers/sheets this type does not itself compose.
-///
-/// The nine-slot seam below is FROZEN (spec P-A task): I1 plugs P-B's views into exactly these
-/// slots and no other cross-track reference exists. `showAbout` is the one shared presentation
-/// state — `QueueView` presents the About sheet off it, the `⋯` menu's "About Toolbox" item and
-/// `ToolboxApp`'s app-menu command both toggle the SAME binding.
+/// and constructs every popover/sheet it presents directly — `QualityPopover`, `OCRPopover`,
+/// `PerFileSettingsPopover`, `VersionsPopoverContent`, `ChangeQualitySheet`, `ScanConsentSheet`,
+/// `RecentBatchesSheet`, `AboutView` — since all of them live in this module. `showAbout` is the
+/// one genuinely externally-owned piece of state — `QueueView` presents the About sheet off it,
+/// the `⋯` menu's "About Toolbox" item and `ToolboxApp`'s app-menu command both toggle the SAME
+/// binding.
 struct QueueView: View {
     @ObservedObject var model: QueueViewModel
     @ObservedObject var history: HistoryStore
-
-    let quality: () -> AnyView
-    let ocrOptions: () -> AnyView
-    let perFile: (ToolJob.ID) -> AnyView
-    let versions: (ToolJob.ID) -> AnyView
-    let changeQuality: () -> AnyView
-    let scanConsent: (ToolJob.ID) -> AnyView
-    let recentBatches: () -> AnyView
-    let about: () -> AnyView
     let showAbout: Binding<Bool>
 
-    init(model: QueueViewModel, history: HistoryStore,
-         quality: @escaping () -> AnyView,
-         ocrOptions: @escaping () -> AnyView,
-         perFile: @escaping (ToolJob.ID) -> AnyView,
-         versions: @escaping (ToolJob.ID) -> AnyView,
-         changeQuality: @escaping () -> AnyView,
-         scanConsent: @escaping (ToolJob.ID) -> AnyView,
-         recentBatches: @escaping () -> AnyView,
-         about: @escaping () -> AnyView,
-         showAbout: Binding<Bool>) {
+    init(model: QueueViewModel, history: HistoryStore, showAbout: Binding<Bool>) {
         self.model = model
         self.history = history
-        self.quality = quality
-        self.ocrOptions = ocrOptions
-        self.perFile = perFile
-        self.versions = versions
-        self.changeQuality = changeQuality
-        self.scanConsent = scanConsent
-        self.recentBatches = recentBatches
-        self.about = about
         self.showAbout = showAbout
     }
 
@@ -92,7 +66,8 @@ struct QueueView: View {
             } else {
                 QueueHeaderView(
                     model: model, state: screenState,
-                    quality: quality, ocrOptions: ocrOptions,
+                    quality: { AnyView(QualityPopover(model: model)) },
+                    ocrOptions: { AnyView(OCRPopover(model: model)) },
                     onAdd: { model.add(FilePicker.choosePDFs()) },
                     onClear: { model.clearFinished() },
                     onChooseFolder: { if let folder = FilePicker.chooseFolder() { model.outputFolder = folder } },
@@ -102,7 +77,11 @@ struct QueueView: View {
                     qualityPresented: $qualityPresented, ocrPresented: $ocrPresented
                 )
                 Divider()
-                QueueRowsView(model: model, state: screenState, perFile: perFile, versions: versions)
+                QueueRowsView(
+                    model: model, state: screenState,
+                    perFile: { AnyView(PerFileSettingsPopover(model: model, jobID: $0)) },
+                    versions: { AnyView(VersionsPopoverContent(model: model, jobID: $0)) }
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .opacity(Self.rowsDimOpacity(qualityOpen: qualityPresented, ocrOpen: ocrPresented))
                 Divider()
@@ -133,10 +112,10 @@ struct QueueView: View {
         // dismiss+present on every id change, including consent → consent (spec §7's multi-scan case).
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
-            case .changeQuality: changeQuality()
-            case .recentBatches: recentBatches()
-            case .about: about()
-            case .consent(let id): scanConsent(id)
+            case .changeQuality: ChangeQualitySheet(model: model)
+            case .recentBatches: RecentBatchesSheet(history: history)
+            case .about: AboutView()
+            case .consent(let id): ScanConsentSheet(model: model, jobID: id)
             }
         }
         // Drives the FIFO: any change to the queue's head re-targets `activeSheet`. If the head
@@ -288,13 +267,6 @@ private struct QueueDropDelegate: DropDelegate {
 
 #Preview("Queue – Ready") {
     let model = QueueViewModel()
-    return QueueView(
-        model: model, history: model.history,
-        quality: { AnyView(EmptyView()) }, ocrOptions: { AnyView(EmptyView()) },
-        perFile: { _ in AnyView(EmptyView()) }, versions: { _ in AnyView(EmptyView()) },
-        changeQuality: { AnyView(EmptyView()) }, scanConsent: { _ in AnyView(EmptyView()) },
-        recentBatches: { AnyView(EmptyView()) }, about: { AnyView(EmptyView()) },
-        showAbout: .constant(false)
-    )
-    .frame(width: 900, height: 640)
+    return QueueView(model: model, history: model.history, showAbout: .constant(false))
+        .frame(width: 900, height: 640)
 }

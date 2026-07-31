@@ -337,13 +337,6 @@ final class QueueViewStateTests: XCTestCase {
     }
 
     private func makeView(model: QueueViewModel) -> QueueView {
-        QueueView(
-            model: model, history: model.history,
-            quality: { AnyView(EmptyView()) }, ocrOptions: { AnyView(EmptyView()) },
-            perFile: { _ in AnyView(EmptyView()) }, versions: { _ in AnyView(EmptyView()) },
-            changeQuality: { AnyView(EmptyView()) }, scanConsent: { _ in AnyView(EmptyView()) },
-            recentBatches: { AnyView(EmptyView()) }, about: { AnyView(EmptyView()) },
-            showAbout: .constant(false)
-        )
+        QueueView(model: model, history: model.history, showAbout: .constant(false))
     }
 }
