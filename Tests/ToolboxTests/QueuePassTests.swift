@@ -889,4 +889,162 @@ final class QueuePassTests: XCTestCase {
             .filter { $0.hasPrefix(".toolbox-original-") }
         XCTAssertTrue(leftovers.isEmpty, "the abandoned copy is cleaned up")
     }
+
+    // MARK: the scan-rebuild consent queue (spec §7 Scan choice)
+
+    /// The engine's gs-won shape: the plain gs output ships, the VALID hybrid that LOST the size
+    /// gate is retained beside it (spec §5's R7 reversal). `HeavyEnv`'s default is the opposite
+    /// pairing, and on it "keep the rebuilt one" is already true before the view model does
+    /// anything — so the two tests that must not be tautologies build this one instead.
+    private static func gsWonPair(before: Int = 9_000) -> StubCompressEngine.Response {
+        .init(outcome: RowOutcome(originalBytes: before, finalBytes: HeavyEnv.normalBytes,
+                                  compress: .compressed(before: before,
+                                                        after: HeavyEnv.normalBytes),
+                                  shippedVariant: .plain,
+                                  runnerUp: RetainedVariant(kind: .mrc,
+                                                            bytes: HeavyEnv.heavyBytes,
+                                                            searchable: false)),
+              shippedBytes: HeavyEnv.normalBytes, runnerUpBytes: HeavyEnv.heavyBytes)
+    }
+
+    /// One sheet at a time, oldest first, and resolving one takes exactly that one out of the
+    /// queue. The tail also covers the lifecycle: a consent about a row that has left the queue
+    /// would ask the user to choose between two files the app has just discarded.
+    func testConsentQueuedFIFOAndResolved() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let first = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, first) != nil }
+        let second = try await env.addRow(try Fixtures.blankPDF())
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, second) != nil }
+
+        XCTAssertEqual(model.pendingConsents, [first, second],
+                       "FIFO across files — the sheet surfaces the head")
+
+        await model.resolveConsent(first, keepRebuilt: true)
+
+        XCTAssertEqual(model.pendingConsents, [second],
+                       "the answered row leaves; the rest keep their order")
+        XCTAssertEqual(model.versions(for: try job(model, first))?.shipped?.variant, .mrc,
+                       "keeping the rebuilt one it already shipped moves nothing")
+
+        model.remove(try job(model, second))
+
+        XCTAssertTrue(model.pendingConsents.isEmpty,
+                      "a consent must not outlive the row it is about")
+    }
+
+    /// The sheet arrives as each file's delivery completes, mid-run (spec §7) — not at the end of
+    /// the batch. The first row reads no text, so it finishes while the second is still inside its
+    /// OCR leg, held on the stub's gate.
+    func testConsentAppearsMidRun() async throws {
+        let (env, ocr) = try env(added)
+        let model = env.model
+        let gate = Gate()
+        ocr.gate = gate
+        let first = try await env.addRow()
+        let second = try await env.addRow(try Fixtures.blankPDF())
+        model.setOverride(RowOverride(ocr: false), for: first)
+
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, first) != nil }
+
+        XCTAssertEqual(model.pendingConsents, [first],
+                       "the first file's choice is asked while the batch is still running")
+        XCTAssertTrue(model.isRunning)
+        XCTAssertNil(outcome(model, second), "the later row is still held in its OCR leg")
+
+        await gate.open()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        XCTAssertEqual(model.pendingConsents, [first, second],
+                       "the second joins the queue behind the first")
+    }
+
+    /// The DESCRIPTOR fires the sheet, never the gate winner: with the R7 asymmetry removed, a row
+    /// whose hybrid lost the size gate has both variants on disk and exactly the same question to
+    /// ask (spec §5/§7). Keying this on "the hybrid shipped" is the asymmetry creeping back.
+    func testConsentFiresRegardlessOfGateWinner() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.script = { _, _ in Self.gsWonPair() }
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, id) != nil }
+
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.shipped?.variant, .plain, "sanity: the gs output won the gate")
+        XCTAssertEqual(row.runnerUp?.variant, .mrc, "the hybrid that LOST is still retained")
+        XCTAssertEqual(model.pendingConsents, [id],
+                       "the retained pair asks the question whichever variant shipped")
+    }
+
+    /// The toggle's promise (spec §7): no sheet, and the REBUILT variant is the one they end up
+    /// with — here it has to be switched in, because the gs output won the provisional gate. The
+    /// undo leg is the point of the second half: the demoted variant stays parked, so the versions
+    /// capsule can still put it back.
+    func testRebuildWithoutAskingSkipsConsentAndKeepsRebuilt() async throws {
+        let suite = "toolbox.tests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
+        let env = try HeavyEnv(defaults: defaults)
+        let model = env.model
+        model.rebuildWithoutAsking = true
+        env.stub.script = { _, _ in Self.gsWonPair() }
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, id) != nil }
+        // The silent keep-rebuilt switch is a switch like any other, so it lands after the ingest
+        // that triggered it rather than inside it.
+        try await waitUntil(timeout: 5) {
+            model.jobs.first.flatMap { model.versions(for: $0)?.shipped?.variant } == .mrc
+        }
+
+        XCTAssertTrue(model.pendingConsents.isEmpty, "the preference answers the question")
+        XCTAssertTrue(defaults.bool(forKey: "rebuildScansWithoutAsking"),
+                      "the promise outlives the session that made it — renaming the key orphans it")
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.shipped?.bytes, HeavyEnv.heavyBytes)
+        XCTAssertEqual(TestSupport.fileSize(try XCTUnwrap(row.shipped?.url)), HeavyEnv.heavyBytes,
+                       "the rebuilt BYTES are what they have, not merely the label")
+        XCTAssertEqual(row.runnerUp?.variant, .plain, "the demoted gs output stays as the undo")
+        XCTAssertEqual(row.runnerUp?.bytes, HeavyEnv.normalBytes)
+        XCTAssertTrue(exists(row.runnerUp?.url), "the capsule's offer is backed by a real file")
+    }
+
+    /// "Keep photographs" is an instant switch between two files already on disk — and it moves the
+    /// searchability flags with the bytes, because it goes through `swapShipped` rather than
+    /// exchanging the two descriptions by hand. The runner-up's append fails here precisely so the
+    /// flags are ASYMMETRIC: a bespoke swap would leave the row claiming the wrong file reads.
+    func testConsentKeepPhotographsSwapsInstantly() async throws {
+        let (env, ocr) = try env(added)
+        let model = env.model
+        ocr.throwOnAppendCall = 2       // the delivered file carries the layer; the runner-up cannot
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, id) != nil }
+
+        XCTAssertEqual(model.pendingConsents, [id])
+        let before = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(before.searchableByCard[.shipped], true)
+        XCTAssertEqual(before.searchableByCard[.runnerUp], false)
+
+        await model.resolveConsent(id, keepRebuilt: false)
+
+        XCTAssertTrue(model.pendingConsents.isEmpty)
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.shipped?.variant, .plain, "the photographs are what they now have")
+        XCTAssertEqual(row.shipped?.bytes, HeavyEnv.normalBytes)
+        XCTAssertEqual(TestSupport.fileSize(try XCTUnwrap(row.shipped?.url)), HeavyEnv.normalBytes,
+                       "the bytes moved, not just the label")
+        XCTAssertEqual(row.searchableByCard[.shipped], false,
+                       "the flags travel with the bytes")
+        XCTAssertEqual(row.searchableByCard[.runnerUp], true)
+        XCTAssertEqual(row.runnerUp?.variant, .mrc, "the rebuilt one stays parked as the undo")
+    }
 }

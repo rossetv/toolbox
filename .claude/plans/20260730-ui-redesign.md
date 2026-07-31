@@ -257,9 +257,11 @@ Job body per file (spec §6.2/§6.4/§6.5/§6.8): compress leg (when effective-o
 ```swift
 @Published private(set) var pendingConsents: [ToolJob.ID] = []      // FIFO, surfaced one at a time, mid-run (spec §7)
 @Published var rebuildWithoutAsking: Bool                            // UserDefaults-backed
-func resolveConsent(_ id: ToolJob.ID, keepRebuilt: Bool)             // instant switch via RunnerUpStore.switchVersions when needed
+func resolveConsent(_ id: ToolJob.ID, keepRebuilt: Bool) async       // instant switch via RunnerUpStore.switchVersions when needed
+                                                                     // (`async` as SHIPPED — `switchVersions` is async throws, so the sheet's
+                                                                     //  buttons call this from a `Task`, exactly as they call `useCard`)
 ```
-Trigger = completed job with `runnerUp != nil` on the rebuild path. Pref on → no sheet, keep REBUILT when it exists+validates (spec §7's toggle promise). Consent-retained loser occupies the runner-up slot (cap ruling — F1b's test covers the collision with a later previous-park).
+Trigger = completed job with `runnerUp != nil` on the rebuild path — resolved AS SHIPPED to the pair `{shippedVariant, runnerUp.kind} == {.mrc, .plain}` in either order (spec §7: "BOTH a valid hybrid and a valid gs output exist"; "no hybrid built/verified → no sheet"). The untouched-original park is deliberately excluded: it exists BECAUSE the gs candidate bloated past the input and was withheld (§6.3), so there is no "left as photographs, just lighter" variant for the card the handoff specifies. Pref on → no sheet, keep REBUILT when it exists+validates (spec §7's toggle promise). Consent-retained loser occupies the runner-up slot (cap ruling — F1b's test covers the collision with a later previous-park).
 
 - [ ] 1. Tests: `testConsentQueuedFIFOAndResolved`, `testConsentAppearsMidRun` (first consent surfaces while a later job still runs), `testConsentFiresRegardlessOfGateWinner` (descriptor-present on a gs-won row ⇒ sheet fires — the R7-reversal's VM half), `testRebuildWithoutAskingSkipsConsentAndKeepsRebuilt` (assert ALSO that the versions capsule/runner-up remains available — the undo leg), `testConsentKeepPhotographsSwapsInstantly`. FAIL → implement → PASS.
 - [ ] 2. Commit: `feat(queue): scan-rebuild consent queue`.

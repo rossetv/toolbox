@@ -83,6 +83,27 @@ final class QueueViewModel: ObservableObject {
     /// `recompressState` and so never arm (spec §7).
     @Published private(set) var armedExclusions: Set<ToolJob.ID> = []
 
+    // MARK: the scan-rebuild consent queue (spec §7 Scan choice)
+
+    /// Rows whose scan came out two ways and are waiting for the user's choice, oldest first. The
+    /// sheet surfaces ONE at a time — the head — and each entry arrives as its own file's delivery
+    /// completes, mid-run (spec §7): a batch of scans asks about the first while the rest are still
+    /// being compressed, rather than saving every question for the end.
+    @Published private(set) var pendingConsents: [ToolJob.ID] = []
+
+    /// "Rebuild scans from now on without asking" (spec §7). Persisted, so the promise outlives the
+    /// session that made it: no further sheets, and the REBUILT variant is kept whenever one exists
+    /// — the retained descriptor is that evidence, since the engine only retains a variant that
+    /// passed validation (F2's retention rule). The versions capsule stays as the undo.
+    @Published var rebuildWithoutAsking: Bool {
+        didSet {
+            guard rebuildWithoutAsking != oldValue else { return }
+            defaults.set(rebuildWithoutAsking, forKey: Self.rebuildWithoutAskingKey)
+        }
+    }
+    private static let rebuildWithoutAskingKey = "rebuildScansWithoutAsking"
+    private let defaults: UserDefaults
+
     @Published private(set) var jobs: [ToolJob] = []
     @Published private(set) var isRunning = false
     @Published private(set) var loadError: String?
@@ -284,10 +305,13 @@ final class QueueViewModel: ObservableObject {
     init(engine: (any Compressing)?,
          ocrEngine: (any OCRing)? = OCREngine(),
          estimator: CompressEstimator = CompressEstimator(),
-         store: RunnerUpStore? = nil) {
+         store: RunnerUpStore? = nil,
+         defaults: UserDefaults = .standard) {
         self.engine = engine
         self.ocrEngine = ocrEngine
         self.estimator = estimator
+        self.defaults = defaults
+        self.rebuildWithoutAsking = defaults.bool(forKey: Self.rebuildWithoutAskingKey)
         // Built here (not as a default argument) because a default value expression is evaluated in
         // a nonisolated context, and `RunnerUpStore.init` is `@MainActor`.
         let store = store ?? RunnerUpStore()
@@ -351,6 +375,9 @@ final class QueueViewModel: ObservableObject {
                                         for: job.id)
                 }
                 recordRowProvenance(job, searchable: searchable)
+                // Last, and only here: the other two arms ship no compress artefact at all, so
+                // neither can hold the pair of scan variants the choice is between.
+                surfaceConsent(for: job.id, outcome: outcome)
             case .noGain(let bytes):
                 // Nothing shipped, but the attempt still fixes the row's preset (R1). A wholesale
                 // `record` is safe here: only `.queued` rows ever reach this path, and a row
@@ -384,6 +411,84 @@ final class QueueViewModel: ObservableObject {
         for (card, isSearchable) in searchable ?? [:] {
             versionStore.setSearchable(isSearchable, card: card, for: job.id)
         }
+    }
+
+    // MARK: the scan-rebuild consent (spec §7 Scan choice)
+
+    /// Ask about this row's scan — or, when the preference says not to, settle it silently.
+    ///
+    /// The pair the sheet is about is a REBUILT variant and a plain-compressed one, in either
+    /// order: the DESCRIPTOR decides, never which of the two won the size gate (spec §5's R7
+    /// reversal — the hybrid that lost is retained exactly as the one that won). The untouched
+    /// original park is deliberately not that pair: it exists precisely because the gs candidate
+    /// bloated past the input and was withheld (spec §6.3), so there is no "left as photographs,
+    /// just lighter" variant to put on a card and no valid gs output for §7's gate to find.
+    private func surfaceConsent(for id: ToolJob.ID, outcome: RowOutcome) {
+        guard let parked = outcome.runnerUp?.kind else { return }
+        // The same normalisation the shipped card is recorded with just above, so the sheet and the
+        // popover can never disagree about which variant the delivered file is.
+        let shipped = outcome.shippedVariant ?? .plain
+        guard (shipped == .mrc && parked == .plain) || (shipped == .plain && parked == .mrc) else {
+            return
+        }
+        guard rebuildWithoutAsking else {
+            pendingConsents.append(id)
+            return
+        }
+        // The toggle's promise (spec §7): keep the rebuilt one. Nothing to do when it is already
+        // the file the user has — the size gate only ordered the provisional delivery.
+        guard shipped != .mrc else { return }
+        Task { await keepVariant(.mrc, for: id) }
+    }
+
+    /// The sheet's two buttons: Keep rebuilt / Keep photographs (spec §7). Both files are already
+    /// on disk, so the choice is an instant version switch — which is what makes "nothing is
+    /// decided yet" honest right up to this call. `async` because the switch is; the sheet's
+    /// buttons call it from a `Task`, exactly as they call `useCard`.
+    ///
+    /// The row leaves the queue before the switch is attempted: a choice the user has just made
+    /// must not re-surface as a sheet if the swap fails. A failure is reported beside the row
+    /// instead, and the versions capsule still offers the same switch.
+    func resolveConsent(_ id: ToolJob.ID, keepRebuilt: Bool) async {
+        pendingConsents.removeAll { $0 == id }
+        await keepVariant(keepRebuilt ? .mrc : .plain, for: id)
+    }
+
+    /// Make `kind` the delivered file, when the row is not already shipping it.
+    ///
+    /// Runs mid-batch on a row whose own delivery is complete and banked, so it takes
+    /// `switchesInFlight` rather than `useVersion`'s `!isRunning` guard: that guard exists to keep
+    /// a switch away from a recompress commit for the same row, and this row's work is over.
+    /// Membership is what keeps a later popover switch from interleaving with this one.
+    private func keepVariant(_ kind: EngineVariant, for id: ToolJob.ID) async {
+        guard !switchesInFlight.contains(id) else { return }
+        guard let job = jobs.first(where: { $0.id == id }),
+              let row = versions(for: job),
+              let shipped = row.shipped, shipped.variant != kind,
+              let parked = row.runnerUp, parked.variant == kind else { return }
+
+        switchesInFlight.insert(id)
+        defer { switchesInFlight.remove(id) }
+        do {
+            try await store.switchVersions(shipped: shipped.url, runnerUp: parked.url)
+            // `swapShipped`, never a bespoke exchange of the two descriptions: it also PERMUTES the
+            // searchability flags, and leaving the old flag on the new bytes is exactly the lie
+            // spec §6.4 forbids.
+            versionStore.swapShipped(with: .runnerUp, for: id)
+            recompressErrors[id] = nil
+        } catch let stranded as RunnerUpStore.SwitchError {
+            // Must precede the generic catch: the delivered file survives under a hidden dot-name
+            // nothing else will look for, so the row says where it is (`useVersion`'s reasoning).
+            reportSwitchFailure(id, stranded.localizedDescription)
+            return
+        } catch {
+            // The store's contract: any other throw leaves the shipped file exactly as it was, so
+            // there is nothing to unwind — only to report. An explicit choice never fails silently
+            // (R12), and the version they still have is named so the message is actionable.
+            recompressErrors[id] = "Switch failed — kept your "
+                                 + "\(shipped.preset.title) version. Try again."
+        }
+        publishJobs()
     }
 
     /// Every QUEUED row of this run that has reached a terminal state. Separate from
@@ -756,6 +861,9 @@ final class QueueViewModel: ObservableObject {
         // never be discarded without this call.
         versionStore.discardRow(job.id)
         switchFailures[job.id] = nil
+        // Same reason again: a pending consent about a row that has left the queue would surface a
+        // choice between two files the app has just discarded.
+        pendingConsents.removeAll { $0 == job.id }
         // Same reason as the discard above: `queue.remove` is a no-op on a finished row, so the
         // `pruneStaleEstimateState` sweep that would release the ledger entry never fires.
         reservations[job.id] = nil
@@ -1472,6 +1580,9 @@ final class QueueViewModel: ObservableObject {
         // neither of which fires when a row is simply removed.
         pendingPresets = pendingPresets.filter { liveIDs.contains($0.key) }
         pendingSearchable = pendingSearchable.filter { liveIDs.contains($0.key) }
+        // The consent sheet renders the HEAD of this list, so an id nothing backs any more would
+        // ask about a file that is gone — and `⊗ Clear` reaches rows that are still queued for one.
+        pendingConsents = pendingConsents.filter { liveIDs.contains($0) }
         // The reservation ledger is queue-lifetime, so this sweep IS its release path (spec §6.5):
         // a row cleared or removed gives its names straight back, and re-adding a same-named file
         // is not pushed onto `-compressed-1.pdf` by an entry nothing owns any more.

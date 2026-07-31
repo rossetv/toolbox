@@ -352,9 +352,13 @@ struct HeavyEnv {
     let input: URL
     let storeRoot: URL
 
+    /// `defaults` is passed by the tests that touch a persisted preference, which MUST drive their
+    /// own suite: a bundle that ever wrote one of these keys into `.standard` would leak the state
+    /// into the next run and make a later test order-dependent.
     init(before: Int = 9000, contentType: PDFContentType? = nil,
          timeBudget: TimeInterval = 0.5,
-         ocrEngine: (any OCRing)? = nil) throws {
+         ocrEngine: (any OCRing)? = nil,
+         defaults: UserDefaults = .standard) throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -379,7 +383,8 @@ struct HeavyEnv {
         } ?? CompressEstimator(timeBudget: timeBudget)
         model = QueueViewModel(engine: stub, ocrEngine: ocrEngine ?? OCREngine(),
                                estimator: estimator,
-                               store: RunnerUpStore(rootOverride: storeRoot))
+                               store: RunnerUpStore(rootOverride: storeRoot),
+                               defaults: defaults)
         model.outputFolder = outputFolder
     }
 
