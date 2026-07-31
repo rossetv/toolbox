@@ -48,8 +48,10 @@ struct DragOverlayView: View {
         .onAppear {
             guard !reduceMotion else { hasEntered = true; return }
             withAnimation(.easeOut(duration: 0.5)) { hasEntered = true }
-            withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) { isPulsing = true }
-            withAnimation(.easeInOut(duration: 2.9).repeatForever(autoreverses: true)) { floatPhase = true }
+            // Autoreverse doubles the duration, so use half for each handoff full cycle:
+            // `animation:…ring 1.8s ease-in-out…infinite` and `…floatA 3.4s ease-in-out…infinite`.
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { isPulsing = true }
+            withAnimation(.easeInOut(duration: 1.7).repeatForever(autoreverses: true)) { floatPhase = true }
         }
     }
 

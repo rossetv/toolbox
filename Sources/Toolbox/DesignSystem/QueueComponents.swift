@@ -195,7 +195,9 @@ struct StatusIndicator: View {
             .opacity(isBreathing ? 0.5 : 1)
             .onAppear {
                 guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) { isBreathing = true }
+                // Autoreverse doubles the duration, so use half for a 2.2s full cycle
+                // (handoff: `animation:breathe 2.2s ease-in-out infinite`).
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { isBreathing = true }
             }
     }
 

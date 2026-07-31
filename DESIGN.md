@@ -315,8 +315,8 @@ Motion not backed by a named `Theme.Motion` constant, still part of the law and 
 local component state: the progress bar's 1.9s light sweep; the
 Working row's shimmer (~2.4s); the active status ring's arc, which animates its trim
 0.2s linear as `fraction` ticks and never rotates (§11); the
-queued dashed ring's breathing (~2s–2.2s); the drag-over fan's entrance + float loop
-(70ms stagger in, 2.6–3.2s float); the empty-state icon's pointer parallax (~90ms follow,
+queued dashed ring's breathing (2.2s); the drag-over fan's entrance + float loop
+(70ms stagger in, 3.4s float); the empty-state icon's pointer parallax (~90ms follow,
 ±11°/±13° rotation, ±7px translate, 1.05 scale, glow moving in counter-phase, settling
 back over 0.5s on exit).
 
