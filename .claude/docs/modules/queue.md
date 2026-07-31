@@ -14,7 +14,7 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 
 The whole window's content and the single view model behind it. There is one queue,
 one job list and one pass: **Compress and OCR are verbs of that pass, not two tools**
-(spec §6.1), so this module owns everything the old per-tool views and view models
+(spec §6.2), so this module owns everything the old per-tool views and view models
 did — dropping/adding files, add-time inspection, per-row overrides, the run and its
 progress/ETA, the finished screens, the scan-consent and version-switch flows, and
 the recent-batches history. [Compress](compress.md) and [OCR](ocr.md) document their

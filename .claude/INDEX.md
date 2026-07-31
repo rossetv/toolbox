@@ -33,7 +33,7 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 | Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) + Rung-3 (MRC) compression, estimate | `Sources/Toolbox/Compress/CompressEngine.swift` | [→](docs/modules/compress.md) |
 | OCR | Vision-based invisible text layer | `Sources/Toolbox/OCR/OCREngine.swift` | [→](docs/modules/ocr.md) |
 | Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/Toolbox/Services/GhostscriptRunner.swift` | [→](docs/modules/services.md) |
-| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/Toolbox/Shared/ToolQueue.swift` | [→](docs/modules/shared.md) |
+| Shared | Batch runner, file naming, path canonicalisation, file picker, system info | `Sources/Toolbox/Shared/ToolQueue.swift` | [→](docs/modules/shared.md) |
 | Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/Toolbox/Models/ToolJob.swift` | [→](docs/modules/models.md) |
 | DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/Toolbox/DesignSystem/Theme.swift` | [→](docs/modules/design-system.md) |
 
@@ -62,8 +62,7 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 
 - **Central** (changes fan out to both legs of the pass): `Sources/Toolbox/Services/`
   (gs runner, sandbox profile, PDF inspection/validation/writer), `Sources/Toolbox/Shared/`
-  (batch runner, naming, path canonicalisation), `Sources/Toolbox/Queue/`
-  (the one view model both legs run under).
+  (batch runner, naming, path canonicalisation).
 - **Peripheral** (isolated): `Sources/Toolbox/DesignSystem/` (presentation only, no
   logic dependents), `Sources/Toolbox/Models/` (leaf value types, no outward
   dependencies).
