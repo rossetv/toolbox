@@ -274,15 +274,6 @@ final class QueueViewModel: ObservableObject {
     /// one has genuinely finished.
     private var runQueuedIDs: Set<ToolJob.ID> = []
 
-    /// What the run in flight is made of, captured at its start. Arming is suppressed for the
-    /// duration of a run, so the composition cannot be re-derived once it is under way — and the
-    /// progress bar's verb ("Compressing" vs "Recompressing") depends on it.
-    struct RunComposition: Equatable {
-        let queued: Int
-        let armed: Int
-    }
-    @Published private(set) var runComposition = RunComposition(queued: 0, armed: 0)
-
     // MARK: batch progress + ETA (spec §6.8/§7)
 
     /// The Working/Finished header's aggregate figures. Persists after the batch ends until the
@@ -1145,8 +1136,6 @@ final class QueueViewModel: ObservableObject {
                 runIDs.append(job.id)
                 runQueuedIDs.insert(job.id)
                 batchRowIDs.insert(job.id)
-                runComposition = RunComposition(queued: runComposition.queued + 1,
-                                                armed: runComposition.armed)
             }
             scheduleEstimate(for: job)
             inspect(job)
@@ -1377,7 +1366,6 @@ final class QueueViewModel: ObservableObject {
         // The queued subset is tracked separately: see `runQueuedIDs`. An armed row is `.done`
         // throughout, so only `recompress` may mark one finished.
         runQueuedIDs = Set(queuedIDs)
-        runComposition = RunComposition(queued: queuedIDs.count, armed: plans.count)
         // Per-run state, cleared at the START of the run: the messages of the run before are stale
         // the moment a new one begins, and the cancel flag must not outlive the run that set it.
         // Scoped to the rows THIS run actually touches (`runIDs`, just computed above), not every
@@ -1423,7 +1411,6 @@ final class QueueViewModel: ObservableObject {
             lockedRun = nil
             runIDs = []
             runQueuedIDs = []
-            runComposition = RunComposition(queued: 0, armed: 0)
             // Matches the reset above: left uncleared here, `runCompleted` would keep the finished
             // run's ids until the NEXT `compress()` zeroes it at its own start — a stale collection
             // outliving the run it was scoped to.
@@ -2611,8 +2598,12 @@ final class QueueViewModel: ObservableObject {
         // removed the vanished runner-up is `.mrc`, `.plain` or `.original`, and the re-run's tail
         // maps the regenerated pair onto that kind (spec §5). The hand-off itself has not landed
         // anything yet — the re-run finishes later, off this call's stack — so this reports `false`
-        // too; a caller that needs the eventual outcome reads `recompressErrors` after the re-run
-        // settles, same as the popover already does.
+        // too. There is no single dictionary a caller can poll for the eventual answer: the
+        // re-run's own tail surfaces its outcome through `publishJobs` alone — a landed switch
+        // clears `recompressErrors`, `regenerateForSwitch`'s engine-throw arm writes neither
+        // dictionary and leaves the row exactly as it was, and a vanished-runner-up arm writes
+        // `switchFailures` instead. A caller needing the eventual result must not infer "landed"
+        // from either dictionary being nil.
         handedOffToRerun = rerunForSwitch(job, wanting: parked.variant)
         return false
     }
