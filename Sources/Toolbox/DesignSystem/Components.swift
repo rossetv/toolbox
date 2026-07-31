@@ -28,9 +28,7 @@ import SwiftUI
 /// fire. Same visual semantics as `.onHover`, strictly more robust input coverage.
 extension View {
     func continuousHover(_ isHovering: Binding<Bool>) -> some View {
-        onContinuousHover { phase in
-            if case .active = phase { isHovering.wrappedValue = true } else { isHovering.wrappedValue = false }
-        }
+        continuousHover { isHovering.wrappedValue = $0 }
     }
 
     /// Closure variant, for the (rarer) site that needs to react to the transition rather than
