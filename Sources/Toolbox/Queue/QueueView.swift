@@ -74,6 +74,10 @@ struct QueueView: View {
     @State private var isTargeted = false
     @State private var draggedCount = 1
     @State private var activeSheet: QueueSheet?
+    /// Owned here, not by `QueueHeaderView`, so `QueueRowsView` — a sibling — can dim off the
+    /// same state (spec §7, DESIGN.md §9 04/04b: "the queue behind dims to 40% while open").
+    @State private var qualityPresented = false
+    @State private var ocrPresented = false
 
     var screenState: QueueScreenState {
         Self.screenState(jobs: model.jobs, isRunning: model.isRunning, inspections: model.inspections)
@@ -94,11 +98,13 @@ struct QueueView: View {
                     onChooseFolder: { if let folder = FilePicker.chooseFolder() { model.outputFolder = folder } },
                     onRecentBatches: { activeSheet = .recentBatches },
                     onAbout: { showAbout.wrappedValue = true },
-                    onCancel: { model.cancel() }
+                    onCancel: { model.cancel() },
+                    qualityPresented: $qualityPresented, ocrPresented: $ocrPresented
                 )
                 Divider()
                 QueueRowsView(model: model, state: screenState, perFile: perFile, versions: versions)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .opacity(Self.rowsDimOpacity(qualityOpen: qualityPresented, ocrOpen: ocrPresented))
                 Divider()
                 QueueFooterView(
                     model: model, state: screenState,
@@ -213,6 +219,15 @@ struct QueueView: View {
         }
         guard hasTerminal else { return .ready }
         return (hasFailed || hasUnresolvedProblem) ? .problems : .finished
+    }
+
+    /// The rows area's opacity while the Quality or OCR popover is open (spec §7, DESIGN.md §9
+    /// 04/04b — "the queue behind dims to 40% while open"; the handoff HTML dims the rows list
+    /// alone, identically for both popovers, never the header/footer/separators). No animation
+    /// is applied at the call site, so this is unanimated under Reduce Motion and otherwise
+    /// alike — the handoff's own rows dim carries no transition either.
+    static func rowsDimOpacity(qualityOpen: Bool, ocrOpen: Bool) -> Double {
+        (qualityOpen || ocrOpen) ? 0.4 : 1.0
     }
 }
 

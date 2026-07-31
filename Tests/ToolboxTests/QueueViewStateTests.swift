@@ -73,6 +73,24 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(QueueView.screenState(jobs: [done, stuck], isRunning: false, inspections: inspections), .problems)
     }
 
+    // MARK: rows dim while Quality/OCR popover is open (spec §7, DESIGN.md §9 04/04b)
+
+    func testRowsDimOpacityFullWhenNeitherPopoverIsOpen() {
+        XCTAssertEqual(QueueView.rowsDimOpacity(qualityOpen: false, ocrOpen: false), 1.0)
+    }
+
+    func testRowsDimOpacityDimsToFortyPercentWhileQualityPopoverIsOpen() {
+        XCTAssertEqual(QueueView.rowsDimOpacity(qualityOpen: true, ocrOpen: false), 0.4)
+    }
+
+    func testRowsDimOpacityDimsToFortyPercentWhileOCRPopoverIsOpen() {
+        XCTAssertEqual(QueueView.rowsDimOpacity(qualityOpen: false, ocrOpen: true), 0.4)
+    }
+
+    func testRowsDimOpacityDimsWhenBothPopoversAreSomehowOpen() {
+        XCTAssertEqual(QueueView.rowsDimOpacity(qualityOpen: true, ocrOpen: true), 0.4)
+    }
+
     // MARK: drop acceptance — the invariant is "never gated on state" (spec §6.5)
 
     func testAcceptDropAddsWhenIdle() {

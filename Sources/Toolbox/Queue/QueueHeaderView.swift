@@ -24,8 +24,11 @@ struct QueueHeaderView: View {
     let onAbout: () -> Void
     let onCancel: () -> Void
 
-    @State private var qualityPresented = false
-    @State private var ocrPresented = false
+    /// Owned by `QueueView`, not here: the rows area's dim (spec §7, DESIGN.md §9 04/04b —
+    /// "the queue behind dims to 40% while open") needs this same open state, and a sibling
+    /// view can only read it if it isn't buried in this view's own `@State`.
+    @Binding var qualityPresented: Bool
+    @Binding var ocrPresented: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -235,7 +238,8 @@ struct QueueHeaderView: View {
 #Preview("Header – Ready") {
     QueueHeaderView(model: QueueViewModel(), state: .ready,
                     quality: { AnyView(EmptyView()) }, ocrOptions: { AnyView(EmptyView()) },
-                    onAdd: {}, onClear: {}, onChooseFolder: {}, onRecentBatches: {}, onAbout: {}, onCancel: {})
+                    onAdd: {}, onClear: {}, onChooseFolder: {}, onRecentBatches: {}, onAbout: {}, onCancel: {},
+                    qualityPresented: .constant(false), ocrPresented: .constant(false))
         .frame(width: 900)
         .background(Theme.Colors.surface)
 }
