@@ -80,6 +80,9 @@ struct EmptyStateView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
         }
         .frame(width: 76, height: 76)
+        // Decorative: the headline right below it already says "Drop PDFs to begin" — VoiceOver
+        // gains nothing from a second announcement of the app icon.
+        .accessibilityHidden(true)
     }
 
     /// ±11°/±13° per the handoff, driven by the pointer's offset from the content area's centre.

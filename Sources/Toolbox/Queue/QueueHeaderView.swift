@@ -94,20 +94,22 @@ struct QueueHeaderView: View {
 
     @ViewBuilder
     private var saveDestinationMenu: some View {
+        let destinationLabel = model.outputFolder?.lastPathComponent ?? "Saving beside the originals"
         Menu {
             Button("Beside the originals") { model.outputFolder = nil }
             Button("Choose folder…", action: onChooseFolder)
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.down.doc").font(.system(size: 11))
-                Text(model.outputFolder?.lastPathComponent ?? "Saving beside the originals")
-                    .themeFont(.body13)
+                Text(destinationLabel).themeFont(.body13)
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
             }
             .foregroundStyle(Theme.Colors.textTertiary)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .accessibilityLabel("Save destination, \(destinationLabel)")
+        .accessibilityHint("Opens a menu to change where files are saved")
     }
 
     // MARK: Working (screen 05)
