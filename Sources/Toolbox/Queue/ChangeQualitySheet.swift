@@ -304,10 +304,10 @@ struct ChangeQualitySheet: View {
     ///
     /// "Landed" is load-bearing: `useVersion` can be ATTEMPTED and still fail (a transient store
     /// error keeps the shipped file exactly as it was — see `reportSwitchFailure`), so attempting
-    /// it is not evidence anything started. `useVersion` leaves `recompressErrors[job.id]` nil on
-    /// every success path and non-nil on every failure path reachable from an `.instantSwitch` row
-    /// (the smallest honest seam it exposes), so that is what a landed switch is read from —
-    /// never "the loop ran".
+    /// it is not evidence anything started. `useVersion` itself now RETURNS whether the switch
+    /// landed (review finding, R12) — not every failure arm writes `recompressErrors` (the
+    /// missing-shipped-file and stranded-parked-file arms only set `switchFailures`), so inferring
+    /// "landed" from that dictionary being nil silently counted those failures as successes.
     ///
     /// Something actually starting is what consumes the exclusion set, not the run finishing:
     /// spec §7 scopes the checked subset to THIS re-run, so once it is under way the whole set is
@@ -319,8 +319,7 @@ struct ChangeQualitySheet: View {
         var switchLanded = false
         for job in rows {
             if case .instantSwitch = model.recompressState(for: job) {
-                await model.useVersion(.previous, for: job)
-                if model.recompressErrors[job.id] == nil {
+                if await model.useVersion(.previous, for: job) {
                     switchLanded = true
                 }
             }

@@ -466,8 +466,8 @@ final class QueueViewModelTests: XCTestCase {
         let shippedURL = try XCTUnwrap(job.resultURL)
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
 
-        async let first: Void = model.useVersion(.runnerUp, for: job)
-        async let second: Void = model.useVersion(.runnerUp, for: job)
+        async let first = model.useVersion(.runnerUp, for: job)
+        async let second = model.useVersion(.runnerUp, for: job)
         _ = await (first, second)
 
         let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
@@ -748,7 +748,7 @@ final class QueueViewModelTests: XCTestCase {
         env.stub.gate = gate
         let callsBefore = env.stub.callCount
 
-        async let switching: Void = model.useVersion(.runnerUp, for: job)
+        async let switching = model.useVersion(.runnerUp, for: job)
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
         XCTAssertTrue(model.switchesInFlight.contains(job.id))
         XCTAssertFalse(model.isRunning, "the switch's re-run, not a compress run, is in flight")
@@ -793,7 +793,7 @@ final class QueueViewModelTests: XCTestCase {
         env.stub.gate = gate
         let callsBefore = env.stub.callCount
 
-        async let switching: Void = model.useVersion(.runnerUp, for: job)
+        async let switching = model.useVersion(.runnerUp, for: job)
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
         XCTAssertTrue(model.switchesInFlight.contains(job.id))
 
@@ -1631,6 +1631,48 @@ final class QueueViewModelTests: XCTestCase {
                        "nothing landed — the previewed exclusion set must not stick either")
 
         try Fixtures.denyingNewEntries(false, at: outputFolder)
+    }
+
+    /// Regression (review finding, R12): the missing-shipped-file arm of `useVersion` only sets
+    /// `switchFailures`, never `recompressErrors` — so a `confirm` that inferred "landed" from
+    /// `recompressErrors[job.id] == nil` would misread this failure as a success, consuming the
+    /// exclusion set and letting the sheet's preset stick even though nothing switched. Sibling of
+    /// `testConfirmRestoresPresetAndExclusionsWhenEveryInstantSwitchFails`, pinned on the OTHER
+    /// failure arm the correctness lens flagged as unaudited.
+    func testConfirmDoesNotCountAMissingShippedFileAsALandedSwitch() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Park the Balanced version behind a Smallest recompress, so the row reads as an
+        // instant-switch candidate back at Balanced.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+
+        // The user deletes the delivered file in Finder — there is no file watcher — so
+        // `useVersion` hits its "no version to switch to" arm, which records the failure only in
+        // `switchFailures`, never `recompressErrors`.
+        let shippedURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
+        try FileManager.default.removeItem(at: shippedURL)
+
+        let fallbackExclusions: Set<ToolJob.ID> = [UUID()]  // the sheet's snapshot at open
+        model.setArmedExclusions([UUID()])                 // the sheet's live preview, since changed
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced,
+                                         fallbackExclusions: fallbackExclusions)
+
+        XCTAssertNil(model.recompressErrors[job.id],
+                     "this arm never touches recompressErrors — the old nil-inference bug's blind spot")
+        XCTAssertEqual(model.preset, .balanced,
+                       "nothing landed — the previewed preset must not stick")
+        XCTAssertEqual(model.armedExclusions, fallbackExclusions,
+                       "nothing landed — the previewed exclusion set must not stick either")
     }
 
     /// Regression (r5): a press where a switch actually LANDS consumes the whole exclusion set

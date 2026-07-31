@@ -2504,21 +2504,28 @@ final class QueueViewModel: ObservableObject {
     /// The popover's switch, and its "Use this" per card. Instant when the parked file still
     /// exists; if the RUNNER-UP has vanished, honestly re-runs the job and applies the requested
     /// switch on completion (R10).
-    func useVersion(_ slot: VersionSlot, for job: ToolJob) async {
+    ///
+    /// Returns whether the switch LANDED synchronously — the only truthful seam for a caller
+    /// (`ChangeQualitySheet.confirm`) that needs to know without inferring it from a side-effect
+    /// dictionary some failure arms never touch (review finding, R12). A hand-off to
+    /// `rerunForSwitch` has not landed by the time this returns — the re-run's own tail decides
+    /// that later — so it reports `false` here too, same as every other non-landed arm.
+    @discardableResult
+    func useVersion(_ slot: VersionSlot, for job: ToolJob) async -> Bool {
         // R9's sixth mutating control: a row can still read `.doneHeavy` between `compress()`
         // starting and phase 2 reaching it, so without this guard a switch here could start a
         // second engine run against the same path phase 2's commit is about to drive through
         // `promote` — unserialised, last write wins.
-        guard !isRunning else { return }
+        guard !isRunning else { return false }
         // Re-entrancy guard: a second tap (either slot, or the popover's "Use this") before the
         // first switch lands would otherwise interleave two swaps on the same paths off-main-actor.
         // `switchesInFlight` is `@Published`, so inserting/removing it already republishes the
         // view on its own — no `publishJobs()` call is needed purely to reflect membership.
         // Must be checked and set in this synchronous prefix, before the first `await`.
-        guard !switchesInFlight.contains(job.id) else { return }
+        guard !switchesInFlight.contains(job.id) else { return false }
         guard let row = versions(for: job),
               let shipped = row.shipped,
-              let parked = slot == .runnerUp ? row.runnerUp : row.previous else { return }
+              let parked = slot == .runnerUp ? row.runnerUp : row.previous else { return false }
 
         switchesInFlight.insert(job.id)
         // Cleared before every return except the hand-off to `rerunForSwitch`, which owns clearing
@@ -2538,7 +2545,7 @@ final class QueueViewModel: ObservableObject {
         guard FileManager.default.fileExists(atPath: shipped.url.path) else {
             reportSwitchFailure(job.id, "The compressed file is no longer where it was saved, "
                                       + "so there is no version to switch to.")
-            return
+            return false
         }
 
         if FileManager.default.fileExists(atPath: parked.url.path) {
@@ -2549,12 +2556,12 @@ final class QueueViewModel: ObservableObject {
                 // the row: the view renders `recompressErrors` unconditionally.
                 recompressErrors[job.id] = nil
                 publishJobs()   // no state moved, but the row's badge/capsule read from the store
-                return
+                return true
             } catch let stranded as RunnerUpStore.SwitchError {
                 // The shipped file is parked under a hidden name and nothing else will look for
                 // it — re-running would write a new file over the top and bury it for good.
                 reportSwitchFailure(job.id, stranded.localizedDescription)
-                return
+                return false
             } catch {
                 // The switch did not happen and the shipped file is unchanged (store contract: any
                 // other throw restores it). Everything below exists for ONE cause — the parked file
@@ -2569,7 +2576,7 @@ final class QueueViewModel: ObservableObject {
                     recompressErrors[job.id] = "Switch failed — kept your "
                                              + "\(shipped.preset.title) version. Try again."
                     publishJobs()
-                    return
+                    return false
                 }
             }
         }
@@ -2584,12 +2591,16 @@ final class QueueViewModel: ObservableObject {
             recompressErrors[job.id] = "That version is no longer available — recompress at "
                                      + "\(parked.preset.title) to get it back."
             publishJobs()
-            return
+            return false
         }
         // The KIND the user asked for, never a "wants the heavy one" flag: with the R7 asymmetry
         // removed the vanished runner-up is `.mrc`, `.plain` or `.original`, and the re-run's tail
-        // maps the regenerated pair onto that kind (spec §5).
+        // maps the regenerated pair onto that kind (spec §5). The hand-off itself has not landed
+        // anything yet — the re-run finishes later, off this call's stack — so this reports `false`
+        // too; a caller that needs the eventual outcome reads `recompressErrors` after the re-run
+        // settles, same as the popover already does.
         handedOffToRerun = rerunForSwitch(job, wanting: parked.variant)
+        return false
     }
 
     /// Record a switch that could not be honoured, so the row reports it instead of continuing to
