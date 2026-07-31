@@ -21,20 +21,38 @@ struct RootView: View {
     @StateObject private var updater: SelfUpdater
     @StateObject private var updateChecker = UpdateChecker()
 
-    /// The view model and the updater are built here rather than in property initialisers
-    /// because the updater closes over the model: a property's initial-value expression cannot
-    /// reference a sibling property, so the model is built as a local first and both wrappers
-    /// are assigned from it.
+    /// Weak boxes carry the forward reference without a strong retain cycle: `model`'s
+    /// `isUpdating` closure reads `updaterBox.value` and `updater`'s `isBusy` closure reads
+    /// `modelBox.value`. Neither closure captures the sibling object itself — only this box,
+    /// which holds it weakly — so `model` and `updater` don't keep each other alive.
+    private let modelBox = WeakBox<QueueViewModel>()
+    private let updaterBox = WeakBox<SelfUpdater>()
+
+    /// `_model`/`_updater` must be assigned from an expression that constructs the object
+    /// directly inline, not from a local `let` evaluated first: `StateObject`'s `wrappedValue:`
+    /// parameter is `@autoclosure`, so only an unevaluated construction expression there is
+    /// deferred and run exactly once (on first materialisation of this view's identity). A local
+    /// `let m = QueueViewModel(...)` runs the constructor immediately and unconditionally, every
+    /// time `RootView.init` runs — i.e. on every `ToolboxApp.body` re-evaluation — re-triggering
+    /// `QueueViewModel.init`'s disk side effects (`RunnerUpStore()`, `sweepStale()`) against the
+    /// live session and throwing the freshly built object away. Each IIFE below stays inside its
+    /// `StateObject`'s autoclosure end to end: it builds the object AND populates that object's
+    /// own weak box in the same deferred call, so the box is guaranteed populated by the time
+    /// anything on the other side reads it.
     init(showAbout: Binding<Bool>) {
         _showAbout = showAbout
-        // Forward reference: `m`'s `isUpdating` closure needs `updater`, and `updater`'s `isBusy`
-        // closure needs `m` — neither can be built first. `updaterRef` is only ever CALLED once
-        // both exist; assigning it right after `m` closes the cycle safely.
-        var updaterRef: SelfUpdater!
-        let m = QueueViewModel(isUpdating: { updaterRef.phase.isActiveUpdate })
-        updaterRef = SelfUpdater(isBusy: { m.isRunning })
-        _model   = StateObject(wrappedValue: m)
-        _updater = StateObject(wrappedValue: updaterRef)
+        let modelBox = self.modelBox
+        let updaterBox = self.updaterBox
+        _model = StateObject(wrappedValue: {
+            let m = QueueViewModel(isUpdating: { updaterBox.value?.phase.isActiveUpdate ?? false })
+            modelBox.value = m
+            return m
+        }())
+        _updater = StateObject(wrappedValue: {
+            let u = SelfUpdater(isBusy: { modelBox.value?.isRunning ?? false })
+            updaterBox.value = u
+            return u
+        }())
     }
 
     var body: some View {
@@ -54,4 +72,10 @@ struct RootView: View {
         .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 900, height: 640)) }
         .task { await updateChecker.check() }
     }
+}
+
+/// A weak, single-slot holder used to pass a not-yet-constructed sibling's eventual reference
+/// into a closure without that closure retaining the sibling strongly (see `RootView.init`).
+private final class WeakBox<T: AnyObject> {
+    weak var value: T?
 }
