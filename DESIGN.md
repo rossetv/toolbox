@@ -639,6 +639,15 @@ A divergence is recorded here or it does not exist (`CODE_GUIDELINES.md` §8.4).
   `PrimaryButton`, Start joins as a `SecondaryButton` so screen 10 keeps its single accent
   CTA. With nothing runnable the footer renders exactly as the handoff depicts.
 
+- **Problem-row fix affordances vanish for the duration of a run.** "Find it…" (missing),
+  Skip, Remove and Undo are all absent from a locked/moved/unreadable/failed row while
+  `model.isRunning` — the row's trailing zone renders empty rather than a disabled button
+  (commit ce35682 for "Find it…", 324d9e5 for Skip/Remove/Undo). The handoff depicts screen
+  10 only in its idle state, so this has no counterpart there. Authority: review-team
+  finding, DECISIONS 2026-08-01 ("problem-row affordances hidden mid-run"). Rationale: a
+  refused, silently-no-op button (Skip/Remove/rebind/setSkipped all guard `!isRunning`) is
+  worse than no button at all — the affordance reappears the instant the run ends.
+
 - **Motion polish beyond the handoff's own hover/active CSS** — human instruction,
   2026-08-01: "Make sure all the animations are very polished… feel free to polish it even
   further where we could add animations that would fit the design." The handoff defines a

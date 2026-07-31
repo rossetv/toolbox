@@ -836,3 +836,18 @@ entry stands as written and this is its correction.
 
 **Spec:** .claude/specs/20260730-ui-redesign.md (§8 Motion)
 **Affects:** DESIGN.md (§4.2, §8, §11)
+
+## 2026-08-01 — Problem-row affordances hidden mid-run
+
+**Decision:** `describeProblem`/`describeFailed` (`QueueRowsView.swift`) refuse Skip, Remove,
+Undo and "Find it…" for the duration of a run (`model.isRunning`), rendering an empty trailing
+zone on a locked/moved/unreadable/failed row rather than a disabled button. This was landed in
+ce35682 ("Find it…") and 324d9e5 (Skip/Remove/Undo) without a DESIGN.md §11 record, a gap
+CODE_GUIDELINES §8.4 forbids.
+
+**Why:** every affordance's underlying model method (`setSkipped`, `remove`, `rebind`) already
+refuses mid-run, so rendering the button anyway would be a silently-refused no-op — worse than
+no button at all. The precedent is deliberate, not an oversight; only its record was missing.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 Problems)
+**Affects:** DESIGN.md (§11)

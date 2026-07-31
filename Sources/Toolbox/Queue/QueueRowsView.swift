@@ -300,24 +300,15 @@ struct QueueRowsView: View {
     /// alone gets `.problemWarn` + "Find it…".
     private static func describeProblem(job: ToolJob, model: QueueViewModel,
                                         problem: RowProblem, meta: String) -> RowDescriptor {
-        // Skip/Remove/Undo all refuse mid-run (`setSkipped`/`remove`'s own `!isRunning` guards) —
-        // same rule as "Find it…" below: the affordance is absent for the run's duration and
-        // reappears once it ends, never a silently-refused no-op button.
-        let skip = model.isRunning ? nil :
-            RowDescriptor.RowAction(title: "Skip", action: { model.setSkipped(true, for: job.id) })
-        let remove = model.isRunning ? nil :
-            RowDescriptor.RowAction(title: "Remove", action: { model.remove(job) })
+        let skip = idleAction("Skip", model: model) { model.setSkipped(true, for: job.id) }
+        let remove = idleAction("Remove", model: model) { model.remove(job) }
         if model.skippedRows.contains(job.id) {
-            let undo = model.isRunning ? nil :
-                RowDescriptor.RowAction(title: "Undo", action: { model.setSkipped(false, for: job.id) })
+            let undo = idleAction("Undo", model: model) { model.setSkipped(false, for: job.id) }
             return RowDescriptor(meta: meta, emphasis: .degraded, trailing: .skipped(onUndo: undo))
         }
         switch problem {
         case .missing:
-            // `rebind` refuses mid-run (spec §7) — offering "Find it…" then would be a silent
-            // no-op, so the affordance is absent for the run's duration and reappears once it ends.
-            let findIt = model.isRunning ? nil :
-                RowDescriptor.RowAction(title: "Find it…", action: { rebindViaOpenPanel(job, model: model) })
+            let findIt = idleAction("Find it…", model: model) { rebindViaOpenPanel(job, model: model) }
             return RowDescriptor(meta: meta, emphasis: .problemWarn, trailing: .problem(primary: findIt, link: remove))
         case .locked, .unreadable:
             return RowDescriptor(meta: meta, emphasis: .problemDanger, trailing: .problemPair(skip, remove))
@@ -325,6 +316,15 @@ struct QueueRowsView: View {
             // Unreachable from add-time inspection — never produced here.
             return RowDescriptor(meta: meta, emphasis: .problemDanger, trailing: .problemPair(skip, remove))
         }
+    }
+
+    /// Skip/Remove/Undo/"Find it…" all refuse mid-run (`setSkipped`/`remove`/`rebind`'s own
+    /// `!isRunning` guards): the affordance is absent for the run's duration and reappears once
+    /// it ends, rather than sitting on screen as a silently-refused no-op button (DESIGN.md §11,
+    /// DECISIONS 2026-08-01 "Problem-row affordances hidden mid-run").
+    private static func idleAction(_ title: String, model: QueueViewModel,
+                                   action: @escaping () -> Void) -> RowDescriptor.RowAction? {
+        model.isRunning ? nil : RowDescriptor.RowAction(title: title, action: action)
     }
 
     /// "Find it…": an NSOpenPanel restricted to PDFs, rebinding the row to whatever the user
@@ -498,17 +498,12 @@ struct QueueRowsView: View {
         if let problem = RowProblem.fromRunTimeFailure(message) {
             return describeProblem(job: job, model: model, problem: problem, meta: problem.problemCopy)
         }
-        // Skip/Remove/Undo all refuse mid-run (`setSkipped`/`remove`'s own `!isRunning` guards) —
-        // absent for the run's duration rather than a silently-refused no-op button.
         if model.skippedRows.contains(job.id) {
-            let undo = model.isRunning ? nil :
-                RowDescriptor.RowAction(title: "Undo", action: { model.setSkipped(false, for: job.id) })
+            let undo = idleAction("Undo", model: model) { model.setSkipped(false, for: job.id) }
             return RowDescriptor(meta: message, emphasis: .degraded, trailing: .skipped(onUndo: undo))
         }
-        let skip = model.isRunning ? nil :
-            RowDescriptor.RowAction(title: "Skip", action: { model.setSkipped(true, for: job.id) })
-        let remove = model.isRunning ? nil :
-            RowDescriptor.RowAction(title: "Remove", action: { model.remove(job) })
+        let skip = idleAction("Skip", model: model) { model.setSkipped(true, for: job.id) }
+        let remove = idleAction("Remove", model: model) { model.remove(job) }
         return RowDescriptor(meta: message, emphasis: .problemDanger, trailing: .problemPair(skip, remove))
     }
 }
