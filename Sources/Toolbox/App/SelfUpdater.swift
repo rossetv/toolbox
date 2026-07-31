@@ -349,9 +349,9 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     /// copy (i.e. it isn't notarised). Throws when the strip itself fails.
     nonisolated static func clearQuarantineIfNeeded(_ bundle: URL) throws {
         struct QuarantineStripFailed: Error {}
-        let accepted = (try? run("/usr/sbin/spctl", ["-a", "-t", "exec", bundle.path]).status) == 0
+        let accepted = (try? SystemTool.run("/usr/sbin/spctl", ["-a", "-t", "exec", bundle.path]).status) == 0
         guard !accepted else { return }
-        guard let result = try? run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", bundle.path]),
+        guard let result = try? SystemTool.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", bundle.path]),
               result.status == 0 else { throw QuarantineStripFailed() }
     }
 
@@ -359,11 +359,8 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     /// bundle, then quit. `open`-then-terminate on its own is the classic no-op: it activates
     /// the still-running instance and then quits it.
     nonisolated static func relaunchAndTerminate(_ bundle: URL) {
-        let helper = Process()
-        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        helper.arguments = relaunchArguments(
-            pid: ProcessInfo.processInfo.processIdentifier, bundle: bundle)
-        try? helper.run()
+        try? SystemTool.launchDetached("/bin/sh", relaunchArguments(
+            pid: ProcessInfo.processInfo.processIdentifier, bundle: bundle))
         Task { @MainActor in NSApp.terminate(nil) }
     }
 
@@ -384,7 +381,7 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     private nonisolated static func mountDMG(_ dmg: URL) throws -> URL {
         // The mount point is PARSED, never assumed: a busy /Volumes/Toolbox silently becomes
         // "/Volumes/Toolbox 1" (install.sh's own lesson).
-        guard let result = try? run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-plist"]),
+        guard let result = try? SystemTool.run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-plist"]),
               result.status == 0,
               let plist = try? PropertyListSerialization.propertyList(
                 from: result.stdout, options: [], format: nil) as? [String: Any],
@@ -397,12 +394,12 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     }
 
     private nonisolated static func detach(_ mount: URL) {
-        _ = try? run("/usr/bin/hdiutil", ["detach", mount.path, "-quiet"])
+        _ = try? SystemTool.run("/usr/bin/hdiutil", ["detach", mount.path, "-quiet"])
     }
 
     private nonisolated static func ditto(_ source: URL, to destination: URL) throws {
         struct CopyFailed: Error {}
-        let result = try run("/usr/bin/ditto", [source.path, destination.path])
+        let result = try SystemTool.run("/usr/bin/ditto", [source.path, destination.path])
         guard result.status == 0 else { throw CopyFailed() }
     }
 
@@ -421,18 +418,46 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         return directory
     }
 
-    private nonisolated static func run(_ tool: String, _ arguments: [String]) throws
-        -> (status: Int32, stdout: Data) {
+}
+
+/// The updater's one and only `Process` construction site. CODE_GUIDELINES §2.1 ("Ghostscript
+/// runs only through GhostscriptRunner… No other code constructs a Process") predates the
+/// self-updater (human decision D1, spec §6.10); these are non-gs system tools
+/// (hdiutil/spctl/xattr/sh) outside the seatbelt's remit. §2.1's amendment is pending the
+/// maintainer's sign-off — recorded in the PR.
+///
+/// Every tool path is an absolute literal supplied by the caller; arguments are always passed as
+/// an array, never interpolated into a shell string (see `SelfUpdater.relaunchArguments`).
+private enum SystemTool {
+    /// Runs `tool`, waits for it to exit, and captures its stdout. stderr is discarded, never
+    /// left as an undrained pipe — a full stderr buffer would stall the tool forever.
+    static func run(_ tool: String, _ arguments: [String]) throws -> (status: Int32, stdout: Data) {
+        let (process, stdout) = try launch(tool, arguments, captureOutput: true)
+        let data = stdout!.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, data)
+    }
+
+    /// Launches `tool` and returns immediately, without waiting for it to exit. Used only for
+    /// the relaunch helper, which must outlive this process — `waitUntilExit()` there would
+    /// deadlock against the very process it is waiting to relaunch.
+    static func launchDetached(_ tool: String, _ arguments: [String]) throws {
+        _ = try launch(tool, arguments, captureOutput: false)
+    }
+
+    private static func launch(_ tool: String, _ arguments: [String], captureOutput: Bool) throws
+        -> (process: Process, stdout: Pipe?) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments
-        let output = Pipe()
-        process.standardOutput = output
-        // Never a pipe we don't drain: a full stderr buffer would stall the tool forever.
-        process.standardError = FileHandle.nullDevice
+        var stdout: Pipe?
+        if captureOutput {
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            stdout = pipe
+        }
         try process.run()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (process.terminationStatus, data)
+        return (process, stdout)
     }
 }
