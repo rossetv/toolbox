@@ -191,14 +191,32 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         try FileManager.default.moveItem(at: temporary, to: destination)
     }
 
+    /// A `shasum -a 256` line is ~70 bytes (64 hex chars + separator + filename). This is a
+    /// generous multiple of that, never a real body size — the redirect host for this fetch is
+    /// deliberately unconstrained (see the type doc), so nothing about the response is trusted
+    /// before this bound is enforced.
+    private static let maxChecksumResponseBytes = 4096
+
     /// The published checksum, from `<dmg URL>.sha256` — `install.sh`'s own derivation, not a
     /// URL taken from the API payload.
     private func checksum(for dmgURL: URL, session: URLSession) async throws -> String {
         var request = URLRequest(url: dmgURL.appendingPathExtension("sha256"))
         request.timeoutInterval = 30
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let text = String(data: data, encoding: .utf8),
+        let (stream, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200
+        else { throw URLError(.badServerResponse) }
+        if http.expectedContentLength > Int64(Self.maxChecksumResponseBytes) {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+        var data = Data()
+        data.reserveCapacity(min(Self.maxChecksumResponseBytes, 256))
+        for try await byte in stream {
+            data.append(byte)
+            if data.count > Self.maxChecksumResponseBytes {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+        }
+        guard let text = String(data: data, encoding: .utf8),
               // `shasum -a 256` prints "<hex>  <name>"; a bare hex digest is also accepted.
               let digest = text.split(whereSeparator: \.isWhitespace).first.map(String.init),
               digest.count == 64,

@@ -368,6 +368,26 @@ final class SelfUpdaterTests: XCTestCase {
     }
 
     @MainActor
+    func testOversizedChecksumResponseFailsWithoutMaterialisingIt() async throws {
+        // A malicious or misbehaving redirect target could serve an unbounded body at this
+        // URL (spec §6.10 — the redirect host is deliberately unconstrained); the fetch must
+        // reject it by its declared/observed length rather than buffering the whole thing.
+        let bundle = try makeInstalledApp()
+        let server = try startDMGServer()
+        server.route("/Toolbox.dmg.sha256", .init(status: 200, body: Data(repeating: 0x61, count: 10 * 1024 * 1024)))
+        let updater = makeUpdater(bundle: bundle, relaunches: RelaunchLog())
+
+        await updater.update(release: release(dmgURL: server.url("/Toolbox.dmg")))
+
+        guard case .failed(_, let asidePath) = updater.phase else {
+            return XCTFail("expected a failure, got \(updater.phase)")
+        }
+        XCTAssertNil(asidePath)
+        XCTAssertEqual(SelfUpdater.bundleVersion(of: bundle), Self.installedVersion)
+        XCTAssertEqual(try contents(of: bundle.deletingLastPathComponent()), ["Toolbox.app"])
+    }
+
+    @MainActor
     func testMissingChecksumFileFails() async throws {
         let bundle = try makeInstalledApp()
         let server = try startDMGServer()
