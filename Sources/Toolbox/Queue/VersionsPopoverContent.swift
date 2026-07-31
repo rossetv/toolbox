@@ -63,16 +63,7 @@ struct VersionsPopoverContent: View {
     }
 
     private func header(job: ToolJob) -> some View {
-        HStack(spacing: 10) {
-            PDFThumbnail(url: job.url, width: 26)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(job.url.lastPathComponent).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
-                    .lineLimit(1).truncationMode(.middle)
-                Text("Switch any time before you quit").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
-            }
-            Spacer(minLength: Theme.Spacing.small)
-            PopoverCloseButton { dismiss() }
-        }
+        PopoverFileHeader(job: job, caption: "Switch any time before you quit") { dismiss() }
     }
 
     private func compareVersions(cards: [(key: VersionCardKey, version: FileVersion)]) {

@@ -31,13 +31,8 @@ struct ScanConsentSheet: View {
     private func content(job: ToolJob, pair: (mrc: FileVersion, plain: FileVersion, shipped: FileVersion)) -> some View {
         SheetChrome(width: 700) {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("\(job.url.lastPathComponent) came out two ways")
-                        .themeFont(.sheetTitle).foregroundStyle(Theme.Colors.text)
-                    Spacer(minLength: Theme.Spacing.small)
-                    Text("Both are on disk. Nothing is decided yet.")
-                        .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
-                }
+                SheetTitleRow(title: "\(job.url.lastPathComponent) came out two ways",
+                             caption: "Both are on disk. Nothing is decided yet.")
                 HStack(alignment: .top, spacing: 14) {
                     variantCard(pair.mrc, isShipped: pair.shipped.variant == .mrc, originalSize: originalBytes(job))
                     variantCard(pair.plain, isShipped: pair.shipped.variant == .plain, originalSize: originalBytes(job))

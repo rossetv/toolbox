@@ -50,16 +50,7 @@ struct PerFileSettingsPopover: View {
     }
 
     private func header(_ job: ToolJob) -> some View {
-        HStack(spacing: 10) {
-            PDFThumbnail(url: job.url, width: 26)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(job.url.lastPathComponent).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
-                    .lineLimit(1).truncationMode(.middle)
-                Text("Overrides just this file").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
-            }
-            Spacer(minLength: Theme.Spacing.small)
-            PopoverCloseButton { dismiss() }
-        }
+        PopoverFileHeader(job: job, caption: "Overrides just this file") { dismiss() }
     }
 
     // MARK: rebuild-scan toggle domain (spec §7's UI half)
@@ -158,6 +149,28 @@ struct PerFileSettingsPopover: View {
         var current = model.overrides[jobID] ?? RowOverride()
         mutate(&current)
         model.setOverride(current, for: jobID)
+    }
+}
+
+/// The file-name + thumbnail + caption header row shared by the row popovers (04c, 07): a 26pt
+/// thumbnail, the file name (truncating middle), a caption line, and the close button — identical
+/// apart from the caption text.
+struct PopoverFileHeader: View {
+    let job: ToolJob
+    let caption: String
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            PDFThumbnail(url: job.url, width: 26)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(job.url.lastPathComponent).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
+                    .lineLimit(1).truncationMode(.middle)
+                Text(caption).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+            }
+            Spacer(minLength: Theme.Spacing.small)
+            PopoverCloseButton(action: onClose)
+        }
     }
 }
 

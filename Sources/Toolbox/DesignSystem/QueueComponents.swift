@@ -1399,6 +1399,25 @@ struct SheetChrome<Content: View>: View {
     }
 }
 
+/// The title/caption row every sheet composes at its own top — retyped identically in
+/// `ChangeQualitySheet`, `RecentBatchesSheet` and `ScanConsentSheet` before this extraction:
+/// `HStack(alignment: .firstTextBaseline)`, `.sheetTitle`/`Theme.Colors.text` on the title,
+/// `.caption`/`Theme.Colors.textTertiary` on the caption. A caller needing a trailing control
+/// beyond the caption (e.g. `ChangeQualitySheet`'s "Choose which files…") composes this alongside
+/// it in its own outer `HStack`.
+struct SheetTitleRow: View {
+    let title: String
+    let caption: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title).themeFont(.sheetTitle).foregroundStyle(Theme.Colors.text)
+            Spacer(minLength: Theme.Spacing.small)
+            Text(caption).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+        }
+    }
+}
+
 #Preview("SheetChrome") {
     SheetChrome(width: 420) {
         VStack(alignment: .leading, spacing: 8) {

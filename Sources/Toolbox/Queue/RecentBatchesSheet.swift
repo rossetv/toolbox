@@ -18,12 +18,8 @@ struct RecentBatchesSheet: View {
     var body: some View {
         SheetChrome(width: 520) {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Recent batches").themeFont(.sheetTitle).foregroundStyle(Theme.Colors.text)
-                    Spacer(minLength: Theme.Spacing.small)
-                    Text("\(QueueByteFormat.string(history.lifetimeSavedBytes)) saved in total")
-                        .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
-                }
+                SheetTitleRow(title: "Recent batches",
+                             caption: "\(QueueByteFormat.string(history.lifetimeSavedBytes)) saved in total")
                 if history.groupedByDay.isEmpty {
                     Text("No batches yet.").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
                 } else {
@@ -78,7 +74,7 @@ struct RecentBatchesSheet: View {
     /// back to a generic clause only for a batch recorded before `failureNote` existed (an
     /// older on-disk schema).
     static func subtitle(for batch: HistoryBatch) -> String {
-        var parts = [Self.timeFormatter.string(from: batch.date)]
+        var parts = [batch.date.formatted(date: .omitted, time: .shortened)]
         if batch.compressOn, let preset = batch.presetTitle {
             parts.append(preset)
         } else if batch.ocrOn {
@@ -114,12 +110,6 @@ struct RecentBatchesSheet: View {
         }
         return Self.dateFormatter.string(from: day).uppercased()
     }
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()

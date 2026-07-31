@@ -93,11 +93,8 @@ struct ChangeQualitySheet: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("Different quality for these \(QueueByteFormat.count(eligibleJobs.count, "file"))")
-                .themeFont(.sheetTitle).foregroundStyle(Theme.Colors.text)
-            Spacer(minLength: Theme.Spacing.small)
-            Text("Applies to all \(QueueByteFormat.count(eligibleJobs.count, "file"))")
-                .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+            SheetTitleRow(title: "Different quality for these \(QueueByteFormat.count(eligibleJobs.count, "file"))",
+                         caption: "Applies to all \(QueueByteFormat.count(eligibleJobs.count, "file"))")
             LinkButton(title: "Choose which files…") { showingFileChoice = true }
         }
     }
