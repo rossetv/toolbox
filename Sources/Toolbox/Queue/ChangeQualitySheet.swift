@@ -93,10 +93,10 @@ struct ChangeQualitySheet: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            Text("Different quality for these \(eligibleJobs.count) file\(eligibleJobs.count == 1 ? "" : "s")")
+            Text("Different quality for these \(QueueByteFormat.count(eligibleJobs.count, "file"))")
                 .themeFont(.sheetTitle).foregroundStyle(Theme.Colors.text)
             Spacer(minLength: Theme.Spacing.small)
-            Text("Applies to all \(eligibleJobs.count) file\(eligibleJobs.count == 1 ? "" : "s")")
+            Text("Applies to all \(QueueByteFormat.count(eligibleJobs.count, "file"))")
                 .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
             LinkButton(title: "Choose which files…") { showingFileChoice = true }
         }
@@ -252,7 +252,7 @@ struct ChangeQualitySheet: View {
             let mechanism = "Redone from the original at \(preset.imageDPI) DPI"
             guard let measuredRate, let pageCount, pageCount > 0 else { return mechanism }
             let seconds = max(1, Int((measuredRate * Double(pageCount)).rounded()))
-            return "\(mechanism) · about \(seconds) second\(seconds == 1 ? "" : "s")"
+            return "\(mechanism) · about \(QueueByteFormat.count(seconds, "second"))"
         case .instantSwitch:
             return "Already on disk — swapped in immediately"
         case .futile, .none:

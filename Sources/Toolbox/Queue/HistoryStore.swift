@@ -54,9 +54,8 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
     /// (screens 01/11); plain "M files in <folder>" otherwise. Shared by the empty-state strip
     /// and the Recent-batches sheet — the same line, computed once.
     var displayTitle: String {
-        let plural = fileCount == 1 ? "" : "s"
-        guard successCount < fileCount else { return "\(fileCount) file\(plural) in \(folderName)" }
-        return "\(successCount) of \(fileCount) file\(plural) in \(folderName)"
+        guard successCount < fileCount else { return "\(QueueByteFormat.count(fileCount, "file")) in \(folderName)" }
+        return "\(successCount) of \(QueueByteFormat.count(fileCount, "file")) in \(folderName)"
     }
 
     init(id: UUID = UUID(), date: Date = Date(), folderName: String, folderURL: URL,

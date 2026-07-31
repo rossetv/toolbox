@@ -161,7 +161,7 @@ struct QueueFooterView: View {
         if model.isUpdatingNow { return "Updating\u{2026}" }
         let queued = model.pendingCount, armed = model.armedCount
         if queued > 0, armed > 0 { return "Compress \(queued) \u{00B7} Recompress \(armed)" }
-        if armed > 0 { return "Recompress \(armed) PDF\(armed == 1 ? "" : "s")" }
+        if armed > 0 { return "Recompress \(QueueByteFormat.count(armed, "PDF"))" }
         return "Start"
     }
 
@@ -173,7 +173,7 @@ struct QueueFooterView: View {
         if saved > 0 { return "\(QueueByteFormat.string(saved)) saved so far" }
         let searchable = model.searchableRowCount
         guard searchable > 0 else { return "Working…" }
-        return "\(searchable) file\(searchable == 1 ? "" : "s") made searchable so far"
+        return "\(QueueByteFormat.count(searchable, "file")) made searchable so far"
     }
 
     /// The last two path components ("Documents › Contracts") of the save destination, or the

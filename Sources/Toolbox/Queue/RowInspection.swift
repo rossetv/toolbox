@@ -62,7 +62,7 @@ struct RowInspection: Equatable {
         case .compressFailed, .none: break
         }
         guard let pageCount else { return "" }
-        let pages = "\(pageCount) page\(pageCount == 1 ? "" : "s")"
+        let pages = QueueByteFormat.count(pageCount, "page")
         guard let descriptor = contentDescriptor else { return pages }
         return "\(pages), \(descriptor)"
     }

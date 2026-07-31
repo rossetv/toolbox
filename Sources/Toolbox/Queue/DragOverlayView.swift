@@ -34,7 +34,7 @@ struct DragOverlayView: View {
             VStack(spacing: 18) {
                 pageFan
                 VStack(spacing: 4) {
-                    Text("Drop \(fileCount) PDF\(fileCount == 1 ? "" : "s")")
+                    Text("Drop \(QueueByteFormat.count(fileCount, "PDF"))")
                         .font(.system(size: 26, weight: .semibold))
                         .foregroundStyle(Theme.Colors.accent)
                     Text("Nothing runs until you press Start.")
@@ -44,7 +44,7 @@ struct DragOverlayView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Drop \(fileCount) PDF\(fileCount == 1 ? "" : "s"). Nothing runs until you press Start.")
+        .accessibilityLabel("Drop \(QueueByteFormat.count(fileCount, "PDF")). Nothing runs until you press Start.")
         .onAppear {
             guard !reduceMotion else { hasEntered = true; return }
             withAnimation(.easeOut(duration: 0.5)) { hasEntered = true }

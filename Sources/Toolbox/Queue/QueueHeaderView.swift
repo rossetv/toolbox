@@ -83,7 +83,7 @@ struct QueueHeaderView: View {
 
     private var readyTitleRow: some View {
         HStack(alignment: .lastTextBaseline) {
-            Text("\(model.pendingCount) file\(model.pendingCount == 1 ? "" : "s")")
+            Text(QueueByteFormat.count(model.pendingCount, "file"))
                 .themeFont(.windowHeadline).foregroundStyle(Theme.Colors.text)
             if totalInputBytes > 0 {
                 Text(QueueByteFormat.string(totalInputBytes))
@@ -145,7 +145,7 @@ struct QueueHeaderView: View {
 
     private var workingTitleRow: some View {
         HStack(alignment: .lastTextBaseline) {
-            Text("Working on \(model.jobs.count) file\(model.jobs.count == 1 ? "" : "s")")
+            Text("Working on \(QueueByteFormat.count(model.jobs.count, "file"))")
                 .themeFont(.windowHeadline).foregroundStyle(Theme.Colors.text)
             if let progress = model.batchProgress {
                 Text(workingStatusText(progress))
@@ -163,7 +163,7 @@ struct QueueHeaderView: View {
         // (spec §6.8) forbids a done-claim ahead of reality.
         let percent = min(99, Int((progress.fraction * 100).rounded()))
         guard let eta = progress.etaSeconds else { return "\(percent)%" }
-        return "\(percent)% · about \(eta) second\(eta == 1 ? "" : "s") left"
+        return "\(percent)% · about \(QueueByteFormat.count(eta, "second")) left"
     }
 
     // MARK: Finished / Problems big headlines (composed here directly — no handoff component)
@@ -202,7 +202,7 @@ struct QueueHeaderView: View {
         // All-OCR / no-savings batch (spec §6.3): never "0 MB lighter" — the searchable count
         // carries the headline instead.
         let searchable = model.searchableRowCount
-        return searchable > 0 ? "\(searchable) file\(searchable == 1 ? "" : "s") now searchable" : "Already optimised"
+        return searchable > 0 ? "\(QueueByteFormat.count(searchable, "file")) now searchable" : "Already optimised"
     }
 
     private var finishedSubtitle: String {
@@ -211,7 +211,7 @@ struct QueueHeaderView: View {
             guard let sizes = model.displayedSizes(for: job) else { continue }
             before += sizes.before; after += sizes.after; files += 1
         }
-        let totals = files > 0 ? "\(QueueByteFormat.string(before)) → \(QueueByteFormat.string(after)) across \(files) file\(files == 1 ? "" : "s")" : "\(model.jobs.count) file\(model.jobs.count == 1 ? "" : "s")"
+        let totals = files > 0 ? "\(QueueByteFormat.string(before)) → \(QueueByteFormat.string(after)) across \(QueueByteFormat.count(files, "file"))" : QueueByteFormat.count(model.jobs.count, "file")
         let searchable = model.searchableRowCount
         guard searchable > 0 else { return "\(totals)." }
         return "\(totals). \(searchable == 1 ? "One is" : "\(searchable) are") now searchable."

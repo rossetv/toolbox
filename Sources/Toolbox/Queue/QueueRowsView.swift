@@ -18,6 +18,12 @@ enum QueueByteFormat {
     static func string(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
+
+    /// "N noun(s)" — the pluralisation ternary retyped at every count site in the queue UI
+    /// (CODE_GUIDELINES.md §8.2: one owner per behaviour).
+    static func count(_ n: Int, _ singular: String) -> String {
+        "\(n) \(singular)\(n == 1 ? "" : "s")"
+    }
 }
 
 /// The scrollable queue list: every row across screens 03 (ready)/05 (working)/06 (finished)/10
@@ -418,7 +424,7 @@ struct QueueRowsView: View {
                 // The honest-progress rule (spec §6.8) floors here too: a sub-second row rounds
                 // to zero, and "finished in 0 seconds" reads as a broken timer rather than a fast one.
                 let seconds = Int(duration.rounded())
-                let durationText = seconds < 1 ? "under a second" : "\(seconds) second\(seconds == 1 ? "" : "s")"
+                let durationText = seconds < 1 ? "under a second" : QueueByteFormat.count(seconds, "second")
                 meta = "\(percent) · finished in \(durationText)"
             } else {
                 // The STORE's shipped file first: it is the authoritative
