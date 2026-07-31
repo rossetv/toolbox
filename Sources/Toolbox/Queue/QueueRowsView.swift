@@ -96,15 +96,19 @@ struct QueueRowsView: View {
             onRemove: descriptor.canRemove ? { model.remove(job) } : nil,
             versionsCapsuleTitle: descriptor.capsuleTitle,
             isVersionsCapsuleOpen: versionsJobID == job.id,
-            onVersionsCapsule: descriptor.capsuleTitle != nil ? { versionsJobID = job.id } : nil
+            onVersionsCapsule: descriptor.capsuleTitle != nil ? { versionsJobID = job.id } : nil,
+            // Anchored to the capsule button itself (see `QueueRow`'s doc comment on this param) —
+            // attaching this externally to the whole row, as before, opened it centred in the
+            // window instead of tailed on the capsule.
+            versionsPopoverPresented: descriptor.capsuleTitle != nil
+                ? Binding(get: { versionsJobID == job.id }, set: { if !$0 { versionsJobID = nil } }) : nil,
+            versionsPopoverContent: descriptor.capsuleTitle != nil
+                ? { AnyView(VersionsPopoverContent(model: model, jobID: job.id)) } : nil
         ) {
             trailing(for: job, descriptor: descriptor)
         }
         .popover(isPresented: Binding(get: { perFileJobID == job.id }, set: { if !$0 { perFileJobID = nil } })) {
             PerFileSettingsPopover(model: model, jobID: job.id)
-        }
-        .popover(isPresented: Binding(get: { versionsJobID == job.id }, set: { if !$0 { versionsJobID = nil } })) {
-            VersionsPopoverContent(model: model, jobID: job.id)
         }
     }
 

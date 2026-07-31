@@ -500,6 +500,22 @@ struct QueueRowSizeColumn: View {
 /// the shared mechanics: hover/keyboard-focus, the leading thumbnail+name+meta, the hover- and
 /// focus-revealed gear, the versions capsule, problem-row tinting, and the context menu that
 /// mirrors every hover-only affordance for the non-hover/keyboard path (spec §9).
+/// Attaches `.popover` only when both a binding and content are supplied — lets `QueueRow` accept
+/// the versions popover as optional constructor params instead of every caller (including the
+/// generic-only previews) having to thread through a real `Binding<Bool>`.
+private struct OptionalPopover: ViewModifier {
+    var isPresented: Binding<Bool>?
+    var content: (() -> AnyView)?
+
+    func body(content base: Content) -> some View {
+        if let isPresented, let content {
+            base.popover(isPresented: isPresented) { content() }
+        } else {
+            base
+        }
+    }
+}
+
 struct QueueRow<Trailing: View>: View {
     enum Emphasis {
         case none
@@ -530,6 +546,11 @@ struct QueueRow<Trailing: View>: View {
     var versionsCapsuleTitle: String? = nil
     var isVersionsCapsuleOpen: Bool = false
     var onVersionsCapsule: (() -> Void)? = nil
+    /// Attached directly to the capsule button below, not to the whole row: a `.popover` anchors
+    /// to whichever view carries the modifier, so putting this on the row (as `QueueRowsView`
+    /// used to) opened it centred in the window instead of tailed on the capsule (DESIGN.md §9 07).
+    var versionsPopoverPresented: Binding<Bool>? = nil
+    var versionsPopoverContent: (() -> AnyView)? = nil
 
     @ViewBuilder var trailing: () -> Trailing
 
@@ -561,6 +582,7 @@ struct QueueRow<Trailing: View>: View {
                 .clearsClickFocus()
                 .pointingHandCursor()
                 .accessibilityLabel("Choose a version, \(versionsCapsuleTitle)")
+                .modifier(OptionalPopover(isPresented: versionsPopoverPresented, content: versionsPopoverContent))
             }
             trailing()
         }
