@@ -25,12 +25,14 @@ enum RowProblem: Equatable {
     /// .describeFailed`) read, so a file caught locked/missing/unreadable at either moment reads
     /// identically. `compressFailed` has no row copy here: it is a RUN outcome (the OCR rescue),
     /// never a problem row.
-    var problemCopy: String {
+    /// `nil` for `.compressFailed`: it is a run outcome, never an add-time problem row, so it has
+    /// no copy here at all — never an empty-string stand-in a future caller could render blank.
+    var problemCopy: String? {
         switch self {
         case .locked: return "Needs a password to open"
         case .missing: return "Moved or renamed since you added it"
         case .unreadable: return "This file can't be read as a PDF"
-        case .compressFailed: return ""
+        case .compressFailed: return nil
         }
     }
 

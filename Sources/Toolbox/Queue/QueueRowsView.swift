@@ -528,7 +528,9 @@ struct QueueRowsView: View {
     /// that family ("Couldn't be compressed" + Skip/Remove), and its message stays as-is.
     private static func describeFailed(job: ToolJob, model: QueueViewModel, message: String) -> RowDescriptor {
         if let problem = RowProblem.fromRunTimeFailure(message) {
-            return describeProblem(job: job, model: model, problem: problem, meta: problem.problemCopy)
+            // `fromRunTimeFailure` only ever produces .locked/.missing/.unreadable, so
+            // `problemCopy` is never nil here — `message` is a defensive fallback only, never live.
+            return describeProblem(job: job, model: model, problem: problem, meta: problem.problemCopy ?? message)
         }
         if model.skippedRows.contains(job.id) {
             let undo = idleAction("Undo", model: model) { model.setSkipped(false, for: job.id) }

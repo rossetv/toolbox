@@ -56,7 +56,8 @@ struct RowInspection: Equatable {
     /// degradation, so both are recorded divergences owned by this task.
     var metaLine: String {
         switch problem {
-        case .locked, .missing, .unreadable: return problem!.problemCopy
+        case .locked, .missing, .unreadable:
+            if let copy = problem?.problemCopy { return copy }
         // Unreachable from inspection — a compress failure is a run outcome. Naming it here would
         // poach the rescue's own copy, so this degrades to the file's plain description instead.
         case .compressFailed, .none: break
