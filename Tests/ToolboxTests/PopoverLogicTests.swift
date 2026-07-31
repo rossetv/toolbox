@@ -290,4 +290,68 @@ final class PopoverLogicTests: XCTestCase {
                       "Already optimised — nothing to change")
     }
 
+    // MARK: ScanConsentSheet
+
+    func testScanConsentResolvedPairFindsMRCAndPlainEitherOrder() {
+        let mrc = fileVersion(410_000, variant: .mrc)
+        let plain = fileVersion(680_000, variant: .plain)
+
+        // MRC shipped, plain parked as runner-up.
+        var row = RowVersions(originalBytes: 1_870_000, lastAttemptPreset: .balanced,
+                              shipped: mrc, runnerUp: plain, previous: nil)
+        var resolved = ScanConsentSheet.resolvedPair(row: row)
+        XCTAssertEqual(resolved?.mrc.url, mrc.url)
+        XCTAssertEqual(resolved?.plain.url, plain.url)
+        XCTAssertEqual(resolved?.shipped.url, mrc.url)
+
+        // Plain shipped, MRC parked — the R7-reversal case (spec §5): still resolves, in the
+        // other order.
+        row = RowVersions(originalBytes: 1_870_000, lastAttemptPreset: .balanced,
+                          shipped: plain, runnerUp: mrc, previous: nil)
+        resolved = ScanConsentSheet.resolvedPair(row: row)
+        XCTAssertEqual(resolved?.mrc.url, mrc.url)
+        XCTAssertEqual(resolved?.plain.url, plain.url)
+        XCTAssertEqual(resolved?.shipped.url, plain.url)
+    }
+
+    /// A withdrawn/mismatched pair — no runner-up, or a runner-up that isn't the {.mrc,.plain}
+    /// shape — must not render a stale sheet.
+    func testScanConsentResolvedPairNilWhenPairWithdrawn() {
+        XCTAssertNil(ScanConsentSheet.resolvedPair(row: nil))
+
+        let noRunnerUp = RowVersions(originalBytes: 1000, lastAttemptPreset: .balanced,
+                                     shipped: fileVersion(400, variant: .mrc), runnerUp: nil, previous: nil)
+        XCTAssertNil(ScanConsentSheet.resolvedPair(row: noRunnerUp))
+
+        // Original-park pair (gs bloated, §6.3/§6.4) is not a rebuild-choice pair.
+        let originalPark = RowVersions(originalBytes: 1000, lastAttemptPreset: .balanced,
+                                       shipped: fileVersion(400, variant: .mrc),
+                                       runnerUp: fileVersion(1000, variant: .original), previous: nil)
+        XCTAssertNil(ScanConsentSheet.resolvedPair(row: originalPark))
+    }
+
+    func testScanConsentPercentTextNeverLies() {
+        XCTAssertEqual(ScanConsentSheet.percentText(bytes: 410_000, originalBytes: 1_870_000), "78% smaller")
+        // A variant that grew past the input states the truth rather than a nonsense negative
+        // "smaller" figure (spec §7: "percentages never lie").
+        XCTAssertEqual(ScanConsentSheet.percentText(bytes: 1_200_000, originalBytes: 1_000_000), "20% bigger")
+        XCTAssertEqual(ScanConsentSheet.percentText(bytes: 1_000_000, originalBytes: 1_000_000), "same size")
+    }
+
+    /// Defensive: `.original` is not a pair `surfaceConsent` ever produces, but the copy
+    /// functions must still be honest if fed it.
+    func testScanConsentCopyHandlesOriginalKindHonestly() {
+        XCTAssertFalse(ScanConsentSheet.variantTitle(.original).isEmpty)
+        XCTAssertFalse(ScanConsentSheet.variantExplanation(.original).isEmpty)
+        let badge = ScanConsentSheet.variantBadge(.original)
+        XCTAssertFalse(badge.text.isEmpty)
+    }
+
+    func testScanConsentBadgesAreFixedByVariant() {
+        XCTAssertEqual(ScanConsentSheet.variantBadge(.mrc).text, "BEST FOR SCANS")
+        XCTAssertTrue(ScanConsentSheet.variantBadge(.mrc).isAccent)
+        XCTAssertEqual(ScanConsentSheet.variantBadge(.plain).text, "NOTHING REDRAWN")
+        XCTAssertFalse(ScanConsentSheet.variantBadge(.plain).isAccent)
+    }
+
 }
