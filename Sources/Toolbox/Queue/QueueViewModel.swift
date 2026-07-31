@@ -641,8 +641,8 @@ final class QueueViewModel: ObservableObject {
             // The store's contract: any other throw leaves the shipped file exactly as it was, so
             // there is nothing to unwind — only to report. An explicit choice never fails silently
             // (R12), and the version they still have is named so the message is actionable.
-            recompressErrors[id] = "Switch failed — kept your "
-                                 + "\(shipped.preset.title) version. Try again."
+            reportKeptVersion(id, preset: shipped.preset)
+            return
         }
         publishJobs()
     }
@@ -2452,9 +2452,7 @@ final class QueueViewModel: ObservableObject {
         } catch {
             // Nothing has moved; record nothing. An explicit button press never fails silently
             // (R12), and the version they still have is named so the message is actionable.
-            recompressErrors[job.id] = "Switch failed — kept your "
-                                     + "\(shipped.preset.title) version. Try again."
-            publishJobs()
+            reportKeptVersion(job.id, preset: shipped.preset)
             return
         }
 
@@ -2473,9 +2471,7 @@ final class QueueViewModel: ObservableObject {
             // The store's contract: any other throw leaves the shipped file exactly as it was, so
             // there is nothing to unwind and nothing to record.
             try? FileManager.default.removeItem(at: temp)
-            recompressErrors[job.id] = "Switch failed — kept your "
-                                     + "\(shipped.preset.title) version. Try again."
-            publishJobs()
+            reportKeptVersion(job.id, preset: shipped.preset)
             return
         }
 
@@ -2574,9 +2570,7 @@ final class QueueViewModel: ObservableObject {
                 // destroying the one thing D3/R14 promise to keep, over a failure the user can
                 // simply retry.
                 if FileManager.default.fileExists(atPath: parked.url.path) {
-                    recompressErrors[job.id] = "Switch failed — kept your "
-                                             + "\(shipped.preset.title) version. Try again."
-                    publishJobs()
+                    reportKeptVersion(job.id, preset: shipped.preset)
                     return false
                 }
             }
@@ -2612,6 +2606,15 @@ final class QueueViewModel: ObservableObject {
     /// advertise a version pair it can no longer back.
     private func reportSwitchFailure(_ id: ToolJob.ID, _ message: String) {
         switchFailures[id] = message
+        publishJobs()
+    }
+
+    /// The one message for a switch attempt that failed with the shipped file left exactly as it
+    /// was (the store's contract on any throw besides `RunnerUpStore.SwitchError`) — five sites
+    /// used to hand-repeat this two-line concatenation and, in three of them, the `publishJobs()`
+    /// that must follow it.
+    private func reportKeptVersion(_ id: ToolJob.ID, preset: CompressPreset) {
+        recompressErrors[id] = "Switch failed — kept your \(preset.title) version. Try again."
         publishJobs()
     }
 
@@ -2784,8 +2787,10 @@ final class QueueViewModel: ObservableObject {
         } catch {
             // The switch did not happen and `shipped` is unchanged (store contract: any other
             // throw restores it), so the store's record stays canonical rather than describing a
-            // switch that never took effect — and says so (R12).
-            recompressErrors[id] = "Switch failed — kept your \(preset.title) version. Try again."
+            // switch that never took effect — and says so (R12). The caller's own tail
+            // (`rerunForSwitch`'s `Task`) publishes again regardless, so the extra publish here is
+            // harmless, not load-bearing.
+            reportKeptVersion(id, preset: preset)
         }
         return false
     }
