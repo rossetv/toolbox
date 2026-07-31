@@ -73,11 +73,7 @@ struct QueueView: View {
 
     @State private var isTargeted = false
     @State private var draggedCount = 1
-    @State private var changeQualityPresented = false
-    @State private var recentBatchesPresented = false
-
-    /// nil exactly when nothing is waiting — surfaces the FIFO's head, one at a time (spec §7).
-    private var consentJobID: ToolJob.ID? { model.pendingConsents.first }
+    @State private var activeSheet: QueueSheet?
 
     var screenState: QueueScreenState {
         Self.screenState(jobs: model.jobs, isRunning: model.isRunning, inspections: model.inspections)
@@ -96,7 +92,7 @@ struct QueueView: View {
                     onAdd: { model.add(FilePicker.choosePDFs()) },
                     onClear: { model.clearFinished() },
                     onChooseFolder: { if let folder = FilePicker.chooseFolder() { model.outputFolder = folder } },
-                    onRecentBatches: { recentBatchesPresented = true },
+                    onRecentBatches: { activeSheet = .recentBatches },
                     onAbout: { showAbout.wrappedValue = true },
                     onCancel: { model.cancel() }
                 )
@@ -109,7 +105,7 @@ struct QueueView: View {
                     onStart: { model.compress() },
                     onCancel: { model.cancel() },
                     onShowInFinder: { revealShipped() },
-                    onChangeQuality: { changeQualityPresented = true },
+                    onChangeQuality: { activeSheet = .changeQuality },
                     onAddMore: { model.add(FilePicker.choosePDFs()) }
                 )
             }
@@ -122,11 +118,49 @@ struct QueueView: View {
             isTargeted: $isTargeted, draggedCount: $draggedCount,
             onDrop: { acceptDrop($0) }
         ))
-        .sheet(isPresented: $changeQualityPresented) { changeQuality() }
-        .sheet(isPresented: $recentBatchesPresented) { recentBatches() }
-        .sheet(isPresented: showAbout) { about() }
-        .sheet(isPresented: Binding(get: { consentJobID != nil }, set: { _ in })) {
-            if let consentJobID { scanConsent(consentJobID) }
+        // A single `.sheet(item:)` over one optional enum — NOT four stacked `.sheet(isPresented:)`
+        // modifiers on the same view, which is a known SwiftUI failure mode (later modifiers can
+        // shadow earlier ones so only one ever actually presents). Keying on `QueueSheet.id` also
+        // fixes the consent FIFO: a derived `isPresented` Bool (`consentJobID != nil`) never goes
+        // false between two queued consents, so SwiftUI has no edge to dismiss-then-represent on —
+        // the second row's sheet would never appear. An `Identifiable` item forces a clean
+        // dismiss+present on every id change, including consent → consent (spec §7's multi-scan case).
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .changeQuality: changeQuality()
+            case .recentBatches: recentBatches()
+            case .about: about()
+            case .consent(let id): scanConsent(id)
+            }
+        }
+        // Drives the FIFO: any change to the queue's head re-targets `activeSheet`. If the head
+        // becomes nil while a consent sheet is up (the user resolved it through P-B's own content,
+        // which pops the queue), clear it too. A user who dismisses the sheet directly (Escape) —
+        // rather than resolving it — leaves that row's consent unresolved with no forced re-prompt;
+        // the versions capsule remains the undo path per spec §7, so this is accepted, not a gap.
+        .onChange(of: model.pendingConsents.first) { _, newHead in
+            if let newHead {
+                activeSheet = .consent(newHead)
+            } else if case .consent = activeSheet {
+                activeSheet = nil
+            }
+        }
+        // Bridges the externally-owned `showAbout` binding (shared with `ToolboxApp`'s app-menu
+        // command) onto the single sheet surface, both directions. Each branch only writes when the
+        // value would actually change, so the two handlers below settle in one hop and never ping-pong.
+        .onChange(of: showAbout.wrappedValue) { _, isShowing in
+            if isShowing {
+                activeSheet = .about
+            } else if case .about = activeSheet {
+                activeSheet = nil
+            }
+        }
+        .onChange(of: activeSheet) { _, newValue in
+            if case .about = newValue {
+                if !showAbout.wrappedValue { showAbout.wrappedValue = true }
+            } else if showAbout.wrappedValue {
+                showAbout.wrappedValue = false
+            }
         }
     }
 
@@ -179,6 +213,25 @@ struct QueueView: View {
         }
         guard hasTerminal else { return .ready }
         return (hasFailed || hasUnresolvedProblem) ? .problems : .finished
+    }
+}
+
+/// The single presentation surface for every sheet `QueueView` owns — see the doc comment on the
+/// `.sheet(item:)` call site for why this replaces four separately-toggled `.sheet(isPresented:)`
+/// modifiers.
+private enum QueueSheet: Identifiable, Equatable {
+    case changeQuality
+    case recentBatches
+    case about
+    case consent(ToolJob.ID)
+
+    var id: String {
+        switch self {
+        case .changeQuality: return "changeQuality"
+        case .recentBatches: return "recentBatches"
+        case .about: return "about"
+        case .consent(let jobID): return "consent-\(jobID)"
+        }
     }
 }
 
