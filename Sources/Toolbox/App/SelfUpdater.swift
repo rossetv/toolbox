@@ -361,7 +361,10 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
             do {
                 try rename(aside, installed)
             } catch {
-                // Last resort: the aside is NEVER deleted, and the error names where it is.
+                // Last resort: the ASIDE is never deleted (it's the only known-good copy left),
+                // but the staged copy is — same as every other failure leg — so a failed rename
+                // never leaves a hidden, quarantine-stripped bundle behind with no sweeper.
+                try? FileManager.default.removeItem(at: staged)
                 throw InstallFailure.failed(
                     message: "Toolbox couldn't install the update or put the old version back. "
                         + "Your previous version is safe at \(aside.path) — move it to \(installed.path).",

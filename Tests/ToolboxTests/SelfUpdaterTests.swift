@@ -757,6 +757,8 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: aside), "the aside is never deleted")
         XCTAssertEqual(SelfUpdater.bundleVersion(of: URL(fileURLWithPath: aside)), Self.installedVersion,
                        "a working install survives, at the named path")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path),
+                       "the staged copy is swept on this leg too — only the aside is protected")
     }
 
     // MARK: - Banner dismissal (per version)
