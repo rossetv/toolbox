@@ -172,7 +172,12 @@ struct StatusIndicator: View {
         .scaleEffect(hasAppeared || reduceMotion ? 1 : 0.4)
         .onAppear {
             guard !reduceMotion else { hasAppeared = true; return }
-            withAnimation(.spring(response: Theme.Motion.checkPop, dampingFraction: 0.58)) { hasAppeared = true }
+            // DESIGN.md §8: "row checks delay 0.25s after the header check" — every production
+            // caller of `.finished` is a per-row check (`QueueRowsView`), never the screen 06/10
+            // header disc (`QueueHeaderView.headlineGlyph` pops on its own, undelayed).
+            withAnimation(.spring(response: Theme.Motion.checkPop, dampingFraction: 0.58).delay(0.25)) {
+                hasAppeared = true
+            }
         }
     }
 
