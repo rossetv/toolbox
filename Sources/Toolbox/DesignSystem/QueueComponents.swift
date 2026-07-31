@@ -542,6 +542,12 @@ struct QueueRow<Trailing: View>: View {
 
     var onOpen: (() -> Void)? = nil
     var onGear: (() -> Void)? = nil
+    /// Attached directly to the gear button below, not to the whole row: same rationale as
+    /// `versionsPopoverPresented` below — a `.popover` anchors to whichever view carries the
+    /// modifier, so attaching this externally to the whole row opens it centred in the window
+    /// instead of tailed on the gear (DESIGN.md §9 04c).
+    var gearPopoverPresented: Binding<Bool>? = nil
+    var gearPopoverContent: (() -> AnyView)? = nil
     var onRemove: (() -> Void)? = nil
     var versionsCapsuleTitle: String? = nil
     var isVersionsCapsuleOpen: Bool = false
@@ -563,11 +569,15 @@ struct QueueRow<Trailing: View>: View {
         HStack(spacing: 14) {
             leading
             Spacer(minLength: Theme.Spacing.small)
-            if onGear != nil, isHovering || isFocused {
+            // Stays mounted while its popover is open even after the pointer leaves the row for
+            // the popover itself — otherwise the hover-gated gear (and the `.popover` anchored to
+            // it) would vanish mid-interaction and the popover would close under the user.
+            if onGear != nil, isHovering || isFocused || (gearPopoverPresented?.wrappedValue ?? false) {
                 gearButton
                     // The handoff fades the gear in ahead of the sizes rather than popping it
                     // into the row; it leaves the same way.
                     .transition(.opacity.combined(with: .scale(scale: 0.7)))
+                    .modifier(OptionalPopover(isPresented: gearPopoverPresented, content: gearPopoverContent))
             }
             if let versionsCapsuleTitle {
                 Button(action: { onVersionsCapsule?() }) {

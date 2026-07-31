@@ -93,6 +93,13 @@ struct QueueRowsView: View {
             emphasis: descriptor.emphasis,
             onOpen: descriptor.canOpen ? { NSWorkspace.shared.open(Self.urlToOpen(for: job, model: model)) } : nil,
             onGear: descriptor.canConfigure ? { perFileJobID = job.id } : nil,
+            // Anchored to the gear button itself (see `QueueRow`'s doc comment on this param) —
+            // attaching this externally to the whole row, as before, opened it centred in the
+            // window instead of tailed on the gear.
+            gearPopoverPresented: descriptor.canConfigure
+                ? Binding(get: { perFileJobID == job.id }, set: { if !$0 { perFileJobID = nil } }) : nil,
+            gearPopoverContent: descriptor.canConfigure
+                ? { AnyView(PerFileSettingsPopover(model: model, jobID: job.id)) } : nil,
             onRemove: descriptor.canRemove ? { model.remove(job) } : nil,
             versionsCapsuleTitle: descriptor.capsuleTitle,
             isVersionsCapsuleOpen: versionsJobID == job.id,

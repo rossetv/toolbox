@@ -54,6 +54,9 @@ struct QueueHeaderView: View {
                              isOn: model.ocrOn, icon: Image(systemName: "doc.text.magnifyingglass"),
                              toggle: { model.ocrOn.toggle() },
                              openOptions: model.ocrOn ? { ocrPresented = true } : nil)
+                        // Anchored to the chip itself, not the header's full-width container: see
+                        // the identical note on the Compress chip above (DESIGN.md §9 04).
+                        .popover(isPresented: $ocrPresented) { OCRPopover(model: model) }
                     Spacer(minLength: Theme.Spacing.small)
                     saveDestinationMenu
                 }
@@ -69,7 +72,6 @@ struct QueueHeaderView: View {
         .padding(.horizontal, Theme.Spacing.large)
         .padding(.top, 20)
         .padding(.bottom, state == .ready ? 14 : 16)
-        .popover(isPresented: $ocrPresented) { OCRPopover(model: model) }
     }
 
     @ViewBuilder
@@ -110,9 +112,12 @@ struct QueueHeaderView: View {
     }
 
     private var ocrLanguageDisplay: String {
+        // `languages` empty means auto-detect (OCROptions.swift), same fallback
+        // `PerFileSettingsPopover.ocrStateLine` already uses — "English" here disagreed with
+        // the row subtitle's honest "Automatic" for the same untouched default.
         guard let code = model.ocrOptions.languages.first,
               let entry = OCROptions.curatedLanguages.first(where: { $0.code == code }) else {
-            return "English"
+            return "Automatic"
         }
         return entry.display
     }
