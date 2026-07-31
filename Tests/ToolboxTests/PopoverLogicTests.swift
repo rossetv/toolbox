@@ -62,4 +62,26 @@ final class PopoverLogicTests: XCTestCase {
         XCTAssertEqual(QualityPopover.batchTotal(rows: rows, candidate: .balanced), 200)
     }
 
+    // MARK: OCRPopover
+
+    /// Vision's `.fast` recognition covers only the six Latin-script curated languages —
+    /// Chinese, Japanese and Korean need `.accurate`. The popover must refuse Fast for exactly
+    /// the same set the VM clamps, never a second, independently-maintained list.
+    func testOCRPopoverDisablesFastForCJKLanguages() {
+        for code in ["zh-Hans", "ja-JP", "ko-KR"] {
+            XCTAssertTrue(OCRPopover.fastDisabled(languages: [code]),
+                         "\(code) cannot be read at Fast")
+        }
+        XCTAssertTrue(OCRPopover.fastDisabled(languages: ["en-US", "ja-JP"]),
+                     "one unsupported language is enough to disable Fast")
+    }
+
+    func testOCRPopoverLeavesFastEnabledForLatinScripts() {
+        for code in ["en-US", "de-DE", "es-ES", "fr-FR", "it-IT", "pt-BR"] {
+            XCTAssertFalse(OCRPopover.fastDisabled(languages: [code]),
+                          "\(code) reads fine at Fast")
+        }
+        XCTAssertFalse(OCRPopover.fastDisabled(languages: []), "auto-detect never disables Fast")
+    }
+
 }
