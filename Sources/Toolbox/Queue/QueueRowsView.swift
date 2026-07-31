@@ -456,11 +456,17 @@ struct QueueRowsView: View {
     // MARK: failed (run-time terminal failure)
 
     /// A row whose job ended `.failed` — `CompressLegFailure`/`OpenGuard`'s run-time catch/
-    /// encrypted/corrupt. The message is already the model's own user-facing string (never
-    /// recomposed here); the Global Constraints pin Skip/Remove for exactly this family
-    /// ("Couldn't be compressed" + Skip/Remove) — "Find it…" names a FIX ("Moved" is the one
-    /// add-time problem with one), which a terminal run failure does not have short of a rebind.
+    /// encrypted/corrupt. `OpenGuard`'s run-time inspection is the "second net" (spec §6.6): a
+    /// file that moved, locked, or became unreadable between add and run raises the exact same
+    /// condition inspection would have caught, so it renders through `describeProblem` — same
+    /// copy, same tint, same affordances (including "Find it…" on a moved row) as the add-time
+    /// path, never the raw engine string. A genuine run-time-only failure (Ghostscript,
+    /// validation) has no add-time equivalent: the Global Constraints pin Skip/Remove for exactly
+    /// that family ("Couldn't be compressed" + Skip/Remove), and its message stays as-is.
     private static func describeFailed(job: ToolJob, model: QueueViewModel, message: String) -> RowDescriptor {
+        if let problem = RowProblem.fromRunTimeFailure(message) {
+            return describeProblem(job: job, model: model, problem: problem, meta: problem.problemCopy)
+        }
         if model.skippedRows.contains(job.id) {
             let undo = RowDescriptor.RowAction(title: "Undo", action: { model.setSkipped(false, for: job.id) })
             return RowDescriptor(meta: message, emphasis: .degraded, trailing: .skipped(onUndo: undo))

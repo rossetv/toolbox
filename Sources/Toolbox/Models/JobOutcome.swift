@@ -19,6 +19,34 @@ enum RowProblem: Equatable {
     /// Ghostscript or output validation failed on a readable file — the compress-specific failure
     /// the OCR rescue is built on (spec §6.5): the row is degraded, never "failed".
     case compressFailed
+
+    /// The Problems screen's copy for this condition (spec §7/§6.6) — the one table both add-time
+    /// inspection (`RowInspection.metaLine`) and the run-time second net (`QueueRowsView
+    /// .describeFailed`) read, so a file caught locked/missing/unreadable at either moment reads
+    /// identically. `compressFailed` has no row copy here: it is a RUN outcome (the OCR rescue),
+    /// never a problem row.
+    var problemCopy: String {
+        switch self {
+        case .locked: return "Needs a password to open"
+        case .missing: return "Moved or renamed since you added it"
+        case .unreadable: return "This file can't be read as a PDF"
+        case .compressFailed: return ""
+        }
+    }
+
+    /// Maps `OpenGuard`'s run-time "second net" (spec §6.6) back onto the same problem add-time
+    /// inspection would have raised for the identical condition — the run-time catch only ever
+    /// sees `OpenGuardError`/`CompressError`/`OCRError`'s fixed, known strings, so this is a closed
+    /// set, not free-text sniffing. `nil` for a genuine run-time-only failure (Ghostscript,
+    /// validation) that has no add-time equivalent and keeps its own message.
+    static func fromRunTimeFailure(_ message: String) -> RowProblem? {
+        switch message {
+        case "The PDF is password-protected.": return .locked
+        case "The file could not be found.": return .missing
+        case "The PDF is damaged and cannot be read.": return .unreadable
+        default: return nil
+        }
+    }
 }
 
 /// The second variant a job retained on disk, described for the row that owns it. It exists

@@ -376,6 +376,62 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(descriptor.emphasis, .active, "a running row must render the active emphasis")
     }
 
+    // MARK: run-time failure → problem-row copy (spec §6.6's "second net", §7)
+
+    /// A run-time failure that `OpenGuard` would also have caught at add-time (locked/missing/
+    /// unreadable) must render the SAME design copy as the add-time path, never the raw engine
+    /// string — and a moved file keeps its "Find it…" affordance and warn (not danger) tint.
+    func testRunTimeMissingFailureGetsMovedCopyAndFindItAffordance() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/moved.pdf"))
+        job.state = .failed("The file could not be found.")
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .problems)
+        XCTAssertEqual(descriptor.meta, "Moved or renamed since you added it")
+        XCTAssertEqual(descriptor.emphasis, .problemWarn)
+        guard case .problem(let primary, let link) = descriptor.trailing else {
+            return XCTFail("expected .problem trailing with a Find it… affordance, got \(descriptor.trailing)")
+        }
+        XCTAssertEqual(primary?.title, "Find it…")
+        XCTAssertEqual(link.title, "Remove")
+    }
+
+    /// A run-time locked failure gets the same "Needs a password to open" copy and danger tint as
+    /// add-time inspection — Skip/Remove only, never "Find it…" (D3: no password entry).
+    func testRunTimeLockedFailureGetsPasswordCopyAndDangerTint() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        job.state = .failed("The PDF is password-protected.")
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .problems)
+        XCTAssertEqual(descriptor.meta, "Needs a password to open")
+        XCTAssertEqual(descriptor.emphasis, .problemDanger)
+        guard case .problemPair(let first, let second) = descriptor.trailing else {
+            return XCTFail("expected .problemPair (Skip/Remove), got \(descriptor.trailing)")
+        }
+        XCTAssertEqual(first.title, "Skip")
+        XCTAssertEqual(second.title, "Remove")
+    }
+
+    /// A genuine run-time-only failure (no add-time equivalent) keeps its own engine message and
+    /// the pre-existing Skip/Remove danger treatment — the mapping must not swallow these.
+    func testRunTimeCompressOnlyFailureKeepsItsOwnMessage() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/gs-failed.pdf"))
+        job.state = .failed("Couldn't be compressed")
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .problems)
+        XCTAssertEqual(descriptor.meta, "Couldn't be compressed")
+        XCTAssertEqual(descriptor.emphasis, .problemDanger)
+    }
+
+    /// `RowProblem.problemCopy` is the one table both add-time inspection and the run-time second
+    /// net read — this is the reverse direction (copy → problem) exercised via `RowInspection`,
+    /// confirming the two never diverge in wording.
+    func testProblemCopyMatchesRowInspectionMetaLineForEachCondition() {
+        for problem: RowProblem in [.locked, .missing, .unreadable] {
+            XCTAssertEqual(RowInspection(problem: problem).metaLine, problem.problemCopy,
+                            "\(problem) must read identically whether add-time or run-time")
+        }
+    }
+
     // MARK: per-file override surfacing (spec §7, DESIGN.md §9 04c)
 
     /// An overridden queued row's meta gets the accent "Its own settings" — the popover's own
