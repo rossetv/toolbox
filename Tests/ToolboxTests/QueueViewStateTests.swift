@@ -192,6 +192,16 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(descriptor.emphasis, .degraded, "noGain+tooFaint must be marked degraded")
     }
 
+    /// A running row must be marked `.active` (DESIGN.md §9 05, spec §7): accent-tinted
+    /// background, slow shimmer, accent meta — none of which fire without this emphasis wired.
+    func testRunningRowIsMarkedActive() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/running.pdf"))
+        job.state = .running(0.4)
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .working)
+        XCTAssertEqual(descriptor.emphasis, .active, "a running row must render the active emphasis")
+    }
+
     // MARK: per-file override surfacing (spec §7, DESIGN.md §9 04c)
 
     /// An overridden queued row's meta gets the accent "Its own settings" — the popover's own

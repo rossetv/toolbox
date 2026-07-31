@@ -299,7 +299,7 @@ struct QueueRowsView: View {
     private static func describeRunning(job: ToolJob, model: QueueViewModel, fraction: Double) -> RowDescriptor {
         let leg = model.legLabel(for: job.id) ?? "Working…"
         let etaText = model.rowETASeconds(for: job.id).map { "\($0)s left" }
-        return RowDescriptor(meta: leg, metaAccent: nil, emphasis: .none,
+        return RowDescriptor(meta: leg, metaAccent: nil, emphasis: .active,
                              trailing: .status(text: etaText, kind: .active(fraction)))
     }
 

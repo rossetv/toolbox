@@ -523,6 +523,10 @@ struct QueueRow<Trailing: View>: View {
         /// Rescued/tooFaint (spec §6.5) — no background tint; pair with `StatusIndicator.warn`
         /// in `trailing`.
         case degraded
+        /// Screen 05's currently-processing row (DESIGN.md §9 05, spec §7): accent-tinted
+        /// background, a slow (~2.4s) shimmer sweep gated on Reduce Motion, and accent-coloured
+        /// `meta` text.
+        case active
         /// Screen 10's danger-tinted problem row (locked file).
         case problemDanger
         /// Screen 10's warn-tinted problem row (moved/renamed file).
@@ -547,6 +551,7 @@ struct QueueRow<Trailing: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
     @FocusState private var isFocused: Bool
+    @State private var shimmerX: CGFloat = -0.3
 
     var body: some View {
         HStack(spacing: 14) {
@@ -573,6 +578,11 @@ struct QueueRow<Trailing: View>: View {
         .padding(.vertical, 12)
         .padding(.horizontal, 12)
         .background(backgroundColor, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+        .overlay {
+            if isActive, !reduceMotion {
+                shimmer
+            }
+        }
         .overlay(
             RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
                 .strokeBorder(Theme.Colors.accent, lineWidth: isFocused ? 2 : 0)
@@ -586,6 +596,10 @@ struct QueueRow<Trailing: View>: View {
             guard let onOpen else { return .ignored }
             onOpen()
             return .handled
+        }
+        .onAppear {
+            guard isActive, !reduceMotion else { return }
+            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { shimmerX = 1.3 }
         }
         .contextMenu {
             if let onGear {
@@ -609,7 +623,7 @@ struct QueueRow<Trailing: View>: View {
                 Text(name).themeFont(.rowName).foregroundStyle(Theme.Colors.text)
                     .lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 4) {
-                    Text(meta).themeFont(.meta).foregroundStyle(Theme.Colors.textTertiary)
+                    Text(meta).themeFont(.meta).foregroundStyle(metaTextColor)
                     if let metaAccent {
                         Text(metaAccent).themeFont(.meta).foregroundStyle(Theme.Colors.accent).lineLimit(1)
                     }
@@ -633,15 +647,46 @@ struct QueueRow<Trailing: View>: View {
         .accessibilityLabel("Settings for \(name)")
     }
 
+    private var isActive: Bool {
+        if case .active = emphasis { return true }
+        return false
+    }
+
     private var backgroundColor: Color {
         switch emphasis {
         case .none, .degraded:
             return isHovering ? Theme.Colors.background : .clear
+        case .active:
+            // `Toolbox Final.dc.html` screen 05's active row: `color-mix(in srgb, var(--accent)
+            // 7%, transparent)`.
+            return Theme.Colors.accent.opacity(0.07)
         case .problemDanger:
             return Theme.Colors.danger.opacity(0.07)
         case .problemWarn:
             return Theme.Colors.warn.opacity(0.1)
         }
+    }
+
+    private var metaTextColor: Color {
+        isActive ? Theme.Colors.accent : Theme.Colors.textTertiary
+    }
+
+    /// The active row's ~2.4s sweep (DESIGN.md §8), a soft light band travelling across the row
+    /// — same shape as `CapsuleProgressBar`'s sweep, clipped to the row so it never bleeds past
+    /// the rounded corners. Reduce Motion suppresses this entirely (§9); the accent tint and
+    /// meta colour alone still convey "active".
+    private var shimmer: some View {
+        GeometryReader { geo in
+            Rectangle()
+                .fill(LinearGradient(
+                    colors: [.clear, Color.white.opacity(0.5), .clear],
+                    startPoint: .leading, endPoint: .trailing
+                ))
+                .frame(width: geo.size.width * 0.32)
+                .offset(x: shimmerX * geo.size.width)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
+        .allowsHitTesting(false)
     }
 
     private var accessibilityLabel: String {
@@ -650,7 +695,7 @@ struct QueueRow<Trailing: View>: View {
         switch emphasis {
         case .problemDanger, .problemWarn: label += ", needs attention"
         case .degraded: label += ", needs attention"
-        case .none: break
+        case .none, .active: break
         }
         return label
     }
