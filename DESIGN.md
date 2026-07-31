@@ -343,7 +343,9 @@ banner entrances above are separate: their durations are tokens (`popover`, `she
 
 Press states are carried by one shared `MotionButtonStyle` (`Components.swift`) rather than
 per-component gesture handling, so every button in the app presses identically; a component's
-chrome therefore lives *inside* its `Button` label, where the style's scale can reach it.
+chrome therefore lives *inside* its `Button` label, where the style's scale can reach it —
+except where one background is shared by two `Button`s (`VerbChip`, §11), which presses per
+half instead.
 
 **Reduce Motion**: every interactive `QueueComponents` view gates its transform/loop
 animations on `accessibilityReduceMotion`, substituting a plain or no transition — never
@@ -676,6 +678,15 @@ A divergence is recorded here or it does not exist (`CODE_GUIDELINES.md` §8.4).
   README says the bar's "light sweep crossing every 1.6s" where the markup writes
   `animation:sweep 1.9s linear` (1.6s being the `capGlow` pulse's value), so §8 pins 1.9s.
   Authority: review-team r6 adjudication, `.claude/DECISIONS.md` (2026-08-01 addendum).
+
+- **`VerbChip` presses per half, not per pill.** §8 states chrome lives *inside* its
+  `Button` label so the shared `MotionButtonStyle` press scale reaches the whole control —
+  true everywhere else, but `VerbChip`'s pill background/overlay/hover fill are applied to
+  the `HStack` wrapping its two `Button`s, not inside either label, because one background
+  is shared by two independent targets (the verb toggle and the options chevron) and no
+  single `configuration.label` can cover both. Pressing therefore squeezes only the half
+  actually tapped, never the whole pill — see `VerbChip`'s own doc comment for why this is
+  also the more honest read of a two-target control.
 
 **Reported, not resolved** (found while writing this document; for whoever owns the
 named surface next):
