@@ -364,11 +364,12 @@ struct QueueRowsView: View {
         // Binding carry #1's other edge: a change-quality re-run (`commit()`) never touches
         // `job.state`, so `outcome` can be arbitrarily stale once the STORE has moved on — a row
         // whose first pass cancelled before reading stays `outcome.isDegraded == true` forever,
-        // even after a later re-run's OCR leg lands a confirmed-searchable shipped file. Only a
-        // row that shipped a compressed file on its first pass gets a store entry at all (a
-        // `.skipped` compress leg never arms one — VersionStore's own note — so it can never
-        // re-run and never contradicts `isDegraded` here); wherever the store DOES hold a
-        // confirmed-searchable shipped card, that fact is fresher than any `.cancelled`/
+        // even after a later re-run's OCR leg lands a confirmed-searchable shipped file. A noGain
+        // (or verb-off) row gets a store entry too (`ingestCompletedJobs`'s `.noGain`/`nil` arms)
+        // — only a `.skipped` compress leg never arms one, per that arm's own note — so this guard
+        // does NOT hold because degraded rows lack an entry; it holds because none of the degraded
+        // noGain outcomes ever set `searchableByCard[.shipped]` true. Wherever the store DOES hold
+        // a confirmed-searchable shipped card, that fact is fresher than any `.cancelled`/
         // `.tooFaint`/`.failed` OCR reading baked into `outcome`, so it wins.
         if outcome.isDegraded && row?.searchableByCard[.shipped] != true {
             return describeDegraded(job: job, model: model, outcome: outcome)
@@ -437,19 +438,16 @@ struct QueueRowsView: View {
             }
         } else if case .noGain = outcome.compress {
             // No compression needed, but OCR leg produced a degraded outcome (spec §6.5, DESIGN.md §11).
-            // The spec pins two composites: "Already optimised · made searchable" (.added, not degraded),
-            // and "Already optimised · too faint to read" (.tooFaint, degraded warn row).
+            // The spec pins "Already optimised · too faint to read" for `.tooFaint`, the only OCR
+            // outcome a noGain row's `.done` state can actually carry: `.added`/`.alreadySearchable`
+            // aren't degraded at all (`RowOutcome.isDegraded`), and `.cancelled`/`.failed` can't reach
+            // a noGain row here either — its OCR leg always runs with `delivers: true` (a noGain
+            // compress leg never sets `state.delivered`), so a cancellation or read failure aborts the
+            // whole job to `.failed` (`ocrLeg`'s `guard delivers else { return nil }`) before a `.done`
+            // outcome can exist. `default` is defensive only, never a live state.
             switch outcome.ocr {
-            case .added:
-                meta = "Already optimised · made searchable"
             case .tooFaint:
                 meta = "Already optimised · too faint to read"
-            case .alreadySearchable:
-                meta = "Already optimised"
-            case .cancelled:
-                meta = "Already optimised · cancelled before reading"
-            case .failed(let reason):
-                meta = "Already optimised — failed to read: \(reason)"
             default:
                 meta = "Already optimised"
             }
