@@ -1,9 +1,10 @@
 #!/bin/bash
-# Dev-only manual check — NOT a GATES.md gate. It refuses to run at all when the machine
-# already has a Toolbox install or a running Toolbox process (see preflight below), which
-# makes it machine-dependent by design: a check that goes red because the developer's own
-# copy of the app happens to be open is a flaky gate, not a useful one. Run it by hand when
-# touching the updater/relaunch path; it is not part of `xcodebuild test` or CI.
+# Dev-only manual check — NOT a GATES.md gate. It refuses to run at all when its OWN install
+# target (~/Applications/Toolbox.app) already exists, or when any Toolbox process is already
+# running (see preflight below) — both machine-dependent by design: a check that goes red
+# because the developer's own copy of the app happens to be open is a flaky gate, not a
+# useful one. Run it by hand when touching the updater/relaunch path; it is not part of
+# `xcodebuild test` or CI.
 #
 # Spec §11's EMPIRICAL relaunch verification: a dev build dir hits the degrade-to-release-page
 # path by design (it isn't installed under an Applications folder), so proving the REAL
@@ -17,7 +18,7 @@
 #   4. asserts: the old process actually exited, the on-disk bundle was actually swapped to
 #      the new version, and the relaunched instance actually ran and self-identified
 #
-# Never touches live GitHub and never overwrites a real install (see preflight).
+# Never touches live GitHub and never writes anywhere but ~/Applications (see preflight).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -31,10 +32,22 @@ RESULT_LOG="$STATE_DIR/update-smoke-result.log"
 fail() { echo "STOP: $*" >&2; exit 1; }
 
 # --- Preflight: never touch a real install or a running copy --------------------------
+# The two hard stops below are scoped to what this script can actually put at risk: its own
+# install target, and any live Toolbox process (this script's launches, or a real one, would
+# be indistinguishable to yieldToExistingInstance's bundle-ID-wide check).
 [ -e "$INSTALLED_APP" ] && fail "$INSTALLED_APP already exists — refusing to overwrite a real install."
-[ -e "/Applications/Toolbox.app" ] && fail "/Applications/Toolbox.app already exists — refusing to run alongside a real install."
 if pgrep -f "Toolbox\.app/Contents/MacOS/Toolbox" >/dev/null 2>&1; then
     fail "a Toolbox process is already running — refusing to run the smoke test."
+fi
+# /Applications/Toolbox.app is logged, never a stop condition: this script only ever writes
+# to $INSTALLED_APP above, and the relaunch helper's `exec open "$2"` (SelfUpdater's
+# relaunchArguments, pinned by testRelaunchArgumentsPassThePathAsAnArgumentNotAsShellText)
+# resolves by the ABSOLUTE PATH it is given, never by bundle ID — verified empirically with a
+# throwaway two-copy probe (open <path> launched exactly that copy, not the other one sharing
+# its bundle identifier). A real install at /Applications is therefore untargeted by
+# construction and is left exactly as found.
+if [ -e "/Applications/Toolbox.app" ]; then
+    echo "==> NOTE: /Applications/Toolbox.app exists (a real install) — not targeted by this script, left untouched."
 fi
 command -v python3 >/dev/null || fail "python3 is required to serve the fixture feed"
 
