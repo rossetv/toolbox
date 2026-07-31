@@ -320,6 +320,17 @@ final class PopoverLogicTests: XCTestCase {
                       "Already optimised — nothing to change")
     }
 
+    /// An excluded row ("Choose which files…" unticked it) is a different condition from a
+    /// genuinely futile row — it must read "Not included", never borrow the futile caption.
+    func testMechanismLineExcludedRowReadsNotIncludedRegardlessOfState() {
+        XCTAssertEqual(ChangeQualitySheet.mechanismLine(state: .none, preset: .balanced,
+                                                        measuredRate: nil, pageCount: nil, isExcluded: true),
+                      "Not included")
+        XCTAssertEqual(ChangeQualitySheet.mechanismLine(state: .armed(.balanced), preset: .balanced,
+                                                        measuredRate: nil, pageCount: nil, isExcluded: true),
+                      "Not included")
+    }
+
     // MARK: ChangeQualitySheet size pinning / CTA gating (render 08 nothing-to-change rows)
 
     func testRowIsUnchangedForNoneAndFutileOnly() {

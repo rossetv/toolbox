@@ -92,10 +92,13 @@ struct ChangeQualitySheet: View {
 
     // MARK: header
 
+    /// Priced off `eligibleJobs`, not the exclusion-filtered subset: "Choose which files…" must
+    /// list every row you may untick, excluded ones included.
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
+        let includedCount = eligibleJobs.filter { !model.armedExclusions.contains($0.id) }.count
+        return HStack(alignment: .firstTextBaseline) {
             SheetTitleRow(title: "Different quality for these \(QueueByteFormat.count(eligibleJobs.count, "file"))",
-                         caption: "Applies to all \(QueueByteFormat.count(eligibleJobs.count, "file"))")
+                         caption: "Applies to all \(QueueByteFormat.count(includedCount, "file"))")
             LinkButton(title: "Choose which files…") { showingFileChoice = true }
         }
     }
@@ -141,7 +144,8 @@ struct ChangeQualitySheet: View {
                             meta: Self.mechanismLine(
                                 state: state, preset: rowPreset,
                                 measuredRate: model.measuredPageRate(for: job.id),
-                                pageCount: model.inspections[job.id]?.pageCount)) {
+                                pageCount: model.inspections[job.id]?.pageCount,
+                                isExcluded: model.armedExclusions.contains(job.id))) {
                         QueueRowSizeColumn(
                             current: QueueByteFormat.string(currentBytes),
                             target: QueueByteFormat.string(target),
@@ -246,9 +250,12 @@ struct ChangeQualitySheet: View {
 
     /// The row's own mechanism line (spec §6.7's honest-progress rule): armed rows show the
     /// duration only when `measuredRate`/`pageCount` are both known — a row with no measured run
-    /// shows the mechanism without fabricating a number.
+    /// shows the mechanism without fabricating a number. `isExcluded` covers the one `.none` cause
+    /// `rowList` can actually reach ("Choose which files…" unticked this row) — distinct from a
+    /// genuinely futile row, which the design's "Already optimised" caption does not describe.
     static func mechanismLine(state: QueueViewModel.RowRecompressState, preset: CompressPreset,
-                              measuredRate: Double?, pageCount: Int?) -> String {
+                              measuredRate: Double?, pageCount: Int?, isExcluded: Bool = false) -> String {
+        if isExcluded { return "Not included" }
         switch state {
         case .armed:
             let mechanism = "Redone from the original at \(preset.imageDPI) DPI"
