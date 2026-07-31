@@ -217,9 +217,23 @@ import XCTest
 //                                               re-entrancy guard is NOT the add guard and is
 //                                               deliberately untouched (plan F4)
 //
-//   `switchesInFlight` — no reversal: the switch guard's semantics are unchanged by the spec.
-//                                               Every consumer is in this file and in
-//                                               `QueuePassTests`, all adapt.
+//   `switchesInFlight` — no reversal: the switch guard's semantics are unchanged by the spec, and
+//                                               its only consumer outside this file is
+//                                               `QueuePassTests`, written by F5a/F5b/F5e AFTER
+//                                               the reversals landed — it cannot be asserting the
+//                                               old behaviour. All adapt.
+//
+//   Checked and INERT — the two files `grep -rln isRunning Tests/` returns that no row above
+//   accounts for. Named so the sweep is re-runnable: a reader repeating that grep gets five
+//   files and must be able to tell a null result from an omission.
+//     `BatchProgressTests` ..................... created by F5c (bb45372), after every reversal,
+//                                               so it cannot assert pre-reversal behaviour; its
+//                                               `isRunning` hits are `waitUntil` conditions, not
+//                                               assertions
+//     `SeatbeltRunTests` ....................... homonym: every hit is `Foundation.Process`'s own
+//                                               `isRunning` on the gs child, not the view model's.
+//                                               Untouched since 624d398, and the seatbelt scope is
+//                                               a KEPT constraint (spec §5), not a reversed one
 //
 //   Recompress R19 (OCR gains no recompress behaviour) — reversed by F5e. No test asserted R19
 //                                               anywhere: the mechanism grep returns only two
