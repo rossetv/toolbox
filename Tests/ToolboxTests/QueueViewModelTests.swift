@@ -1100,6 +1100,45 @@ final class QueueViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.isRunning }
     }
 
+    /// R6's futile record is keyed by `(row, effective preset, verb set)`, and the PRESET term is
+    /// the row's own — the half the redesign moved and the half nothing covered. F4's
+    /// `QueueAdmissionTests.testFutilityKeyIncludesVerbSet` varies the verb set;
+    /// `testNoGainRowArmsElsewhereAndIsFutileAtItsOwnPreset` above varies the BATCH preset. Neither
+    /// drives the row back onto a futile preset by override, which is the case that discriminates:
+    /// a lookup still reading the batch preset would find no record at Smallest Size and offer to
+    /// re-run a job it has already been told cannot shrink — R6's whole point.
+    func testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
+                                          shippedBytes: nil, runnerUpBytes: nil) }
+        model.preset = .balanced
+        let id = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .futile(.balanced), "the record is made at the preset the row ran at")
+
+        // The batch moves away, so the row re-opens at the new preset — the positive control.
+        model.preset = .smallestSize
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize))
+
+        // …and an override pointing the ROW back at Balanced must find the record again, while the
+        // batch still sits at Smallest Size.
+        model.setOverride(RowOverride(preset: .balanced), for: id)
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .futile(.balanced),
+                       "futility follows the preset the row would actually run at")
+        XCTAssertEqual(model.armedCount, 0, "and a futile row is not in the armed set")
+
+        // Dropping the override hands the row back to the batch, proving the effective preset — not
+        // some sticky per-row copy of it — is what the lookup reads.
+        model.setOverride(nil, for: id)
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize))
+    }
+
     // MARK: recompress prediction (R16)
 
     /// A row whose engine path repeats scales the raw estimate by what the engine actually did —
