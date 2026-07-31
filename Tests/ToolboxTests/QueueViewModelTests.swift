@@ -32,6 +32,17 @@ import XCTest
 //   flipped-by(F<n>)  the asserted BEHAVIOUR itself was reversed by that task
 //   new(F<n>)         sibling added by that task
 //
+// TALLIES, reconciled against the rows below (`git log` for 647fd8c carries an earlier count
+// that did not add to 62 — these are the numbers, and the derivation is in the rows):
+//   of the 62 at base: 3 superseded · 5 body-adapted · 54 carried unchanged  (3 + 5 + 54 = 62)
+//   flipped: 3 — ONE inside this file (`testAddIsIgnoredWhileABatchIsRunning`, which is also one
+//     of the three superseded) and TWO cross-suite (`ToolQueueTests.testAddWhileRunningIsRefused`,
+//     `CompressEngineMRCTests.testHybridLargerThanGsShipsGsOutput`)
+//   new siblings: 3 already landed (F1b ×2, F4 ×1) + 4 filled by P-D
+//   the 5 body-adapted: testThreeFileSyntheticBatchCompressesEndToEnd ·
+//     testCompressIsRefusedWhileASwitchIsInFlight · testMixedRunCountsBothSets ·
+//     testArmedRowsAloneEnableTheButton · testAPlainResultWithAPreviousVersionOffersTheCapsule
+//
 // Task keys: F1 ecb3968 · F1b 8f803b7 · F2 cc3c3cb · F4 a256405 + d46511a + 1e1aa74 ·
 // F5a 08fc827 · F5e f45dc19 · F6 a630def · P-D (this task).
 //
@@ -1973,6 +1984,45 @@ final class QueueViewModelTests: XCTestCase {
         let summary = try XCTUnwrap(model.armedSummary)
         XCTAssertEqual(summary.armedCount, 1, "the row IS armed — the number is what is missing")
         XCTAssertNil(summary.extraSaving)
+    }
+
+    /// The banner's arithmetic is per ROW, not per batch (spec §6.1). All three branches above
+    /// price their row at the batch preset because none of them overrides anything, so a summary
+    /// still summing at `preset` passes every one — while promising a saving for a run the row
+    /// will never make. The pill and the banner must describe the same run.
+    func testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset() async throws {
+        // The 50 MB original keeps BOTH legs confident: at Maximum quality the row changes engine
+        // path and takes the raw estimate, which the "must beat the original" guard would refuse
+        // against `HeavyEnv`'s default 9 kB — and a nil prediction contributes nothing, so the
+        // test would compare two identical sums.
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour, timeBudget: 5)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.runToDone().id
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .smallestSize
+        var job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .armed(.smallestSize))
+        let atSmallest = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        XCTAssertEqual(model.armedSummary?.extraSaving, HeavyEnv.heavyBytes - atSmallest,
+                       "with no override the row prices at the batch preset")
+
+        // The row alone moves to Maximum quality. A preset override re-prices nothing (every preset
+        // is predicted in one analysis pass), so the numbers below come from the same estimates.
+        model.setOverride(RowOverride(preset: .maximumQuality), for: id)
+        job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .armed(.maximumQuality),
+                       "the row arms at its own preset")
+        let atMaximum = try XCTUnwrap(model.recompressPrediction(for: job, at: .maximumQuality))
+        XCTAssertNotEqual(atMaximum, atSmallest, "precondition: the two presets price apart")
+
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.armedCount, 1)
+        XCTAssertEqual(summary.extraSaving, HeavyEnv.heavyBytes - atMaximum,
+                       "the banner sums what the row will actually run, not what the batch selects")
+        XCTAssertNotEqual(summary.extraSaving, HeavyEnv.heavyBytes - atSmallest,
+                          "quoting the batch preset's figure here is the defect this pins")
     }
 
     // MARK: the previous version, end to end (R7/R15)
