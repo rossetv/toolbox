@@ -711,6 +711,17 @@ final class QueuePassTests: XCTestCase {
         XCTAssertEqual(result.finalBytes, TestSupport.fileSize(delivered),
                        "the sizes it DOES carry are the real ones")
         XCTAssertEqual(result.originalBytes, TestSupport.fileSize(env.input))
+
+        // The OCR-only leg's searchability flags must land on a real store row, not be
+        // discarded: `describeDone` reads exactly this row to render the delivery honestly
+        // instead of lying "Already optimised" with a blank size (major review finding).
+        let theJob = try job(model, id)
+        let row = try XCTUnwrap(model.versions(for: theJob),
+                                "an OCR-only row must still record a VersionStore entry")
+        XCTAssertNil(row.shipped, "no compress artefact, so no version pair to offer")
+        XCTAssertEqual(row.searchableByCard[.shipped], true)
+        let descriptor = QueueRowsView.describe(job: theJob, model: model, state: .finished)
+        XCTAssertEqual(descriptor.meta, "Already optimised · made searchable")
     }
 
     // MARK: selecting the Original reference row (design screen 07)

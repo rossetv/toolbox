@@ -517,11 +517,26 @@ final class QueueViewModel: ObservableObject {
                 // R6: a first-run no-gain at P0 records (job, P0) as futile exactly as a
                 // recompress no-gain does.
                 futileAttempts.insert(futileKey(job.id, at: preset))
-            case .skipped, nil:
-                // A rescued row (spec §6.5) and an OCR-only row deliver a file that carries no
-                // compression, so there is no version PAIR to offer and no saving to claim: the
-                // row keeps its delivered file through `job.resultURL` and shows "no change".
+            case .skipped:
+                // A rescued row (spec §6.5) delivers a file that carries no compression and is
+                // never recorded in the VersionStore (F6's note: `describeDegraded` reads
+                // `outcome.finalBytes` directly for exactly this reason) — there is no version
+                // PAIR to offer and no saving to claim, and no card exists for this leg's
+                // searchability flags to land on.
                 continue
+            case nil:
+                // An OCR-only row (Compress chip off) still ships a real, possibly-searchable
+                // file and needs a store entry exactly like `.noGain` above: with no compress
+                // artefact there is no version pair and no saving to claim, but `describeDone`
+                // reads `displayedSizes`/`searchableByCard` off the store to render the OCR-only
+                // delivery honestly (spec §6.5's grey sizes, "Already optimised · made
+                // searchable") — without an entry it can only lie ("Already optimised", blank
+                // size) about a file this pass just made searchable.
+                versionStore.record(RowVersions(originalBytes: outcome.originalBytes,
+                                                lastAttemptPreset: preset,
+                                                shipped: nil, runnerUp: nil, previous: nil),
+                                    for: job.id)
+                recordRowProvenance(job, searchable: searchable)
             }
         }
     }
