@@ -639,7 +639,7 @@ final class SelfUpdaterTests: XCTestCase {
         let store = try makeStore()
         let updater = SelfUpdater(isBusy: { false })
         let banner = UpdateBannerView(release: release(dmgURL: nil, version: "9.9.9"),
-                                      updater: updater, store: store)
+                                      updater: updater, isRunning: false, store: store)
 
         XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.9", in: store))
 
@@ -654,17 +654,40 @@ final class SelfUpdaterTests: XCTestCase {
         let store = try makeStore()
         let updater = SelfUpdater(isBusy: { false })
         UpdateBannerView(release: release(dmgURL: nil, version: "9.9.9"),
-                         updater: updater, store: store).dismiss()
+                         updater: updater, isRunning: false, store: store).dismiss()
 
         XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.10", in: store),
                        "dismissal is per version — a newer release raises the banner again")
 
         UpdateBannerView(release: release(dmgURL: nil, version: "9.9.10"),
-                         updater: updater, store: store).dismiss()
+                         updater: updater, isRunning: false, store: store).dismiss()
 
         XCTAssertTrue(UpdateBannerView.isDismissed(version: "9.9.10", in: store))
         XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.9", in: store),
                        "one key, newest dismissal wins")
+    }
+
+    // MARK: - Banner button state
+
+    /// Spec §6.10: the button is disabled for the WHOLE run, not merely refused on the click —
+    /// `testUpdateRefusedWhileBusy` above covers the click, this covers what the user sees
+    /// before pressing anything. The phase stays `.idle` throughout: the gate under test is the
+    /// queue's published `isRunning`, nothing the updater itself has done.
+    @MainActor
+    func testUpdateButtonDisabledWhileRunning() throws {
+        let store = try makeStore()
+        let updater = SelfUpdater(isBusy: { true })
+        let banner = { (isRunning: Bool) in
+            UpdateBannerView(release: self.release(dmgURL: nil, version: "9.9.9"),
+                             updater: updater, isRunning: isRunning, store: store)
+        }
+
+        XCTAssertFalse(banner(true).isButtonEnabled, "a swap mid-batch would pull gs out from under it")
+        XCTAssertEqual(banner(true).status?.text,
+                       "Toolbox will update after the current batch finishes.",
+                       "the disabled button says why it is disabled")
+        XCTAssertTrue(banner(false).isButtonEnabled, "an idle queue leaves the button live")
+        XCTAssertNil(banner(false).status, "and says nothing about batches")
     }
 }
 

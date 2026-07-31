@@ -11,6 +11,11 @@ import SwiftUI
 struct ToolboxApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    /// The About sheet's presentation state, owned here because it has two entry points — this
+    /// app menu's command and the queue header's `⋯` menu. One state, so the two can never
+    /// present the sheet twice over each other.
+    @State private var showAbout = false
+
     init() {
         // Headless self-test hook (TOOLBOX_SMOKE=compress) — runs the real compress path
         // from the app process and exits, before any window appears.
@@ -65,11 +70,19 @@ struct ToolboxApp: App {
         // path the first window has already reserved but not yet written. One window is the same
         // "one allocator, one cache" invariant the instance guard above enforces between copies.
         Window("Toolbox", id: "main") {
-            RootView()
-                .frame(minWidth: 820, minHeight: 560)
+            RootView(showAbout: $showAbout)
+                .frame(minWidth: 900, minHeight: 640)
         }
-        .defaultSize(width: 900, height: 600)
+        .defaultSize(width: 900, height: 640)
         .windowResizability(.contentMinSize)
+        .commands {
+            // Replaces the standard About item rather than adding beside it: AppKit's own
+            // "About Toolbox" opens a separate, unstyled panel, so leaving it in place would
+            // give the app two different About surfaces.
+            CommandGroup(replacing: .appInfo) {
+                Button("About Toolbox") { showAbout = true }
+            }
+        }
     }
 }
 

@@ -8,93 +8,57 @@
 import AppKit
 import SwiftUI
 
-/// The shell: a sidebar of tools beside the selected tool's detail view, with an
-/// update banner across the top whenever a newer release exists.
+/// The window's single pane (handoff: "the window is one thing"): the update banner, when a
+/// newer release exists, above the unified queue.
+///
+/// This is where the app's long-lived objects are owned — the queue view model, the update
+/// checker and the self-updater — and where `QueueView`'s frozen nine-slot seam is plugged:
+/// the queue composes none of its own popovers or sheets, so every one of them is constructed
+/// here against the single `model` instance. `showAbout` is owned higher still, by `ToolboxApp`,
+/// because the app menu's About command toggles the same presentation state as the `⋯` menu's.
 struct RootView: View {
-    @State private var selectedTool: Tool? = .compress
-    @State private var sidebarCollapsed = false
+    @Binding private var showAbout: Bool
+    @StateObject private var model: QueueViewModel
+    @StateObject private var updater: SelfUpdater
     @StateObject private var updateChecker = UpdateChecker()
-    // The tools' state lives HERE, above the switch that rebuilds the detail pane, so
-    // switching tools never destroys a queue, a finished batch, or a running job's cancel
-    // handle (review M9, reproduced live: switch to OCR and back emptied the Compress list).
-    @StateObject private var compressModel = QueueViewModel()
-    @StateObject private var ocrModel = OCRViewModel()
+
+    /// The view model and the updater are built here rather than in property initialisers
+    /// because the updater closes over the model: a property's initial-value expression cannot
+    /// reference a sibling property, so the model is built as a local first and both wrappers
+    /// are assigned from it.
+    init(showAbout: Binding<Bool>) {
+        _showAbout = showAbout
+        let m = QueueViewModel()
+        _model   = StateObject(wrappedValue: m)
+        _updater = StateObject(wrappedValue: SelfUpdater(isBusy: { m.isRunning }))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             if let release = updateChecker.available {
-                UpdateBanner(release: release)
+                // `isRunning` is passed as a value, not read through the updater's `isBusy`
+                // closure: a closure call registers no SwiftUI dependency, so the button would
+                // keep looking live until something unrelated redrew the banner.
+                UpdateBannerView(release: release, updater: updater, isRunning: model.isRunning)
             }
-            // An explicit split rather than NavigationSplitView: that container laid the sidebar
-            // out a titlebar's height too high and, on a slightly-too-small window, collapsed it
-            // to zero width — the app shipped looking as though it had no sidebar.
-            HStack(spacing: 0) {
-                SidebarView(selection: $selectedTool, isCollapsed: $sidebarCollapsed)
-                    .frame(width: sidebarCollapsed ? 56 : 220)
-                Divider()
-                detail(for: selectedTool ?? .compress)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            QueueView(
+                model: model, history: model.history,
+                quality: { AnyView(QualityPopover(model: model)) },
+                ocrOptions: { AnyView(OCRPopover(model: model)) },
+                perFile: { AnyView(PerFileSettingsPopover(model: model, jobID: $0)) },
+                versions: { AnyView(VersionsPopoverContent(model: model, jobID: $0)) },
+                changeQuality: { AnyView(ChangeQualitySheet(model: model)) },
+                scanConsent: { AnyView(ScanConsentSheet(model: model, jobID: $0)) },
+                recentBatches: { AnyView(RecentBatchesSheet(history: model.history)) },
+                about: { AnyView(AboutView()) },
+                showAbout: $showAbout
+            )
         }
-        // A constant, not a narrower hint while collapsed: the binding constraint is the
-        // `NSWindow.minSize` set below, which is applied once and never revisited, so a 660
-        // content hint could never actually let the window shrink to it.
-        .frame(minWidth: 820, minHeight: 560)
-        .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 820, height: 560)) }
+        // The content hint alone cannot hold the window open at this size — `.frame` constrains
+        // the CONTENT, so a window restored smaller simply clips. `applyMinimumSize` below is
+        // the binding constraint: it is the only code that assigns `NSWindow.minSize`.
+        .frame(minWidth: 900, minHeight: 640)
+        .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 900, height: 640)) }
         .task { await updateChecker.check() }
-    }
-
-    @ViewBuilder
-    private func detail(for tool: Tool) -> some View {
-        switch tool {
-        case .compress:
-            CompressView(model: compressModel)
-        case .ocr:
-            OCRView(model: ocrModel)
-        }
-    }
-}
-
-/// Full-width accent strip — deliberately unmissable (the owner's requirement: users must
-/// not overlook updates). Notify-only: the button opens the release page; the app never
-/// downloads or replaces its own binary (see `UpdateChecker`).
-///
-/// The solid accent background is a recorded DESIGN.md §7 exception (accent is otherwise
-/// reserved for interactive elements): unmissability is the point, and the whole strip is
-/// in service of one interaction. It appears at most once per release cycle.
-private struct UpdateBanner: View {
-    let release: UpdateChecker.Release
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.medium) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 16, weight: .semibold))
-            Text("Toolbox \(release.version) is available.")
-                .themeFont(.captionBold)
-            Spacer(minLength: Theme.Spacing.small)
-            Button {
-                NSWorkspace.shared.open(release.pageURL)
-            } label: {
-                Text("Update")
-                    .themeFont(.captionBold)
-                    .foregroundStyle(Theme.Colors.accent)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(.white))
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            // Not `.focusEffectDisabled()`: the banner lives in the main window, whose
-            // `WindowSetup` key-window clear already removes the auto-assigned ring that
-            // justified it — and hiding the ring outright blinds keyboard users (DESIGN.md §6).
-            .clearsClickFocus()
-            .pointingHandCursor()
-            .help("Open the release page")
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, Theme.Spacing.medium)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(Theme.Colors.accent)
     }
 }

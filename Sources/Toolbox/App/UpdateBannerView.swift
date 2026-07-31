@@ -20,12 +20,21 @@ import SwiftUI
 struct UpdateBannerView: View {
     private static let dismissKey = "bannerDismissed"
 
+    /// Copy pinned by spec §6.10's "after the current batch finishes" — two readers, one string.
+    private static let blockedLine = "Toolbox will update after the current batch finishes."
+
     let release: UpdateChecker.Release
+    /// Whether a batch is in flight, as a VALUE. `SelfUpdater` holds the same fact as an
+    /// `isBusy` closure, but calling a closure registers no SwiftUI dependency — the button
+    /// would stay live-looking until something unrelated redrew the banner.
+    let isRunning: Bool
     @ObservedObject private var updater: SelfUpdater
     @AppStorage(UpdateBannerView.dismissKey) private var dismissedVersion: String = ""
 
-    init(release: UpdateChecker.Release, updater: SelfUpdater, store: UserDefaults = .standard) {
+    init(release: UpdateChecker.Release, updater: SelfUpdater, isRunning: Bool,
+         store: UserDefaults = .standard) {
         self.release = release
+        self.isRunning = isRunning
         _updater = ObservedObject(wrappedValue: updater)
         _dismissedVersion = AppStorage(wrappedValue: "", Self.dismissKey, store: store)
     }
@@ -96,10 +105,16 @@ struct UpdateBannerView: View {
         }
     }
 
-    private var isButtonEnabled: Bool {
-        switch updater.phase {
+    /// Internal, not private, so the disabled-while-running state can be asserted directly
+    /// (spec §11) — as `isDismissed(version:in:)` is, for the same reason.
+    var isButtonEnabled: Bool {
         // A swap mid-batch would pull the bundled gs out from under the running jobs, so the
-        // button stays disabled until the batch finishes (the caption says so).
+        // button is dead for the whole run, not merely refused on the click (the caption says
+        // so). `.blockedByRun` below stays live all the same: it is what a click that raced the
+        // run starting lands on, and `update(release:)`'s own `isBusy` check remains the
+        // authority — this only stops the user reaching it.
+        guard !isRunning else { return false }
+        switch updater.phase {
         case .blockedByRun, .downloading, .verifying, .installing, .relaunching: return false
         case .idle, .failed, .degradedToReleasePage: return true
         }
@@ -107,15 +122,20 @@ struct UpdateBannerView: View {
 
     /// The line beside the headline: why the button is disabled, why it degraded, or what went
     /// wrong. Nil while the update is simply running — the button's own label carries that.
-    private var status: (text: String, isError: Bool)? {
+    /// Internal for the same reason as `isButtonEnabled`. Only the idle case consults
+    /// `isRunning`: a batch started mid-download must not replace "Downloading…"'s silence with
+    /// a promise to start later, and a failure line outranks it.
+    var status: (text: String, isError: Bool)? {
         switch updater.phase {
+        case .idle:
+            return isRunning ? (Self.blockedLine, false) : nil
         case .blockedByRun:
-            return ("Toolbox will update after the current batch finishes.", false)
+            return (Self.blockedLine, false)
         case .degradedToReleasePage(let reason):
             return (reason, false)
         case .failed(let message, _):
             return (message, true)
-        case .idle, .downloading, .verifying, .installing, .relaunching:
+        case .downloading, .verifying, .installing, .relaunching:
             return nil
         }
     }
@@ -137,6 +157,7 @@ struct UpdateBannerView: View {
             pageURL: URL(string: "https://github.com/rossetv/toolbox/releases/tag/v1.4")!,
             dmgURL: nil),
         updater: SelfUpdater(isBusy: { false }),
+        isRunning: false,
         store: UserDefaults(suiteName: "toolbox.preview.banner") ?? .standard)
     .frame(width: 900)
     .background(Theme.Colors.surface)
