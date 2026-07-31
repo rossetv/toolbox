@@ -272,10 +272,17 @@ final class SelfUpdaterTests: XCTestCase {
 
     @MainActor
     private func makeUpdater(bundle: URL, isBusy: @escaping () -> Bool = { false },
+                             allowedApplicationsRoots: [URL]? = nil,
                              relaunches: RelaunchLog) -> SelfUpdater {
+        // The fixtures install into a scratch temp dir, never the real /Applications or
+        // ~/Applications — so tests exercising the accepted-destination path must declare the
+        // bundle's own parent as an allowed root explicitly, exactly as production would for a
+        // real Applications install. Tests exercising the rejected path (e.g. Downloads) pass
+        // their own (empty) override so the fixture parent is never accidentally allow-listed.
         SelfUpdater(isBusy: isBusy,
                     sessionConfiguration: fixtureSessionConfiguration(),
                     bundleURL: bundle,
+                    allowedApplicationsRoots: allowedApplicationsRoots ?? [bundle.deletingLastPathComponent()],
                     relaunch: { relaunches.record($0) })
     }
 
@@ -523,7 +530,7 @@ final class SelfUpdaterTests: XCTestCase {
     func testInstallOutsideApplicationsDegradesToTheReleasePage() async throws {
         let bundle = try makeInstalledApp(in: "Downloads")
         let server = try startDMGServer()
-        let updater = makeUpdater(bundle: bundle, relaunches: RelaunchLog())
+        let updater = makeUpdater(bundle: bundle, allowedApplicationsRoots: [], relaunches: RelaunchLog())
 
         await updater.update(release: release(dmgURL: server.url("/Toolbox.dmg")))
 
@@ -602,7 +609,8 @@ final class SelfUpdaterTests: XCTestCase {
 
     func testInstallDestinationAcceptsAWritableApplicationsParent() throws {
         let bundle = try makeInstalledApp()
-        XCTAssertEqual(SelfUpdater.installDestination(for: bundle), bundle.deletingLastPathComponent())
+        let parent = bundle.deletingLastPathComponent()
+        XCTAssertEqual(SelfUpdater.installDestination(for: bundle, allowedRoots: [parent]), parent)
     }
 
     func testInstallDestinationRejectsAnythingElse() throws {
@@ -614,7 +622,22 @@ final class SelfUpdaterTests: XCTestCase {
         let bundle = try makeInstalledApp()
         let parent = bundle.deletingLastPathComponent()
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: parent.path)
-        XCTAssertNil(SelfUpdater.installDestination(for: bundle))
+        XCTAssertNil(SelfUpdater.installDestination(for: bundle, allowedRoots: [parent]))
+    }
+
+    func testInstallDestinationRejectsAnywhereNamedApplicationsThatIsNotTheRealOne() throws {
+        // Spec §6.10 pins the two literal destinations; any OTHER writable dir merely named
+        // "Applications" (e.g. inside an unzipped download tree) must degrade, not swap.
+        let bundle = try makeInstalledApp()
+        XCTAssertNil(SelfUpdater.installDestination(for: bundle),
+                     "a writable dir named Applications that isn't /Applications or ~/Applications must be rejected")
+    }
+
+    func testDefaultApplicationsRootsIncludesSlashApplicationsAndHomeApplications() {
+        let roots = SelfUpdater.defaultApplicationsRoots().map { $0.standardizedFileURL.path }
+        XCTAssertTrue(roots.contains("/Applications"))
+        XCTAssertTrue(roots.contains(where: { $0.hasSuffix("/Applications") && $0 != "/Applications" }),
+                      "expected the user-domain ~/Applications entry among \(roots)")
     }
 
     // MARK: - Quarantine strip
@@ -625,6 +648,7 @@ final class SelfUpdaterTests: XCTestCase {
 
         XCTAssertThrowsError(try SelfUpdater.install(
             dmg: Self.goodDMG, expectedVersion: Self.newVersion, bundleURL: bundle,
+            allowedApplicationsRoots: [bundle.deletingLastPathComponent()],
             clearQuarantine: { _ in throw StripFailed() })) { error in
             guard case SelfUpdater.InstallFailure.failed(let message, let asidePath) = error else {
                 return XCTFail("expected an install failure, got \(error)")

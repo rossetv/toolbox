@@ -71,20 +71,26 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     private let isBusy: () -> Bool
     private let sessionConfiguration: URLSessionConfiguration
     private let bundleURL: URL
+    private let allowedApplicationsRoots: [URL]
     private let relaunch: @Sendable (URL) -> Void
     private var isUpdating = false
 
     /// - Parameters:
     ///   - isBusy: whether a batch is in flight. Wired to the queue's `isRunning`.
+    ///   - allowedApplicationsRoots: destinations `installDestination` accepts as the swap
+    ///     target (spec §6.10: `/Applications` or `~/Applications`). Overridable only for tests
+    ///     — production always uses `SelfUpdater.defaultApplicationsRoots()`.
     ///   - relaunch: launches the installed bundle and quits this instance. Injectable because
     ///     the real one terminates the process — a test host cannot survive it.
     init(isBusy: @escaping () -> Bool,
          sessionConfiguration: URLSessionConfiguration = .ephemeral,
          bundleURL: URL = Bundle.main.bundleURL,
+         allowedApplicationsRoots: [URL] = SelfUpdater.defaultApplicationsRoots(),
          relaunch: @escaping @Sendable (URL) -> Void = { SelfUpdater.relaunchAndTerminate($0) }) {
         self.isBusy = isBusy
         self.sessionConfiguration = sessionConfiguration
         self.bundleURL = bundleURL
+        self.allowedApplicationsRoots = allowedApplicationsRoots
         self.relaunch = relaunch
         super.init()
     }
@@ -151,9 +157,11 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         phase = .installing
         let expectedVersion = release.version
         let bundle = bundleURL
+        let roots = allowedApplicationsRoots
         do {
             let installed = try await Task.detached(priority: .userInitiated) {
-                try Self.install(dmg: dmg, expectedVersion: expectedVersion, bundleURL: bundle)
+                try Self.install(dmg: dmg, expectedVersion: expectedVersion, bundleURL: bundle,
+                                  allowedApplicationsRoots: roots)
             }.value
             phase = .relaunching
             relaunch(installed)
@@ -253,6 +261,7 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         dmg: URL,
         expectedVersion: String,
         bundleURL: URL,
+        allowedApplicationsRoots: [URL] = SelfUpdater.defaultApplicationsRoots(),
         clearQuarantine: @Sendable (URL) throws -> Void = { try SelfUpdater.clearQuarantineIfNeeded($0) },
         rename: @Sendable (URL, URL) throws -> Void = { try SelfUpdater.moveItem($0, $1) }
     ) throws -> URL {
@@ -269,7 +278,7 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
                 message: "The download wasn't the version Toolbox expected, so it was left alone.",
                 asidePath: nil)
         }
-        guard let destination = installDestination(for: bundleURL) else {
+        guard let destination = installDestination(for: bundleURL, allowedRoots: allowedApplicationsRoots) else {
             throw InstallFailure.degrade(
                 reason: "Toolbox isn't running from an Applications folder it can write to, so it can't replace itself here.")
         }
@@ -335,14 +344,26 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         try? FileManager.default.removeItem(at: aside)
     }
 
-    /// The directory to install into: the running bundle's parent, when that is a writable
-    /// Applications folder. Anything else — translocated, mounted from the DMG, in Downloads,
-    /// a dev build directory — returns nil, and the update degrades to the release page.
-    nonisolated static func installDestination(for bundleURL: URL) -> URL? {
-        let parent = bundleURL.deletingLastPathComponent()
-        guard parent.lastPathComponent == "Applications",
+    /// The directory to install into: the running bundle's parent, when that parent is exactly
+    /// `/Applications` or `~/Applications` (spec §6.10) and writable. Anything else —
+    /// translocated, mounted from the DMG, Downloads, a dev build directory, or any OTHER
+    /// directory that merely happens to be named "Applications" — returns nil, and the update
+    /// degrades to the release page. `allowedRoots` is overridable for tests only; production
+    /// always uses `defaultApplicationsRoots()`.
+    nonisolated static func installDestination(
+        for bundleURL: URL,
+        allowedRoots: [URL] = SelfUpdater.defaultApplicationsRoots()
+    ) -> URL? {
+        let parent = bundleURL.deletingLastPathComponent().standardizedFileURL
+        guard allowedRoots.contains(where: { $0.standardizedFileURL == parent }),
               FileManager.default.isWritableFile(atPath: parent.path) else { return nil }
         return parent
+    }
+
+    /// The real destinations spec §6.10 pins: `/Applications` and the user's `~/Applications`.
+    nonisolated static func defaultApplicationsRoots() -> [URL] {
+        [URL(fileURLWithPath: "/Applications")]
+            + FileManager.default.urls(for: .applicationDirectory, in: .userDomainMask)
     }
 
     /// `spctl` first, exactly as `install.sh`: strip quarantine only when Gatekeeper rejects the
