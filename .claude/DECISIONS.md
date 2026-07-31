@@ -730,3 +730,12 @@ four the natural, no-longer-deferred behaviour rather than new speculative scope
 **Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift`,
 `Sources/Toolbox/Queue/PerFileSettingsPopover.swift`, `Sources/Toolbox/Queue/HistoryStore.swift`,
 `Sources/Toolbox/DesignSystem/QueueComponents.swift`
+
+## 2026-07-31 — UI-redesign parallax mechanism: rotation3DEffect replaced by composed CATransform3D
+
+**Decision:** Commit d51f132 replaced the spec-named `rotation3DEffect` parallax mechanism with a hand-built `CATransform3D` composition (the `PointerTilt` GeometryEffect with `m34 = -1/700`), applied via `.modifier(PointerTilt(dx:dy:))`.
+
+**Why:** `rotation3DEffect`'s `perspective` argument has no documented unit, so no value provably matches the handoff's `perspective:700px` CSS container. Chaining two `rotation3DEffect`s applies two separate projections, which read as shear in the live app. The composed `CATransform3D` with `m34 = -1/700` (the same number the CSS states) applies one unified perspective, providing the near/far foreshortening that makes the tilt read as depth — on the 76px icon, the two vertical edges differ by ~1.8px at full 13° yaw, matching the handoff exactly.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 Empty)
+**Affects:** Sources/Toolbox/Queue/EmptyStateView.swift (PointerTilt)

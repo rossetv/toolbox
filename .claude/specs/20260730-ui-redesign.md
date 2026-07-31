@@ -117,7 +117,7 @@ Flow (mirrors `install.sh`'s integrity steps, with in-app-safe replacements wher
 
 Visual truth for each screen = handoff README §Screens + `Toolbox Final.dc.html` + `renders/`. This section specifies only behaviour bindings and the deliberate divergences.
 
-- **Empty**: icon parallax via `onContinuousHover` + `rotation3DEffect` (Reduce Motion: static). Choose Files… → existing `FilePicker`. History strip from `HistoryStore` (§6.9), hidden when empty. "Open folder" reveals the batch folder in Finder.
+- **Empty**: icon parallax via `onContinuousHover` + composed `CATransform3D` with `m34 = -1/700` (PointerTilt GeometryEffect, matching the handoff's perspective:700px container; Reduce Motion: static). Choose Files… → existing `FilePicker`. History strip from `HistoryStore` (§6.9), hidden when empty. "Open folder" reveals the batch folder in Finder.
 - **Drag-over**: fan count mirrors the drag's item count (1/2/3/3+N badge). All screens accept drops, including during a run (§6.5).
 - **Ready**: rows from add-time inspection (§6.6); hover gear opens Per-file settings; `+ Add`/`⊗ Clear` links; save-destination control is the existing `outputFolder`/`FilePicker.chooseFolder()` logic re-skinned ("Saving beside the originals ⌄" / folder name when overridden). Footer sums current sizes → estimates; Start disabled with zero verbs or zero healthy rows.
 - **Quality popover**: three presets with live batch totals from the estimator (§6.7); RECOMMENDED badge on Balanced; queue dims 40% behind.
@@ -193,6 +193,7 @@ Queue rows (add-time analysis, effective settings, live progress, result, proble
 
 ## Gate rounds
 
+- **Amendment (2026-07-31, record-keeping)**: §7 Empty parallax mechanism amended from `rotation3DEffect` to composed `CATransform3D` (m34 = -1/700) to match implementation (commit d51f132); rationale recorded in DECISIONS.md.
 - **Amendment certify 4 (full read, Fable 5): SHIP** — no critical/major; three completeness minors, all fixed (R9's ToolQueueTests instance named with its surviving sibling; consent-suppression path covered; rebuild-override safety domain covered at engine level). Amendment loop CLOSED — spec is law at this revision. Lesson-candidates: grep-hints should name mechanism symbols, not only rule tags; new engine inputs need must-not tests; preferences that suppress surfaces need the suppressed path tested.
 - **Amendment certify 3 (full read, Fable 5): NO-SHIP** — 1 major (the R7-asymmetry reversal had zero test coverage and actively contradicting existing MRC-suite tests outside §11's enumeration scope — silent-reinstatement path; superseding engine + VM tests named, enumeration widened to every suite a reversal touches) + 6 minors (verb floors, removal/Clear release, OCR width-2 + ETA gate, retention trim, update chrome states, compress-only absence assertion — all added to §11). Lesson-candidates: a reversal's §11 blast radius includes every suite asserting the old behaviour; negative/gating rules need absence-naming coverage.
 - **Amendment incremental 4 (Fable 5): SHIP** — certify-2's major + three minors confirmed fixed with engine receipts; one new minor applied (per-row `ocr`-override suffix switch named as its own test leg). Lesson-candidate: exemplar-based trigger enumeration silently drops sibling sub-cases — name every sub-case a §6 pin enumerates.
