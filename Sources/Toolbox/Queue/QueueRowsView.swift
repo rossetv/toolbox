@@ -278,6 +278,14 @@ struct QueueRowsView: View {
         // accent "Its own settings" — the popover's own "Match the batch" is what clears it.
         let metaAccent: (text: String, colour: Color)? = model.overrides[job.id] != nil
             ? (text: "Its own settings", colour: Theme.Colors.accent) : nil
+        guard model.effectiveVerbs(for: job.id).compress else {
+            // No compress leg, so no size-change projection to promise: OCR alone never shrinks a
+            // file, and advertising a drop the row will not deliver is dishonest.
+            let sizeText = QueueByteFormat.size(of: job.url).map(QueueByteFormat.string) ?? "—"
+            return RowDescriptor(meta: meta, metaAccent: metaAccent,
+                                  trailing: .sizeColumn(current: sizeText, target: sizeText, sameSize: true),
+                                  canOpen: true, canConfigure: true, canRemove: true)
+        }
         guard let estimate = job.estimate, let inputBytes = QueueByteFormat.size(of: job.url) else {
             return RowDescriptor(meta: meta, metaAccent: metaAccent,
                                   trailing: .sizeColumn(current: "—", target: "—"),
