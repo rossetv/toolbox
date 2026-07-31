@@ -44,11 +44,13 @@ on-device Apple Vision, page by page, then hands the recognised text to
   `ocrEngine.append(_:to:output:)`) re-embeds that same result onto whichever variant
   needs it — the row's compressed delivery, and again onto a switched-to version later
   (`useVersion`/`rerunForSwitch`) — rather than re-running Vision for each.
-- **Batch concurrency is not pinned to 2 any more**: Compress and OCR now share one
-  queue and one run (`QueueViewModel.compress` → `queue.run`), so a job's single pass
-  runs both legs and the whole batch defaults to `SystemInfo.performanceCoreCount` in
-  `ToolQueue.run`, same as Compress — the OCR-only 2-wide cap this doc used to
-  describe (`OCRViewModel.run`) no longer exists; that view model is gone.
+- **Batch concurrency is P-core-wide; the OCR cap moved, it did not die**: Compress and
+  OCR share one queue and one run (`QueueViewModel.compress` → `queue.run`), the batch
+  defaulting to `SystemInfo.performanceCoreCount` in `ToolQueue.run` — but the OCR LEG
+  is still bounded to two in flight, now inside the view model
+  (`QueueViewModel.ocrConcurrency` = 2, `acquireOCRSlot`/`releaseOCRSlot`, taken in
+  `runOCRLeg` and the recompress path) for the same raster/recognised-runs memory
+  reason the old `OCRViewModel.run` pin carried.
 - Output names are reserved serially, one row at a time, as each file is added to the
   queue (`QueueViewModel.add(_:)` → `reserve(for:)`), same pattern and same reason as
   Compress — see [Compress](compress.md) and [Shared](shared.md) `FileNaming`.
