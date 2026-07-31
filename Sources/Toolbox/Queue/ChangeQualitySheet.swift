@@ -41,13 +41,25 @@ struct ChangeQualitySheet: View {
 
     // MARK: rows
 
-    /// Every finished row that could be recompressed at all — a row with no recorded versions
-    /// (a rescue, an OCR-only delivery) has nothing for this sheet to price or re-run.
+    /// Every finished row that could be recompressed at all — a row whose compress leg never ran
+    /// or was skipped (a rescue, an OCR-only delivery) has nothing for this sheet to price or
+    /// re-run (spec §6.5). Mirrors `recompressState`'s own arming rule: `.compressed`/`.noGain`
+    /// both stay eligible even though a `.noGain` row also has no `shipped` version on record.
     private var eligibleJobs: [ToolJob] {
         model.jobs.filter { job in
-            guard case .done = job.state else { return false }
-            return model.versions(for: job) != nil
+            guard case .done(let outcome) = job.state else { return false }
+            return Self.isEligible(compress: outcome.compress, hasVersionsRecorded: model.versions(for: job) != nil)
         }
+    }
+
+    /// The pure eligibility predicate `eligibleJobs` filters on (MARK: pure logic below) —
+    /// extracted so it can be asserted without driving a live view/model.
+    static func isEligible(compress: CompressOutcome?, hasVersionsRecorded: Bool) -> Bool {
+        switch compress {
+        case nil, .skipped: return false
+        case .compressed, .noGain: break
+        }
+        return hasVersionsRecorded
     }
 
     private func summary(for job: ToolJob) -> RowSummary? {

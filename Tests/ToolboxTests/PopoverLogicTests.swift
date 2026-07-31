@@ -196,6 +196,36 @@ final class PopoverLogicTests: XCTestCase {
 
     // MARK: ChangeQualitySheet
 
+    /// An OCR-only row (compress verb off, so `outcome.compress == nil`) has nothing this sheet
+    /// can price or re-run, regardless of whether a `VersionStore` entry exists for it (spec
+    /// §6.5) — matches `recompressState`'s own `case nil, .skipped: return .none` arming rule.
+    func testChangeQualityEligibilityExcludesOCROnlyRow() {
+        XCTAssertFalse(ChangeQualitySheet.isEligible(compress: nil, hasVersionsRecorded: true),
+                       "an OCR-only row must not be eligible even though it has a VersionStore entry")
+        XCTAssertFalse(ChangeQualitySheet.isEligible(compress: nil, hasVersionsRecorded: false))
+    }
+
+    /// A rescued row (compress `.skipped`) is likewise ineligible.
+    func testChangeQualityEligibilityExcludesSkippedRow() {
+        XCTAssertFalse(ChangeQualitySheet.isEligible(compress: .skipped(problem: .compressFailed),
+                                                      hasVersionsRecorded: false))
+    }
+
+    /// A `.compressed` or `.noGain` row stays eligible as long as a `VersionStore` entry exists —
+    /// `.noGain` has no `shipped` version either, but it can still be re-run at a new preset.
+    func testChangeQualityEligibilityIncludesCompressedAndNoGainRows() {
+        XCTAssertTrue(ChangeQualitySheet.isEligible(compress: .compressed(before: 100, after: 50),
+                                                     hasVersionsRecorded: true))
+        XCTAssertTrue(ChangeQualitySheet.isEligible(compress: .noGain(bytes: 100), hasVersionsRecorded: true))
+    }
+
+    /// A rescue with no `VersionStore` entry at all (nothing to price/re-run from) stays
+    /// ineligible even if it somehow reported a compress outcome.
+    func testChangeQualityEligibilityRequiresVersionsRecorded() {
+        XCTAssertFalse(ChangeQualitySheet.isEligible(compress: .compressed(before: 100, after: 50),
+                                                      hasVersionsRecorded: false))
+    }
+
     private func rowSummary(currentBytes: Int, ownPreset: CompressPreset,
                             predictions: [CompressPreset: Int] = [:],
                             isExcluded: Bool = false) -> ChangeQualitySheet.RowSummary {
