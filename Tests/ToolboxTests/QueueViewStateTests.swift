@@ -377,6 +377,27 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(descriptor.emphasis, .degraded, "noGain+tooFaint must be marked degraded")
     }
 
+    /// OCR-only row (Compress chip OFF, so compress=nil) with OCR outcome .tooFaint must render
+    /// the honest sibling copy "Too faint to read — not searchable" (spec §6.5), never the lie
+    /// "compressed, but not searchable" that applies only when compression actually ran.
+    func testOCROnlyWithTooFaintRendersNotCompressedCopy() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/test.pdf"))
+        let outcome = RowOutcome(
+            originalBytes: 1000,
+            finalBytes: 1000,
+            compress: nil,  // Compress verb was OFF
+            ocr: .tooFaint,
+            shippedVariant: nil,
+            runnerUp: nil
+        )
+        job.state = .done(outcome)
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .finished)
+        XCTAssertEqual(descriptor.meta, "Too faint to read — not searchable",
+                       "OCR-only tooFaint must not falsely claim compression (spec §6.5)")
+        XCTAssertEqual(descriptor.emphasis, .degraded, "OCR-only tooFaint must be marked degraded")
+    }
+
     // MARK: describeDone reads the STORE, never a stale first-run outcome (binding carry #1)
 
     /// A change-quality re-run never touches `job.state` (`QueueViewModel.commit()`) — only the

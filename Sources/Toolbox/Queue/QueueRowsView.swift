@@ -430,7 +430,13 @@ struct QueueRowsView: View {
         } else if outcome.ocr == .cancelled {
             meta = "Compressed · not searchable — cancelled before reading"
         } else if outcome.ocr == .tooFaint {
-            meta = "Too faint to read — compressed, but not searchable"
+            // Distinguish: compress-carrying rows say "compressed", OCR-only rows (compress nil)
+            // are honest about having never been compressed (spec §6.5).
+            if outcome.compress != nil {
+                meta = "Too faint to read — compressed, but not searchable"
+            } else {
+                meta = "Too faint to read — not searchable"
+            }
         } else if case .failed(let reason) = outcome.ocr {
             // No handoff/spec string for a read that fails AFTER a successful compress delivery
             // (recorded divergence, P-A): names the compress fact plus the OCR failure reason.
