@@ -278,8 +278,8 @@ struct QueueHeaderView: View {
 
     private var ellipsisMenu: some View {
         Menu {
-            Button("Recent Batches…", action: onRecentBatches)
-            Button("Where Files Are Saved…", action: onChooseFolder)
+            Button("Recent batches…", action: onRecentBatches)
+            Button("Where files are saved…", action: onChooseFolder)
             Button("About Toolbox", action: onAbout)
         } label: {
             Image(systemName: "ellipsis")
