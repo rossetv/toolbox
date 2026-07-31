@@ -1353,8 +1353,8 @@ struct RadioRow: View {
 ///
 /// The handoff never draws this box — screen 08 only shows the "Choose which files…" link that
 /// opens the list — so its motion is beyond-handoff polish under the 2026-08-01 mandate
-/// (DESIGN.md §11): the box springs as it fills and the tick is replaced through SF Symbols'
-/// own transition rather than cutting between two glyphs.
+/// (DESIGN.md §11): the tick is replaced through SF Symbols' own transition rather than cutting
+/// between two glyphs, and the box springs up to full size as it fills.
 struct CheckRow: View {
     let title: String
     @Binding var isChecked: Bool
