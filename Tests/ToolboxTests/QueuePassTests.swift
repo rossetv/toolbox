@@ -914,8 +914,8 @@ final class QueuePassTests: XCTestCase {
         // reader before this fix, and it is gone) — the row's own meta line is the surface.
         let message = try XCTUnwrap(model.recompressErrors[id])
         let descriptor = QueueRowsView.describe(job: try job(model, id), model: model, state: .finished)
-        XCTAssertEqual(descriptor.metaAccent, message, "the row must show the failure, not swallow it")
-        XCTAssertEqual(descriptor.metaAccentColor, Theme.Colors.danger)
+        XCTAssertEqual(descriptor.metaAccent?.text, message, "the row must show the failure, not swallow it")
+        XCTAssertEqual(descriptor.metaAccent?.colour, Theme.Colors.danger)
     }
 
     // MARK: the scan-rebuild consent queue (spec §7 Scan choice)

@@ -727,7 +727,7 @@ final class QueueViewStateTests: XCTestCase {
         let job = try XCTUnwrap(model.jobs.first)
         model.setOverride(RowOverride(rebuildScan: true), for: job.id)
         let descriptor = QueueRowsView.describe(job: job, model: model, state: .ready)
-        XCTAssertEqual(descriptor.metaAccent, "Its own settings")
+        XCTAssertEqual(descriptor.metaAccent?.text, "Its own settings")
     }
 
     /// A row matching the batch (no override) never gets the accent.

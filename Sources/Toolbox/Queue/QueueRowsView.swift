@@ -80,7 +80,6 @@ struct QueueRowsView: View {
             name: job.url.lastPathComponent,
             meta: descriptor.meta,
             metaAccent: descriptor.metaAccent,
-            metaAccentColor: descriptor.metaAccentColor,
             fileURL: job.url,
             emphasis: descriptor.emphasis,
             onOpen: descriptor.canOpen ? { NSWorkspace.shared.open(Self.urlToOpen(for: job, model: model)) } : nil,
@@ -203,10 +202,9 @@ struct QueueRowsView: View {
         }
 
         let meta: String
-        var metaAccent: String? = nil
-        /// `Theme.Colors.danger` for a `recompressErrors` note (R12); `Theme.Colors.accent`
-        /// (the `QueueRow` default) for every other `metaAccent` use — e.g. "Its own settings".
-        var metaAccentColor: Color = Theme.Colors.accent
+        /// `.danger` for a `recompressErrors` note (R12); `.accent` (the `QueueRow` default) for
+        /// every other use — e.g. "Its own settings". Nil when the row has no accent text at all.
+        var metaAccent: (text: String, colour: Color)? = nil
         var emphasis: QueueRow<AnyView>.Emphasis = .none
         var trailing: Trailing
         var canOpen = false
@@ -215,8 +213,9 @@ struct QueueRowsView: View {
         var capsuleTitle: String? = nil
 
         static func == (lhs: RowDescriptor, rhs: RowDescriptor) -> Bool {
-            lhs.meta == rhs.meta && lhs.metaAccent == rhs.metaAccent
-                && lhs.metaAccentColor == rhs.metaAccentColor
+            lhs.meta == rhs.meta
+                && lhs.metaAccent?.text == rhs.metaAccent?.text
+                && lhs.metaAccent?.colour == rhs.metaAccent?.colour
                 && emphasisEqual(lhs.emphasis, rhs.emphasis)
                 && lhs.trailing == rhs.trailing && lhs.canOpen == rhs.canOpen
                 && lhs.canConfigure == rhs.canConfigure && lhs.canRemove == rhs.canRemove
@@ -277,7 +276,8 @@ struct QueueRowsView: View {
         }
         // Per-file override (spec §7, DESIGN.md §9 04c): an overridden row's meta gets the
         // accent "Its own settings" — the popover's own "Match the batch" is what clears it.
-        let metaAccent = model.overrides[job.id] != nil ? "Its own settings" : nil
+        let metaAccent: (text: String, colour: Color)? = model.overrides[job.id] != nil
+            ? (text: "Its own settings", colour: Theme.Colors.accent) : nil
         guard let estimate = job.estimate, let inputBytes = QueueByteFormat.size(of: job.url) else {
             return RowDescriptor(meta: meta, metaAccent: metaAccent,
                                   trailing: .sizeColumn(current: "—", target: "—"),
@@ -353,8 +353,7 @@ struct QueueRowsView: View {
     private static func describeDone(job: ToolJob, model: QueueViewModel, state: QueueScreenState) -> RowDescriptor {
         var descriptor = describeDoneCore(job: job, model: model, state: state)
         if let message = model.recompressErrors[job.id] {
-            descriptor.metaAccent = message
-            descriptor.metaAccentColor = Theme.Colors.danger
+            descriptor.metaAccent = (text: message, colour: Theme.Colors.danger)
         }
         return descriptor
     }

@@ -491,11 +491,9 @@ struct QueueRow<Trailing: View>: View {
 
     let name: String
     let meta: String
-    var metaAccent: String? = nil
-    /// `Theme.Colors.accent` by default (the "Its own settings" register); a caller reporting a
-    /// failed action (R12) passes `.danger` instead — `metaAccent` itself stays a plain string so
-    /// every existing call site is untouched.
-    var metaAccentColor: Color = Theme.Colors.accent
+    /// `.accent` by default (the "Its own settings" register); a caller reporting a failed
+    /// action (R12) passes `.danger` instead. Nil when the row has no accent text at all.
+    var metaAccent: (text: String, colour: Color)? = nil
     var fileURL: URL? = nil
     var emphasis: Emphasis = .none
 
@@ -592,7 +590,7 @@ struct QueueRow<Trailing: View>: View {
                 HStack(spacing: 4) {
                     Text(meta).themeFont(.meta).foregroundStyle(metaTextColor)
                     if let metaAccent {
-                        Text(metaAccent).themeFont(.meta).foregroundStyle(metaAccentColor).lineLimit(1)
+                        Text(metaAccent.text).themeFont(.meta).foregroundStyle(metaAccent.colour).lineLimit(1)
                     }
                 }
             }
@@ -645,7 +643,7 @@ struct QueueRow<Trailing: View>: View {
 
     private var accessibilityLabel: String {
         var label = "\(name), \(meta)"
-        if let metaAccent { label += ", \(metaAccent)" }
+        if let metaAccent { label += ", \(metaAccent.text)" }
         switch emphasis {
         case .problemDanger, .problemWarn: label += ", needs attention"
         case .degraded: label += ", needs attention"
