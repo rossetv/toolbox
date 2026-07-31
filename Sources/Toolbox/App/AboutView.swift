@@ -81,45 +81,12 @@ struct AboutView: View {
             .padding(.top, Theme.Spacing.small)
         }
         .overlay(alignment: .topTrailing) {
-            CloseButton { dismiss() }
+            // `.about` style: this sheet gets no `WindowSetup` stray-focus clearing (memory:
+            // stray-focus-ring invariant), so its own `.focusEffectDisabled()` — the third of this
+            // file's three, with the two link groups above — is load-bearing, not decorative.
+            PopoverCloseButton(action: { dismiss() }, style: .about)
                 .padding(20)
         }
-    }
-}
-
-/// The modal close affordance: a quiet circular ✕ that brightens on hover — the About sheet's
-/// content is app-layer composition, not a DESIGN.md-pinned component (§4.3). Esc closes too
-/// (`cancelAction`). Its own
-/// `.focusEffectDisabled()` is the THIRD of this file's three (with the two link groups above)
-/// — this sheet gets no `WindowSetup` stray-focus clearing (memory: stray-focus-ring invariant),
-/// so every focusable control here independently refuses the ring AppKit auto-assigns on open.
-private struct CloseButton: View {
-    let action: () -> Void
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(isHovering ? Theme.Colors.text : Theme.Colors.textSecondary)
-                .frame(width: 24, height: 24)
-                .background(
-                    Circle().fill(Theme.Colors.text.opacity(isHovering ? 0.32 : 0.08))
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(MotionButtonStyle())
-        .focusEffectDisabled()
-        .pointingHandCursor()
-        .keyboardShortcut(.cancelAction)
-        .help("Close")
-        .continuousHover($isHovering)
-        // Was a bare 0.12s literal that ran regardless of Reduce Motion — the one animation in
-        // the app that never asked.
-        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
-        .accessibilityLabel("Close")
     }
 }
 

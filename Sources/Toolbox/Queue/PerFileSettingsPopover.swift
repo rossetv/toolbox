@@ -174,33 +174,57 @@ struct PopoverFileHeader: View {
     }
 }
 
-/// The small circular × close affordance shared by the popovers/sheets that need one (04c, 07).
-/// Duplicated rather than imported from `AboutView` — `AboutView.CloseButton` is file-private and
-/// belongs to a different track's file; this mirrors `QueueComponents.RowOpenModifier`'s own
-/// documented reasoning for not introducing cross-file plumbing this task doesn't need.
+/// The small circular × close affordance shared by every popover/sheet that needs one (04c, 07,
+/// and the About sheet). Two real call sites differ on three things — size, fill, and which focus
+/// treatment applies — so those are parameters rather than a second near-identical type: `.popover`
+/// (the default) is the WindowSetup-covered main-window case and gets `.clearsClickFocus()`;
+/// `.about` is the one carve-out DESIGN.md §6 already blesses for a window outside that net
+/// (memory: stray-focus-ring invariant) and gets `.focusEffectDisabled()` instead.
 struct PopoverCloseButton: View {
+    enum Style: Equatable {
+        /// 20pt/9pt glyph, `Theme.Colors.fill`/`track` — the popover chrome's own hover tokens.
+        case popover
+        /// 24pt/10pt glyph, `Theme.Colors.text` at low/high opacity — the About sheet's own look.
+        case about
+    }
+
     let action: () -> Void
+    var style: Style = .popover
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
+    private var diameter: CGFloat { style == .about ? 24 : 20 }
+    private var glyphSize: CGFloat { style == .about ? 10 : 9 }
+
+    private var fill: Color {
+        switch style {
+        case .about: return Theme.Colors.text.opacity(isHovering ? 0.32 : 0.08)
+        case .popover: return isHovering ? Theme.Colors.track : Theme.Colors.fill
+        }
+    }
+
     var body: some View {
-        Button(action: action) {
+        let button = Button(action: action) {
             Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: glyphSize, weight: .bold))
                 .foregroundStyle(isHovering ? Theme.Colors.text : Theme.Colors.textSecondary)
-                .frame(width: 20, height: 20)
-                .background(Circle().fill(isHovering ? Theme.Colors.track : Theme.Colors.fill))
+                .frame(width: diameter, height: diameter)
+                .background(Circle().fill(fill))
                 .contentShape(Circle())
         }
         .buttonStyle(MotionButtonStyle())
-        .clearsClickFocus()
         .pointingHandCursor()
         .keyboardShortcut(.cancelAction)
         .help("Close")
         .continuousHover($isHovering)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .accessibilityLabel("Close")
+
+        switch style {
+        case .about: button.focusEffectDisabled()
+        case .popover: button.clearsClickFocus()
+        }
     }
 }
 
