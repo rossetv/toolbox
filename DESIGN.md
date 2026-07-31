@@ -295,6 +295,19 @@ Standard curve: the handoff's `cubic-bezier(.2,.8,.25,1)`, reproduced as
 | `sheet` | 0.38s | Sheet fade + rise + scale entrance |
 | `banner` | 0.45s (0.15s delay) | Update banner slide-down |
 | `checkPop` | 0.45s | Success/warn check "pop" (scale 0.4→1.16→1); row checks delay 0.25s after the header check |
+| `hoverOpacity` | 0.9 | Filled-button hover fade (handoff `opacity:.9`) |
+| `hoverLift` | −1pt | Filled-CTA hover rise (handoff `transform:translateY(-1px)`) |
+| `pressScale` | 0.97 | Pressed scale for every button (handoff `transform:translateY(0) scale(.97)` — the lift returns to rest as the scale lands) |
+| `linkHoverOpacity` | 0.6 | Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel" spans) |
+
+The handoff writes `scale(.97)` on four of its six primary buttons and `scale(.98)` on the
+other two ("Start", "Switch to High quality"); `pressScale` is a single token at 0.97 — a
+second token for a 0.01 delta nobody can see is scatter, not fidelity.
+
+Hover backgrounds the handoff pins per surface, all on the `hover` (0.15s) curve: secondary
+buttons and rows/cards/radio rows hover to `bg`; the `⋯` button and an off verb chip hover to
+`fill`; the versions capsule hovers to `track`; the row gear hovers to `bg` with its glyph to
+`text`; the save-destination control hovers `text3`→`text2`.
 
 Motion not backed by a named `Theme.Motion` constant, still part of the law and driven by
 local component state: the progress bar's leading-cap pulse and its 1.6s light sweep; the
@@ -303,6 +316,10 @@ queued dashed ring's breathing (~2s–2.2s); the drag-over fan's entrance + floa
 (70ms stagger in, 2.6–3.2s float); the empty-state icon's pointer parallax (~90ms follow,
 ±11°/±13° rotation, ±7px translate, 1.05 scale, glow moving in counter-phase, settling
 back over 0.5s on exit).
+
+Press states are carried by one shared `MotionButtonStyle` (`Components.swift`) rather than
+per-component gesture handling, so every button in the app presses identically; a component's
+chrome therefore lives *inside* its `Button` label, where the style's scale can reach it.
 
 **Reduce Motion**: every interactive `QueueComponents` view gates its transform/loop
 animations on `accessibilityReduceMotion`, substituting a plain or no transition — never
@@ -595,6 +612,19 @@ A divergence is recorded here or it does not exist (`CODE_GUIDELINES.md` §8.4).
   startable without first resolving the unrelated failure; Add More stays the one filled
   `PrimaryButton`, Start joins as a `SecondaryButton` so screen 10 keeps its single accent
   CTA. With nothing runnable the footer renders exactly as the handoff depicts.
+
+- **Motion polish beyond the handoff's own hover/active CSS** — human instruction,
+  2026-08-01: "Make sure all the animations are very polished… feel free to polish it even
+  further where we could add animations that would fit the design." The handoff defines a
+  hover style for most controls but an *active* (pressed) style for only its six primary
+  buttons, and none at all for secondary buttons, links, chips, rows, cards, radio rows,
+  tick boxes or the versions capsule. Every button in the app therefore gets the §8
+  `pressScale` press state, and the controls the handoff leaves entirely static (the tick
+  box's draw, a radio row's selection dot, the row gear's fade-in, screen-state and row
+  insertion/removal transitions) gain motion in the same token vocabulary. Where the handoff
+  *does* state a value it is reproduced verbatim — this divergence adds motion, it never
+  re-values motion the handoff pins. Authority: the human instruction above, recorded in
+  `.claude/DECISIONS.md` (2026-08-01).
 
 **Reported, not resolved** (found while writing this document; for whoever owns the
 named surface next):

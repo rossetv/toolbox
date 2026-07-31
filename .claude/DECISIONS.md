@@ -768,3 +768,31 @@ keeps its single accent CTA.
 
 **Spec:** .claude/specs/20260730-ui-redesign.md (§7 "the batch keeps going")
 **Affects:** Sources/Toolbox/Queue/QueueFooterView.swift (`showsStart`), DESIGN.md (§11)
+
+## 2026-08-01 — Motion polish across the redesign is human-authorised, including beyond-handoff additions
+
+**Decision:** Every interactive control in the redesigned UI gains a polished hover state AND a
+pressed state, and the state changes between screens/rows gain transitions — including on
+controls for which the handoff defines no motion at all. Values the handoff states are
+reproduced verbatim (hover 0.15s, press 0.12s, `opacity:.9`, `translateY(-1px)`,
+`scale(.97)`, links `opacity:.6`); everything added beyond them is expressed in the same
+`Theme.Motion` token vocabulary rather than as per-component literals. Press is carried by one
+shared `MotionButtonStyle` reading `configuration.isPressed`, which requires each component's
+chrome to sit inside its `Button` label so the press scale covers the whole control, not just
+its text. Reduce Motion suppresses every transform and loop.
+
+**Why:** Human instruction (2026-08-01, verbatim): "Make sure all the animations are very
+polished. There should be a polished animation on:hover and on click of buttons, tick boxes
+should have pretty animations, pretty animations for transitions... Implement the UI as
+designed by Claude Design, but feel free to polish it even further where we could add
+animations that would fit the design... E.g. Choose Files... button should have an on:hover
+and on:click animation. Ensure transitions are smooth and pretty, and that everything is very
+well polished." The handoff's own CSS carries an active state for only its six primary buttons
+and no motion at all for tick boxes, radio selection, row insertion or screen changes, so
+satisfying the instruction necessarily goes past the handoff — which is why it is recorded
+here and in DESIGN.md §11 rather than applied silently.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§8 Motion)
+**Affects:** DESIGN.md (§8, §11), Sources/Toolbox/DesignSystem/Theme.swift (`Theme.Motion`),
+Sources/Toolbox/DesignSystem/Components.swift (`MotionButtonStyle`),
+Sources/Toolbox/DesignSystem/QueueComponents.swift, Sources/Toolbox/Queue/*
