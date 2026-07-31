@@ -145,6 +145,41 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.lifetimeSavedBytes, expectedLifetime)
     }
 
+    /// The retention cap must also apply to a decoded envelope, not just to `record(_:)`: a
+    /// hand-edited or corrupted `history.json` holding more than `retentionLimit` batches must not
+    /// be adopted wholesale.
+    func testDecodingClampsAnOverCapEnvelopeToTheRetentionLimit() throws {
+        let root = try tempRoot()
+        let fileURL = root.appendingPathComponent("history.json")
+        let overCap = (0..<(HistoryStore.retentionLimit + 5)).map { batch(savedBytes: $0) }
+        var envelope: [String: Any] = ["version": 1, "lifetimeSavedBytes": 0]
+        envelope["batches"] = try overCap.map { batch -> [String: Any] in
+            let data = try JSONEncoder().encode(batch)
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        try JSONSerialization.data(withJSONObject: envelope).write(to: fileURL)
+
+        let store = HistoryStore(directory: root)
+        XCTAssertEqual(store.batches.count, HistoryStore.retentionLimit)
+    }
+
+    /// `folderURL` crosses a trust boundary (the on-disk envelope) on its way to
+    /// `NSWorkspace.open`/`activateFileViewerSelecting` — a non-file URL must fail to decode
+    /// rather than being handed to those APIs, which dispatch any scheme's registered handler.
+    func testDecodingRejectsANonFileFolderURL() throws {
+        let root = try tempRoot()
+        let fileURL = root.appendingPathComponent("history.json")
+        let entry = batch()
+        let data = try JSONEncoder().encode(entry)
+        var dict = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        dict["folderURL"] = "https://example.com/evil"
+        let envelope: [String: Any] = ["version": 1, "batches": [dict], "lifetimeSavedBytes": 0]
+        try JSONSerialization.data(withJSONObject: envelope).write(to: fileURL)
+
+        let store = HistoryStore(directory: root)
+        XCTAssertTrue(store.batches.isEmpty, "a non-file folderURL must fail the whole envelope, not be adopted")
+    }
+
     // MARK: day grouping
 
     func testGroupedByDaySeparatesCalendarDaysNewestFirst() throws {

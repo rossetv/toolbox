@@ -86,12 +86,27 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
              savedBytes, searchableCount, successCount, failureNote, partial, problem, cancelled
     }
 
+    /// A cap on the display strings decoded from disk: `history.json` is a trust boundary (it can
+    /// be hand-edited or corrupted) and neither `folderName` nor `failureNote` has any other bound
+    /// before reaching user-visible copy.
+    static let maxDisplayStringLength = 200
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         date = try container.decode(Date.self, forKey: .date)
-        folderName = try container.decode(String.self, forKey: .folderName)
-        folderURL = try container.decode(URL.self, forKey: .folderURL)
+        folderName = String(try container.decode(String.self, forKey: .folderName)
+            .prefix(Self.maxDisplayStringLength))
+        let decodedFolderURL = try container.decode(URL.self, forKey: .folderURL)
+        // `folderURL` reaches `NSWorkspace.open`/`activateFileViewerSelecting` unchanged (screen
+        // 01/11's "Open folder"); a tampered on-disk envelope naming a non-file URL would dispatch
+        // to whatever handler that scheme has — the same "hostile API response" class
+        // `UpdateChecker.parseRelease` already pins its own remote-controlled URL against.
+        guard decodedFolderURL.isFileURL else {
+            throw DecodingError.dataCorruptedError(forKey: .folderURL, in: container,
+                                                    debugDescription: "folderURL must be a file URL")
+        }
+        folderURL = decodedFolderURL
         fileCount = try container.decode(Int.self, forKey: .fileCount)
         presetTitle = try container.decodeIfPresent(String.self, forKey: .presetTitle)
         compressOn = try container.decode(Bool.self, forKey: .compressOn)
@@ -100,6 +115,7 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
         searchableCount = try container.decode(Int.self, forKey: .searchableCount)
         successCount = try container.decodeIfPresent(Int.self, forKey: .successCount) ?? 0
         failureNote = try container.decodeIfPresent(String.self, forKey: .failureNote)
+            .map { String($0.prefix(Self.maxDisplayStringLength)) }
         partial = try container.decode(Bool.self, forKey: .partial)
         problem = try container.decode(Bool.self, forKey: .problem)
         cancelled = try container.decode(Bool.self, forKey: .cancelled)
@@ -155,7 +171,9 @@ final class HistoryStore: ObservableObject {
               envelope.version == Self.currentVersion else {
             return   // absent, corrupt or foreign — start empty, leave the file on disk untouched
         }
-        batches = envelope.batches
+        // The retention cap is otherwise enforced only on write (`record(_:)`); a decoded envelope
+        // is a trust boundary too (hand-edited or corrupted on disk), so it gets the same bound.
+        batches = Array(envelope.batches.prefix(Self.retentionLimit))
         lifetimeSavedBytes = envelope.lifetimeSavedBytes
     }
 
