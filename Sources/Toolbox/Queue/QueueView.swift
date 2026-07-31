@@ -222,6 +222,8 @@ struct QueueView: View {
                 break
             case .cleanPending:
                 hasCleanPending = true
+            case .cleanSkipped:
+                break   // parked by skip, same as a skipped problem row: not runnable, not attention-needing
             case .transient:
                 break   // unreachable once `isRunning` is false, kept for exhaustiveness
             }

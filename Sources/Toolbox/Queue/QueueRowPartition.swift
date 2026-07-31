@@ -30,6 +30,9 @@ enum QueueRowPartition: Equatable {
     case problemSkipped
     /// A queued/analysing row with no inspection problem — real, runnable work.
     case cleanPending
+    /// A queued/analysing row with no inspection problem that the user skipped anyway — parked,
+    /// not runnable (never joins a run, same as `.problemSkipped`) and not attention-needing.
+    case cleanSkipped
     /// `.running` — unreachable once the caller has already checked `isRunning`, kept here only
     /// for exhaustiveness at the row level.
     case transient
@@ -46,7 +49,7 @@ enum QueueRowPartition: Equatable {
             if inspections[job.id]?.problem != nil {
                 return skipped.contains(job.id) ? .problemSkipped : .problemUnresolved
             }
-            return .cleanPending
+            return skipped.contains(job.id) ? .cleanSkipped : .cleanPending
         case .running:
             return .transient
         }

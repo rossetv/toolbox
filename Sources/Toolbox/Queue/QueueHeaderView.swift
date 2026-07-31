@@ -227,7 +227,7 @@ struct QueueHeaderView: View {
         let needAttention = jobs.filter { job in
             switch QueueRowPartition.classify(job: job, inspections: inspections, skipped: skipped) {
             case .failedActionable, .problemUnresolved: return true
-            case .delivered, .failedSkipped, .problemSkipped, .cleanPending, .transient: return false
+            case .delivered, .failedSkipped, .problemSkipped, .cleanPending, .cleanSkipped, .transient: return false
             }
         }.count
         let savedPart = savedSoFarBytes > 0 ? "\(QueueByteFormat.string(savedSoFarBytes)) saved. " : ""
