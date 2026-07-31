@@ -335,12 +335,11 @@ final class QueueViewStateTests: XCTestCase {
         )
         job.state = .done(outcome)
         let descriptor = QueueRowsView.describe(job: job, model: model, state: .finished)
-        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+        guard case .sizeColumn(let current, let target, let kind, let sameSize) = descriptor.trailing else {
             return XCTFail("expected .sizeColumn trailing for a no-op finished row, got \(descriptor.trailing)")
         }
         XCTAssertEqual(current, target, "no-op row must show the SAME figure twice, not before/after")
         XCTAssertTrue(sameSize, "no-op row must use the arrowless same-size treatment")
-        XCTAssertNil(targetColor)
         XCTAssertEqual(kind, .unchanged)
     }
 
@@ -365,12 +364,11 @@ final class QueueViewStateTests: XCTestCase {
         let job = try XCTUnwrap(env.model.jobs.first)
 
         let descriptor = QueueRowsView.describe(job: job, model: env.model, state: .finished)
-        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+        guard case .sizeColumn(let current, let target, let kind, let sameSize) = descriptor.trailing else {
             return XCTFail("expected .sizeColumn trailing for an OCR-only finished row, got \(descriptor.trailing)")
         }
         XCTAssertEqual(current, target, "OCR-only row must show the SAME figure twice, no savings claim")
         XCTAssertTrue(sameSize, "OCR-only row must use the arrowless same-size treatment")
-        XCTAssertNil(targetColor)
         XCTAssertEqual(kind, .unchanged)
     }
 
@@ -405,13 +403,12 @@ final class QueueViewStateTests: XCTestCase {
         let env = try HeavyEnv()
         let job = try await env.runToDone()
         let descriptor = QueueRowsView.describe(job: job, model: env.model, state: .finished)
-        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+        guard case .sizeColumn(let current, let target, let kind, let sameSize) = descriptor.trailing else {
             return XCTFail("expected .sizeColumn trailing for a delivered row, got \(descriptor.trailing)")
         }
         XCTAssertNotEqual(current, target, "a delivered row must show a before/after pair, not the same figure twice")
         XCTAssertEqual(kind, .finished)
         XCTAssertFalse(sameSize)
-        XCTAssertNil(targetColor)
     }
 
     /// A queued row on the Ready screen (nothing has run yet — spec §7, screen 03) renders its
@@ -426,45 +423,40 @@ final class QueueViewStateTests: XCTestCase {
         }
         let job = try XCTUnwrap(env.model.jobs.first { $0.id == jobID })
         let descriptor = QueueRowsView.describe(job: job, model: env.model, state: .ready)
-        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+        guard case .sizeColumn(let current, let target, let kind, let sameSize) = descriptor.trailing else {
             return XCTFail("expected .sizeColumn trailing for a queued Ready row, got \(descriptor.trailing)")
         }
         XCTAssertFalse(current.isEmpty)
         XCTAssertFalse(target.isEmpty)
         XCTAssertNil(kind, "a queued Ready row shows no StatusIndicator glyph")
         XCTAssertFalse(sameSize)
-        XCTAssertNil(targetColor)
     }
 
     /// The hand-written `Trailing.==` must distinguish every associated value — a mutation in
-    /// any single one (current, target, targetColor, kind, sameSize) must fail equality, never
+    /// any single one (current, target, kind, sameSize) must fail equality, never
     /// pass by comparing only a subset.
     func testSizeColumnEqualityDistinguishesEveryAssociatedValue() {
         let base = QueueRowsView.RowDescriptor.Trailing.sizeColumn(
-            current: "1 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: false)
+            current: "1 MB", target: "500 KB", kind: .finished, sameSize: false)
 
         XCTAssertEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
-            current: "1 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: false),
+            current: "1 MB", target: "500 KB", kind: .finished, sameSize: false),
             "identical values must compare equal")
 
         XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
-            current: "2 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: false),
+            current: "2 MB", target: "500 KB", kind: .finished, sameSize: false),
             "current alone must break equality")
 
         XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
-            current: "1 MB", target: "600 KB", targetColor: nil, kind: .finished, sameSize: false),
+            current: "1 MB", target: "600 KB", kind: .finished, sameSize: false),
             "target alone must break equality")
 
         XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
-            current: "1 MB", target: "500 KB", targetColor: Theme.Colors.danger, kind: .finished, sameSize: false),
-            "targetColor alone must break equality")
-
-        XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
-            current: "1 MB", target: "500 KB", targetColor: nil, kind: .unchanged, sameSize: false),
+            current: "1 MB", target: "500 KB", kind: .unchanged, sameSize: false),
             "kind alone must break equality")
 
         XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
-            current: "1 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: true),
+            current: "1 MB", target: "500 KB", kind: .finished, sameSize: true),
             "sameSize alone must break equality")
 
         XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.status(text: "1 MB", kind: .finished),

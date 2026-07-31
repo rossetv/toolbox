@@ -120,10 +120,8 @@ struct QueueRowsView: View {
     /// (this method's callers, `QueueRow`'s own modifier chain) fighting over a single opaque type.
     private func trailing(for job: ToolJob, descriptor: RowDescriptor) -> AnyView {
         switch descriptor.trailing {
-        case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize):
-            let column = QueueRowSizeColumn(current: current, target: target,
-                                              targetColor: targetColor ?? Theme.Colors.textSecondary,
-                                              sameSize: sameSize)
+        case .sizeColumn(let current, let target, let kind, let sameSize):
+            let column = QueueRowSizeColumn(current: current, target: target, sameSize: sameSize)
             if let kind {
                 return AnyView(HStack(spacing: 9) {
                     column
@@ -173,7 +171,7 @@ struct QueueRowsView: View {
     /// exercises directly (a SwiftUI body cannot be unit-tested; this can).
     struct RowDescriptor: Equatable {
         enum Trailing: Equatable {
-            case sizeColumn(current: String, target: String, targetColor: Color?, kind: StatusIndicator.Kind? = nil, sameSize: Bool = false)
+            case sizeColumn(current: String, target: String, kind: StatusIndicator.Kind? = nil, sameSize: Bool = false)
             case status(text: String?, kind: StatusIndicator.Kind)
             case problem(primary: RowAction?, link: RowAction?)
             case problemPair(RowAction?, RowAction?)
@@ -181,8 +179,8 @@ struct QueueRowsView: View {
 
             static func == (lhs: Trailing, rhs: Trailing) -> Bool {
                 switch (lhs, rhs) {
-                case (.sizeColumn(let a, let b, let c, let d, let i), .sizeColumn(let e, let f, let g, let h, let j)):
-                    return a == e && b == f && c == g && d == h && i == j
+                case (.sizeColumn(let a, let b, let d, let i), .sizeColumn(let e, let f, let h, let j)):
+                    return a == e && b == f && d == h && i == j
                 case (.status(let a, let b), .status(let c, let d)):
                     return a == c && b == d
                 case (.problem(let a, let b), .problem(let c, let d)):
@@ -282,15 +280,14 @@ struct QueueRowsView: View {
         let metaAccent = model.overrides[job.id] != nil ? "Its own settings" : nil
         guard let estimate = job.estimate, let inputBytes = QueueByteFormat.size(of: job.url) else {
             return RowDescriptor(meta: meta, metaAccent: metaAccent,
-                                  trailing: .sizeColumn(current: "—", target: "—", targetColor: nil),
+                                  trailing: .sizeColumn(current: "—", target: "—"),
                                   canOpen: true, canConfigure: true, canRemove: true)
         }
         let marker = estimate.isFallback ? "~" : "\u{2248}"
         return RowDescriptor(
             meta: meta, metaAccent: metaAccent,
             trailing: .sizeColumn(current: QueueByteFormat.string(inputBytes),
-                                  target: "\(marker)\(QueueByteFormat.string(estimate.predictedBytes))",
-                                  targetColor: nil),
+                                  target: "\(marker)\(QueueByteFormat.string(estimate.predictedBytes))"),
             canOpen: true, canConfigure: true, canRemove: true
         )
     }
@@ -388,7 +385,7 @@ struct QueueRowsView: View {
             // (`QueueRowSizeColumn.sameSize`), not a single figure.
             let sizeText = row.map { QueueByteFormat.string($0.originalBytes) } ?? "—"
             return RowDescriptor(meta: meta, emphasis: .none,
-                                 trailing: .sizeColumn(current: sizeText, target: sizeText, targetColor: nil,
+                                 trailing: .sizeColumn(current: sizeText, target: sizeText,
                                                         kind: .unchanged, sameSize: true),
                                  canOpen: true, capsuleTitle: capsuleTitle(row))
         }
@@ -421,7 +418,6 @@ struct QueueRowsView: View {
             meta: meta, emphasis: .none,
             trailing: .sizeColumn(current: QueueByteFormat.string(sizes.before),
                                   target: QueueByteFormat.string(sizes.after),
-                                  targetColor: nil,
                                   kind: .finished),
             canOpen: true, capsuleTitle: capsuleTitle(row)
         )
