@@ -334,6 +334,9 @@ struct CapsuleProgressBar: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var sweepX: CGFloat = -0.3
+    @State private var capGlowOpacity: Double = 0.35
+
+    private static let capWidth: CGFloat = 30
 
     var body: some View {
         GeometryReader { geo in
@@ -347,6 +350,19 @@ struct CapsuleProgressBar: View {
                     ))
                     .frame(width: width)
                 if !reduceMotion {
+                    Capsule()
+                        .fill(LinearGradient(
+                            colors: [.clear, Color.white.opacity(0.85)],
+                            startPoint: .leading, endPoint: .trailing
+                        ))
+                        .opacity(capGlowOpacity)
+                        .frame(width: min(width, Self.capWidth))
+                        .offset(x: width - min(width, Self.capWidth))
+                        .onAppear {
+                            withAnimation(.easeInOut(duration: Theme.Motion.capGlow).repeatForever(autoreverses: true)) {
+                                capGlowOpacity = 0.95
+                            }
+                        }
                     Capsule()
                         .fill(Color.white.opacity(0.4))
                         .frame(width: geo.size.width * 0.26)

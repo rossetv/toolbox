@@ -202,6 +202,7 @@ final class ThemeTests: XCTestCase {
         XCTAssertEqual(Theme.Motion.sheet, 0.38, accuracy: 0.0001)
         XCTAssertEqual(Theme.Motion.banner, 0.45, accuracy: 0.0001)
         XCTAssertEqual(Theme.Motion.checkPop, 0.45, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.capGlow, 1.6, accuracy: 0.0001)
     }
 
     /// The handoff's per-control hover/active CSS (DESIGN.md §8): `opacity:.9` +

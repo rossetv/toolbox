@@ -302,6 +302,9 @@ enum Theme {
         /// Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel"
         /// spans).
         static let linkHoverOpacity: Double = 0.6
+        /// Progress bar leading-cap glow pulse (handoff `@keyframes capGlow`: opacity .35→.95,
+        /// 1.6s ease-in-out infinite, autoreversing). Decorative — gated on Reduce Motion.
+        static let capGlow: Double = 1.6
 
         // MARK: Reduce Motion gates
         //

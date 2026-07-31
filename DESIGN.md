@@ -299,6 +299,7 @@ Standard curve: the handoff's `cubic-bezier(.2,.8,.25,1)`, reproduced as
 | `hoverLift` | −1pt | Filled-CTA hover rise (handoff `transform:translateY(-1px)`) |
 | `pressScale` | 0.97 | Pressed scale for every button (handoff `transform:translateY(0) scale(.97)` — the lift returns to rest as the scale lands) |
 | `linkHoverOpacity` | 0.6 | Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel" spans) |
+| `capGlow` | 1.6s | Progress bar leading-cap glow pulse (handoff `@keyframes capGlow`, opacity .35→.95, ease-in-out, autoreversing) |
 
 The handoff writes `scale(.97)` on four of its six primary buttons and `scale(.98)` on the
 other two ("Start", "Switch to High quality"); `pressScale` is a single token at 0.97 — a
@@ -310,7 +311,7 @@ buttons and rows/cards/radio rows hover to `bg`; the `⋯` button and an off ver
 `text`; the save-destination control hovers `text3`→`text2`.
 
 Motion not backed by a named `Theme.Motion` constant, still part of the law and driven by
-local component state: the progress bar's leading-cap pulse and its 1.6s light sweep; the
+local component state: the progress bar's 1.9s light sweep; the
 Working row's shimmer (~2.4s); the active status ring's rotation (0.9s linear); the
 queued dashed ring's breathing (~2s–2.2s); the drag-over fan's entrance + float loop
 (70ms stagger in, 2.6–3.2s float); the empty-state icon's pointer parallax (~90ms follow,
