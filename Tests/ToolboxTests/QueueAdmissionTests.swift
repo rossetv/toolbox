@@ -76,6 +76,39 @@ final class QueueAdmissionTests: XCTestCase {
         XCTAssertEqual(env.stub.callCount, 2, "the latecomer must have joined the live batch")
     }
 
+    /// A file dropped mid-run must grow the batch's own denominator (`batchRowIDs`), not just its
+    /// `runIDs`/`runQueuedIDs` bookkeeping — otherwise the Working screen's fraction/ETA read the
+    /// batch as already complete before the latecomer has run, and the recorded history entry
+    /// under-counts the batch's `fileCount` (spec §6.5/§6.8).
+    func testAddDuringRunGrowsBatchProgressDenominatorAndHistoryFileCount() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let gate = Gate()
+        env.stub.gate = gate
+        _ = try await addOne(env)
+        model.compress()
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
+
+        _ = try await addOne(env, try Fixtures.textImagePDF())
+        XCTAssertEqual(model.jobs.count, 2, "a drop during a run must be admitted (spec §6.5)")
+
+        let fractionWithLatecomerStillQueued = try XCTUnwrap(model.batchProgress).fraction
+        XCTAssertLessThan(fractionWithLatecomerStillQueued, 1.0,
+                           "the latecomer must count in the denominator, not read as already done")
+
+        await gate.open()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+        for job in model.jobs {
+            guard case .done = job.state else {
+                return XCTFail("row \(job.url.lastPathComponent) never ran: \(job.state)")
+            }
+        }
+
+        let recorded = try XCTUnwrap(env.history.batches.first)
+        XCTAssertEqual(recorded.fileCount, 2,
+                        "the recorded history entry must include the mid-run latecomer")
+    }
+
     /// Once a run starts its destination and verb set LOCK for that run's jobs (spec §6.5), and a
     /// file added mid-run reserves against the lock — not against settings the user has moved since.
     func testAddDuringRunReservesAgainstLockedSettings() async throws {

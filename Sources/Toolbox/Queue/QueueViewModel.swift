@@ -1130,6 +1130,7 @@ final class QueueViewModel: ObservableObject {
                 pendingPresets[job.id] = effectivePreset(for: job.id)
                 runIDs.append(job.id)
                 runQueuedIDs.insert(job.id)
+                batchRowIDs.insert(job.id)
                 runComposition = RunComposition(queued: runComposition.queued + 1,
                                                 armed: runComposition.armed)
             }
