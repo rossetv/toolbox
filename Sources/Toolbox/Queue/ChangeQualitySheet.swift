@@ -87,7 +87,8 @@ struct ChangeQualitySheet: View {
             currentBytes: row.shipped?.bytes ?? row.originalBytes,
             ownPreset: row.rowPreset,
             prediction: { model.recompressPrediction(for: job, at: $0) },
-            isExcluded: model.armedExclusions.contains(job.id))
+            isExcluded: model.armedExclusions.contains(job.id),
+            isFutile: { model.isFutileAttempt(job.id, at: $0) })
     }
 
     // MARK: header
@@ -214,15 +215,20 @@ struct ChangeQualitySheet: View {
         let ownPreset: CompressPreset
         let prediction: (CompressPreset) -> Int?
         let isExcluded: Bool
+        /// Whether the row already came back with no saving at a given candidate preset
+        /// (`QueueViewModel.isFutileAttempt`) — the same closed-set test `recompressState` (and so
+        /// `rowList`/`rowTargetBytes`) checks, so the card/footer totals below cannot count a
+        /// saving for a row the per-row list shows as "nothing to change".
+        let isFutile: (CompressPreset) -> Bool
     }
 
     /// The card total for one candidate preset — `nil` reads "the row's current preset" (the
-    /// "what you have" baseline). A row already at the candidate uses its own recorded bytes
-    /// (exact); an excluded row never moves; everything else falls back to its current bytes
-    /// when no confident prediction exists, so no row ever vanishes from the total.
+    /// "what you have" baseline). A row already at the candidate, or proven futile there, uses its
+    /// own recorded bytes (exact); an excluded row never moves; everything else falls back to its
+    /// current bytes when no confident prediction exists, so no row ever vanishes from the total.
     static func total(_ rows: [RowSummary], at preset: CompressPreset?) -> Int {
         rows.reduce(0) { sum, row in
-            guard let preset, !row.isExcluded, row.ownPreset != preset else {
+            guard let preset, !row.isExcluded, row.ownPreset != preset, !row.isFutile(preset) else {
                 return sum + row.currentBytes
             }
             return sum + (row.prediction(preset) ?? row.currentBytes)

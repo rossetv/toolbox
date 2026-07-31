@@ -213,6 +213,15 @@ final class QueueViewModel: ObservableObject {
         let verbs = effectiveVerbs(for: id)
         return FutileAttempt(id: id, preset: preset, compress: verbs.compress, ocr: verbs.ocr)
     }
+
+    /// Whether `id` already came back with no saving at `preset` under its current verb set — the
+    /// same closed-set check `recompressState` itself makes, exposed so a caller pricing a
+    /// candidate preset that is not necessarily the live selection (`ChangeQualitySheet.total`,
+    /// pricing all three option cards) can treat that row as unchanged too, rather than
+    /// re-predicting a number the row already proved wrong.
+    func isFutileAttempt(_ id: ToolJob.ID, at preset: CompressPreset) -> Bool {
+        futileAttempts.contains(futileKey(id, at: preset))
+    }
     /// Per-row messages that must NOT replace the row's result — the row keeps its result and its
     /// versions and carries the message beside them. Distinct from `switchFailures`, which puts the
     /// row into `.failed` precisely because that row can no longer back what it was claiming.

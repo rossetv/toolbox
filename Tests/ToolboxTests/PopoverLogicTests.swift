@@ -228,9 +228,11 @@ final class PopoverLogicTests: XCTestCase {
 
     private func rowSummary(currentBytes: Int, ownPreset: CompressPreset,
                             predictions: [CompressPreset: Int] = [:],
-                            isExcluded: Bool = false) -> ChangeQualitySheet.RowSummary {
+                            isExcluded: Bool = false,
+                            futileAt: Set<CompressPreset> = []) -> ChangeQualitySheet.RowSummary {
         ChangeQualitySheet.RowSummary(currentBytes: currentBytes, ownPreset: ownPreset,
-                                      prediction: { predictions[$0] }, isExcluded: isExcluded)
+                                      prediction: { predictions[$0] }, isExcluded: isExcluded,
+                                      isFutile: { futileAt.contains($0) })
     }
 
     /// The render's own numbers (screen 08): current total 10.4 MB (Balanced), Smallest predicts
@@ -260,6 +262,15 @@ final class PopoverLogicTests: XCTestCase {
     func testChangeQualityTotalSkipsExcludedRows() {
         let rows = [rowSummary(currentBytes: 1000, ownPreset: .balanced,
                               predictions: [.smallestSize: 400], isExcluded: true)]
+        XCTAssertEqual(ChangeQualitySheet.total(rows, at: .smallestSize), 1000)
+    }
+
+    /// A row already proven futile at the candidate preset (came back with no saving there) must
+    /// price the SAME as the per-row list's own "nothing to change" reading — its exact current
+    /// bytes, never a re-predicted (possibly smaller) estimate the row already disproved.
+    func testChangeQualityTotalUsesActualBytesForAFutileCandidate() {
+        let rows = [rowSummary(currentBytes: 1000, ownPreset: .balanced,
+                              predictions: [.smallestSize: 400], futileAt: [.smallestSize])]
         XCTAssertEqual(ChangeQualitySheet.total(rows, at: .smallestSize), 1000)
     }
 
