@@ -1282,6 +1282,7 @@ struct CheckRow: View {
                 Text(title).themeFont(.body13).foregroundStyle(Theme.Colors.text)
                 Spacer(minLength: 0)
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .clearsClickFocus()
