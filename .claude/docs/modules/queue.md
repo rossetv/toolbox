@@ -129,7 +129,9 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
 - `ChangeQualitySheet` previews by genuinely (and reversibly) moving `model.preset` —
   the same batch preset the Quality popover writes — so `recompressState(for:)` and
   `recompressPrediction(for:at:)` re-arm live off `effectivePreset(for:)` rather than a
-  second parallel "candidate" preset; Cancel restores the previous value.
+  second parallel "candidate" preset; Cancel restores both the previous preset and
+  `model.armedExclusions` (the "Choose which files…" popover's own state, snapshotted
+  the same way).
 - Every screen accepts drops, including mid-run (`DragOverlayView` is drawn over
   whatever is underneath) — the drag-during-run path is the reason reservations happen
   at add time.

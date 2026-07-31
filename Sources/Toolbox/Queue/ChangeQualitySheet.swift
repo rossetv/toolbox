@@ -14,9 +14,10 @@ import SwiftUI
 /// popover writes — which is what makes the row list below re-arm live: `recompressState`/
 /// `recompressPrediction` already key off `effectivePreset(for:)`, so this sheet previews by
 /// genuinely (if reversibly) moving the batch preset, never a second, parallel "candidate" of
-/// its own. The restore is structural, not per-button: `onDisappear` puts `model.preset` back to
-/// whatever it was before the sheet opened on EVERY exit — Cancel, Escape, the window closing,
-/// anything else — unless the confirm action has already handed off to `Self.confirm`.
+/// its own. The restore is structural, not per-button: `onDisappear` puts `model.preset` AND
+/// `model.armedExclusions` back to whatever they were before the sheet opened on EVERY exit —
+/// Cancel, Escape, the window closing, anything else — unless the confirm action has already
+/// handed off to `Self.confirm`.
 struct ChangeQualitySheet: View {
     @ObservedObject var model: QueueViewModel
     @Environment(\.dismiss) private var dismiss
