@@ -1413,7 +1413,7 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
         let shippedURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
 
-        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced)
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
 
         let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
         XCTAssertEqual(row.shipped?.preset, .balanced, "the switch, not a recompute, must have landed")
@@ -1441,7 +1441,7 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertFalse(model.canStart, "the updater being busy must refuse the start")
 
         model.preset = .smallestSize  // the sheet's live preview
-        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced)
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
 
         XCTAssertEqual(model.preset, .balanced,
                        "nothing started — the previewed preset must not stick")
@@ -1490,7 +1490,7 @@ final class QueueViewModelTests: XCTestCase {
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 900),
                                           shippedBytes: 900, runnerUpBytes: nil) }
         await ChangeQualitySheet.confirm(rows: [instantJob, unchangedJob, armedJob], model: model,
-                                         fallback: .balanced)
+                                         fallback: .balanced, fallbackExclusions: [])
         try await waitUntil(timeout: 5) { !model.isRunning }
 
         let switchedRow = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first { $0.id == instantID })))
@@ -1547,7 +1547,7 @@ final class QueueViewModelTests: XCTestCase {
         try Fixtures.denyingNewEntries(true, at: outputFolder)
 
         await ChangeQualitySheet.confirm(rows: [instantJob, armedJob], model: model,
-                                         fallback: .balanced)
+                                         fallback: .balanced, fallbackExclusions: [])
 
         // `recompressState` reads `.none` for every row while `isRunning` (arming is suppressed
         // for the run's duration, R9) — the load-bearing check here is `recompressErrors` itself,
@@ -1696,7 +1696,7 @@ final class QueueViewModelTests: XCTestCase {
         let excludedID = try await env.addRow()
         model.setArmedExclusion(true, for: excludedID)
 
-        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced)
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
 
         XCTAssertTrue(model.armedExclusions.isEmpty,
                       "a landed switch consumes the exclusion set exactly for this run")

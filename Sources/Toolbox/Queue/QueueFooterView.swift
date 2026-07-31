@@ -101,11 +101,15 @@ struct QueueFooterView: View {
     /// it; the handoff has no depiction of it, so this is a recorded divergence (DESIGN.md §11,
     /// "Problems footer... gains a secondary Start"; DECISIONS 2026-07-31), not a design-sanctioned
     /// one — Start joins as the SecondaryButton so screen 10 keeps its one filled CTA.
+    ///
+    /// The one production call site (`trailing`'s `.problems` arm) always passes `state: .problems`
+    /// — screen 03's own Start button is unconditional in `trailing`'s `.ready` arm and never asks
+    /// this function. `default` covers every other state honestly (no Start) rather than an
+    /// exhaustive per-case claim nothing else consults.
     static func showsStart(state: QueueScreenState, canStart: Bool) -> Bool {
         switch state {
-        case .ready: return true
         case .problems: return canStart
-        case .empty, .working, .finished: return false
+        default: return false
         }
     }
 

@@ -315,7 +315,7 @@ struct ChangeQualitySheet: View {
     /// matches its own target), and a row left untouched (excluded, or refused alongside it) is
     /// free to arm again next time the sheet opens, unexcluded, exactly like a fresh preview.
     static func confirm(rows: [ToolJob], model: QueueViewModel, fallback: CompressPreset,
-                        fallbackExclusions: Set<ToolJob.ID> = []) async {
+                        fallbackExclusions: Set<ToolJob.ID>) async {
         var switchLanded = false
         for job in rows {
             if case .instantSwitch = model.recompressState(for: job) {
