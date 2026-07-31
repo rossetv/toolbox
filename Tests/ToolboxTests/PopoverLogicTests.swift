@@ -109,4 +109,89 @@ final class PopoverLogicTests: XCTestCase {
             PerFileSettingsPopover.rebuildToggleDomain(contentType: .scanColour, preset: .smallestSize), .enabled)
     }
 
+    // MARK: VersionsPopoverContent
+
+    /// Spec §6.4's honest-label requirement, composed exactly (Global Constraints' recorded
+    /// divergence, owner P-B): the fixed subtitle drops its terminal full stop and appends the
+    /// claim; no OCR claim leaves the design copy untouched, stop and all.
+    func testComposedSubtitleAppendsSearchableClaim() {
+        XCTAssertEqual(
+            VersionsPopoverContent.composedSubtitle(
+                base: "Never modified, still in its folder.", searchable: true),
+            "Never modified, still in its folder · Searchable")
+    }
+
+    func testComposedSubtitleAppendsNotSearchableClaim() {
+        XCTAssertEqual(
+            VersionsPopoverContent.composedSubtitle(
+                base: "Never modified, still in its folder.", searchable: false),
+            "Never modified, still in its folder · Not searchable")
+    }
+
+    func testComposedSubtitleLeavesDesignCopyUntouchedWhenOCRNeverRan() {
+        XCTAssertEqual(
+            VersionsPopoverContent.composedSubtitle(
+                base: "Never modified, still in its folder.", searchable: nil),
+            "Never modified, still in its folder.")
+    }
+
+    /// The card-title/description mapping stays honest even for `.original`, which
+    /// `surfaceConsent` never actually pairs into this popover today — a defensive test of the
+    /// pure function, not a reachable runtime state.
+    func testCardCopyHandlesOriginalKindHonestly() {
+        XCTAssertEqual(VersionsPopoverContent.cardTitle(bytes: 1_000_000, variant: .original),
+                       "Original · 1 MB")
+        XCTAssertFalse(VersionsPopoverContent.cardDescription(variant: .original, isShipped: false).isEmpty)
+        XCTAssertTrue(VersionsPopoverContent.cardDescription(variant: .original, isShipped: true)
+            .hasPrefix("In use."))
+    }
+
+    private func fileVersion(_ bytes: Int, variant: EngineVariant = .plain) -> FileVersion {
+        FileVersion(url: URL(fileURLWithPath: "/tmp/\(UUID().uuidString).pdf"),
+                   bytes: bytes, preset: .balanced, variant: variant)
+    }
+
+    /// Three highlight cases plus the disabled state (plan step 2's `testCompareVersionsPairSelection`).
+    func testCompareVersionsPairSelection() {
+        let shipped = fileVersion(100, variant: .mrc)
+        let runnerUp = fileVersion(200, variant: .plain)
+        let original = fileVersion(400, variant: .original)
+        let cards: [(key: VersionCardKey, version: FileVersion)] = [
+            (.shipped, shipped), (.runnerUp, runnerUp), (.originalReference, original),
+        ]
+
+        // No highlight yet: in-use + first parked.
+        XCTAssertEqual(VersionsPopoverContent.compareVersionsPair(cards: cards, highlighted: nil)?.0,
+                       shipped.url)
+        XCTAssertEqual(VersionsPopoverContent.compareVersionsPair(cards: cards, highlighted: nil)?.1,
+                       runnerUp.url)
+
+        // The in-use row itself highlighted: same fallback, never "compare a file with itself".
+        let selfHighlight = VersionsPopoverContent.compareVersionsPair(cards: cards, highlighted: .shipped)
+        XCTAssertEqual(selfHighlight?.0, shipped.url)
+        XCTAssertEqual(selfHighlight?.1, runnerUp.url)
+
+        // A specific parked row highlighted: pairs with THAT row, not the first one.
+        let originalHighlight = VersionsPopoverContent.compareVersionsPair(cards: cards, highlighted: .originalReference)
+        XCTAssertEqual(originalHighlight?.0, shipped.url)
+        XCTAssertEqual(originalHighlight?.1, original.url)
+
+        // Disabled: only one file on this row at all.
+        XCTAssertNil(VersionsPopoverContent.compareVersionsPair(
+            cards: [(.shipped, shipped)], highlighted: nil))
+    }
+
+    // MARK: model-level wiring
+
+    /// Tapping the already-in-use card is inert (`useCard`'s `.shipped` arm is a documented
+    /// no-op) — a model-level test, since the popover's own tap handler always calls through.
+    func testUseCardOnShippedRowIsInert() async throws {
+        let env = try HeavyEnv()
+        let job = try await env.runToDone()
+        let before = env.model.versions(for: job)
+        XCTAssertNotNil(before)
+        await env.model.useCard(.shipped, for: job)
+        XCTAssertEqual(env.model.versions(for: job), before)
+    }
+
 }
