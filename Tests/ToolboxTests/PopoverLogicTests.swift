@@ -354,15 +354,17 @@ final class PopoverLogicTests: XCTestCase {
         XCTAssertFalse(ScanConsentSheet.variantBadge(.plain).isAccent)
     }
 
-    // MARK: RecentBatchesSheet
+    // MARK: RecentBatchesSheet / EmptyStateView (F6b: successCount/failureNote)
 
     private func historyBatch(fileCount: Int = 3, presetTitle: String? = "Balanced",
                               compressOn: Bool = true, ocrOn: Bool = false,
                               savedBytes: Int = 21_200_000, searchableCount: Int = 0,
+                              successCount: Int = 3, failureNote: String? = nil,
                               problem: Bool = false) -> HistoryBatch {
         HistoryBatch(folderName: "Contracts", folderURL: URL(fileURLWithPath: "/tmp/Contracts"),
                     fileCount: fileCount, presetTitle: presetTitle, compressOn: compressOn, ocrOn: ocrOn,
                     savedBytes: savedBytes, searchableCount: searchableCount,
+                    successCount: successCount, failureNote: failureNote,
                     partial: false, problem: problem, cancelled: false)
     }
 
@@ -375,16 +377,24 @@ final class PopoverLogicTests: XCTestCase {
 
     func testRecentBatchesSubtitleOCROnlyReadsOCROnly() {
         let batch = historyBatch(fileCount: 12, presetTitle: nil, compressOn: false, ocrOn: true,
-                                 savedBytes: 0, searchableCount: 12)
+                                 savedBytes: 0, searchableCount: 12, successCount: 12)
         let subtitle = RecentBatchesSheet.subtitle(for: batch)
         XCTAssertTrue(subtitle.contains("OCR only"))
         XCTAssertTrue(subtitle.contains("all searchable"))
     }
 
-    /// A real problem/cause (e.g. password-locked) is not data `HistoryBatch` retains — the
-    /// subtitle must never fabricate a specific cause it cannot know.
-    func testRecentBatchesSubtitleProblemReadsGenericAttention() {
-        let batch = historyBatch(problem: true)
+    /// The handoff's screen-11 card copy ("14:22 · Smallest · one was password-locked") — the
+    /// note IS the batch's own recorded failure cause, not a fabricated one.
+    func testRecentBatchesSubtitleProblemReadsFailureNote() {
+        let batch = historyBatch(fileCount: 5, successCount: 4, failureNote: "one was password-locked",
+                                 problem: true)
+        XCTAssertTrue(RecentBatchesSheet.subtitle(for: batch).contains("one was password-locked"))
+    }
+
+    /// A batch recorded before `failureNote` existed (on-disk schema predates F6b) decodes with
+    /// `failureNote == nil` — the subtitle must still say SOMETHING honest, never crash or blank.
+    func testRecentBatchesSubtitleProblemWithoutNoteFallsBackToGenericAttention() {
+        let batch = historyBatch(failureNote: nil, problem: true)
         XCTAssertTrue(RecentBatchesSheet.subtitle(for: batch).contains("some files needed attention"))
     }
 
@@ -393,6 +403,34 @@ final class PopoverLogicTests: XCTestCase {
     func testRecentBatchesSavedTextReadsNoChangeForZeroSavings() {
         XCTAssertEqual(RecentBatchesSheet.savedText(historyBatch(savedBytes: 0)), "no change")
         XCTAssertNotEqual(RecentBatchesSheet.savedText(historyBatch(savedBytes: 21_200_000)), "no change")
+    }
+
+    /// "4 of 5 files in Invoices" (screens 01/11): the title itself carries the success/total
+    /// split — `HistoryBatch.displayTitle`, shared by both `RecentBatchesSheet.title(for:)` and
+    /// `EmptyStateView`'s history-strip card.
+    func testHistoryBatchDisplayTitleShowsSuccessOfTotalWhenSomeRowsDidNotDeliver() {
+        let batch = historyBatch(fileCount: 5, successCount: 4)
+        XCTAssertEqual(batch.displayTitle, "4 of 5 files in Contracts")
+        XCTAssertEqual(RecentBatchesSheet.title(for: batch), "4 of 5 files in Contracts")
+    }
+
+    /// A clean batch (every row delivered) keeps the plain "M files in <folder>" line — no
+    /// spurious "3 of 3".
+    func testHistoryBatchDisplayTitleReadsPlainCountWhenEveryRowDelivered() {
+        let batch = historyBatch(fileCount: 3, successCount: 3)
+        XCTAssertEqual(batch.displayTitle, "3 files in Contracts")
+    }
+
+    /// The empty-state strip's own card copy (screen 01): "11:05 · one was password-locked" when
+    /// the batch recorded a failure note, falling back to the generic line otherwise.
+    func testEmptyStateSubtitleUsesFailureNoteWhenPresent() {
+        let batch = historyBatch(failureNote: "one was password-locked", problem: true)
+        XCTAssertTrue(EmptyStateView.subtitle(for: batch).contains("one was password-locked"))
+    }
+
+    func testEmptyStateSubtitleWithoutFailureNoteFallsBackToNeedsAttention() {
+        let batch = historyBatch(failureNote: nil, problem: true)
+        XCTAssertTrue(EmptyStateView.subtitle(for: batch).contains("needs attention"))
     }
 
     func testRecentBatchesDayLabelTodayYesterdayAndOlder() {

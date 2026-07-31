@@ -1565,4 +1565,65 @@ final class QueuePassTests: XCTestCase {
         XCTAssertEqual(env.history.lifetimeSavedBytes, firstSaving,
                        "the recompress's saving must not be added on top of the first batch's")
     }
+
+    /// A `Compressing` double that fails only the row whose input is `throwFor`, keyed on the
+    /// real input URL rather than a call index. `StubCompressEngine.throwOnCall` targets a call
+    /// COUNT, which is meaningless once two rows run concurrently (batch width =
+    /// `SystemInfo.performanceCoreCount`) — either row could claim call 1. Keying on the URL
+    /// instead makes the outcome deterministic regardless of scheduling order.
+    private final class URLKeyedCompressEngine: Compressing, @unchecked Sendable {
+        let throwFor: URL
+        let goodAfterBytes: Int
+
+        init(throwFor: URL, goodAfterBytes: Int) {
+            self.throwFor = throwFor
+            self.goodAfterBytes = goodAfterBytes
+        }
+
+        func compress(_ input: URL, preset: CompressPreset, to output: URL, alternateOutput: URL?,
+                     rebuildScan: Bool?, mrcReport: ((MRCDocumentReport) -> Void)?,
+                     progress: @escaping (Double) -> Void) async throws -> RowOutcome {
+            if input == throwFor { throw CompressError.encrypted }
+            try Data(repeating: 0x48, count: goodAfterBytes).write(to: output)
+            return .compressed(before: 9_000, after: goodAfterBytes)
+        }
+    }
+
+    /// F6b: a genuinely locked row (`Fixtures.encryptedPDF`, add-time-detected via the real
+    /// `OpenGuard`) alongside a healthy one. `fileCount` counts both, `successCount` only the row
+    /// that delivered, `problem` is true, and `failureNote` names the password-locked family —
+    /// the handoff's screen-01/11 card copy ("4 of 5 files in Invoices · one was password-locked").
+    func testBatchWithLockedRowRecordsSuccessCountAndFailureNote() async throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("f6b-locked-\(UUID().uuidString)", isDirectory: true)
+        let outputFolder = tmp.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        let history = HistoryStore(directory: tmp.appendingPathComponent("history", isDirectory: true))
+        let store = RunnerUpStore(rootOverride: tmp.appendingPathComponent("cache", isDirectory: true))
+
+        let goodInput = try Fixtures.imagePDF()
+        let lockedInput = try Fixtures.encryptedPDF()
+        let engine = URLKeyedCompressEngine(throwFor: lockedInput, goodAfterBytes: 4_000)
+        let model = QueueViewModel(engine: engine, store: store, history: history)
+        model.outputFolder = outputFolder
+
+        model.add([goodInput])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.add([lockedInput])
+        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+        let lockedID = try XCTUnwrap(model.jobs.last?.id)
+        // Wait for add-time inspection to land before running, so the locked cause is on record
+        // regardless of how fast the batch itself completes.
+        try await waitUntil(timeout: 5) { model.inspections[lockedID]?.problem == .locked }
+
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertEqual(history.batches.count, 1)
+        let recorded = try XCTUnwrap(history.batches.first)
+        XCTAssertEqual(recorded.fileCount, 2)
+        XCTAssertEqual(recorded.successCount, 1)
+        XCTAssertTrue(recorded.problem)
+        XCTAssertEqual(recorded.failureNote, "one was password-locked")
+    }
 }

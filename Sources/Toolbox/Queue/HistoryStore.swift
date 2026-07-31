@@ -31,6 +31,15 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
     /// Rows OCR made searchable, whatever else happened to them: a plain compressed+OCR row, a
     /// rescue, or a noGain+OCR sibling delivery all count here (spec §6.9's "one made searchable").
     let searchableCount: Int
+    /// Rows that actually delivered a file — the "N" in the handoff's "4 of 5 files in Invoices"
+    /// (screens 01/11). Never more than `fileCount`; less than it exactly when a row failed
+    /// outright, or a cancel left some rows untouched.
+    let successCount: Int
+    /// One short human phrase naming the FIRST problem row's cause (F6b) — nil when nothing
+    /// failed. "one was password-locked" is the handoff's own copy (screens 01/11); the other two
+    /// are recorded divergences the handoff has no string for, mirroring `RowInspection.metaLine`'s
+    /// own `.unreadable`/`.compressFailed` fallthrough.
+    let failureNote: String?
     /// At least one row in the batch was degraded (spec §6.5: rescued, tooFaint, cancelled-between-legs,
     /// a read failure after a compress delivery) — delivered, but not a clean full success.
     let partial: Bool
@@ -41,9 +50,19 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
     /// delivered file — see `QueueViewModel`'s recording site.
     let cancelled: Bool
 
+    /// "N of M files in <folder>" when the batch delivered fewer files than it set out to
+    /// (screens 01/11); plain "M files in <folder>" otherwise. Shared by the empty-state strip
+    /// and the Recent-batches sheet — the same line, computed once.
+    var displayTitle: String {
+        let plural = fileCount == 1 ? "" : "s"
+        guard successCount < fileCount else { return "\(fileCount) file\(plural) in \(folderName)" }
+        return "\(successCount) of \(fileCount) file\(plural) in \(folderName)"
+    }
+
     init(id: UUID = UUID(), date: Date = Date(), folderName: String, folderURL: URL,
          fileCount: Int, presetTitle: String?, compressOn: Bool, ocrOn: Bool,
-         savedBytes: Int, searchableCount: Int, partial: Bool, problem: Bool, cancelled: Bool) {
+         savedBytes: Int, searchableCount: Int, successCount: Int = 0, failureNote: String? = nil,
+         partial: Bool, problem: Bool, cancelled: Bool) {
         self.id = id
         self.date = date
         self.folderName = folderName
@@ -54,9 +73,37 @@ struct HistoryBatch: Codable, Identifiable, Equatable {
         self.ocrOn = ocrOn
         self.savedBytes = savedBytes
         self.searchableCount = searchableCount
+        self.successCount = successCount
+        self.failureNote = failureNote
         self.partial = partial
         self.problem = problem
         self.cancelled = cancelled
+    }
+
+    // MARK: Codable — `successCount`/`failureNote` are additive (F6b): older on-disk v1 batches
+    // predate them, so decode defaults rather than failing (schema stays version 1, spec §6.9).
+    private enum CodingKeys: String, CodingKey {
+        case id, date, folderName, folderURL, fileCount, presetTitle, compressOn, ocrOn,
+             savedBytes, searchableCount, successCount, failureNote, partial, problem, cancelled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        date = try container.decode(Date.self, forKey: .date)
+        folderName = try container.decode(String.self, forKey: .folderName)
+        folderURL = try container.decode(URL.self, forKey: .folderURL)
+        fileCount = try container.decode(Int.self, forKey: .fileCount)
+        presetTitle = try container.decodeIfPresent(String.self, forKey: .presetTitle)
+        compressOn = try container.decode(Bool.self, forKey: .compressOn)
+        ocrOn = try container.decode(Bool.self, forKey: .ocrOn)
+        savedBytes = try container.decode(Int.self, forKey: .savedBytes)
+        searchableCount = try container.decode(Int.self, forKey: .searchableCount)
+        successCount = try container.decodeIfPresent(Int.self, forKey: .successCount) ?? 0
+        failureNote = try container.decodeIfPresent(String.self, forKey: .failureNote)
+        partial = try container.decode(Bool.self, forKey: .partial)
+        problem = try container.decode(Bool.self, forKey: .problem)
+        cancelled = try container.decode(Bool.self, forKey: .cancelled)
     }
 }
 

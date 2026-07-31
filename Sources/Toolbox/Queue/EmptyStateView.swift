@@ -109,8 +109,8 @@ struct EmptyStateView: View {
                 ForEach(recentBatches) { batch in
                     BatchCard(
                         icon: batch.problem ? .warn : .finished,
-                        title: "\(batch.fileCount) file\(batch.fileCount == 1 ? "" : "s") in \(batch.folderName)",
-                        subtitle: subtitle(for: batch),
+                        title: batch.displayTitle,
+                        subtitle: Self.subtitle(for: batch),
                         trailingLink: (title: "Open folder", action: { openFolder(batch) }),
                         action: { openFolder(batch) }
                     )
@@ -123,14 +123,12 @@ struct EmptyStateView: View {
 
     private var recentBatches: [HistoryBatch] { Array(history.batches.prefix(2)) }
 
-    /// `HistoryBatch` records only aggregate flags (`problem`/`partial`/`cancelled`), never a
-    /// per-row success count or a specific failure reason — so the handoff's literal "4 of 5
-    /// files… one was password-locked" cannot be reproduced faithfully from what the store
-    /// holds. This composes the closest honest line from the fields that exist (recorded
-    /// divergence, P-A; a richer HistoryBatch would need a foundation-owned change to F6/
-    /// `HistoryStore.swift`, outside this track's files).
-    private func subtitle(for batch: HistoryBatch) -> String {
+    /// "14:22 · 21.2 MB smaller" for a clean run; "11:05 · one was password-locked" for a batch
+    /// with a problem row (screen 01, F6b's `failureNote`) — falls back to a generic line only for
+    /// a batch recorded before `failureNote` existed (on-disk schema predates F6b).
+    static func subtitle(for batch: HistoryBatch) -> String {
         let time = batch.date.formatted(date: .omitted, time: .shortened)
+        if let note = batch.failureNote { return "\(time) · \(note)" }
         if batch.problem { return "\(time) · needs attention" }
         if batch.savedBytes > 0 { return "\(time) · \(QueueByteFormat.string(batch.savedBytes)) smaller" }
         if batch.searchableCount > 0 { return "\(time) · made searchable" }

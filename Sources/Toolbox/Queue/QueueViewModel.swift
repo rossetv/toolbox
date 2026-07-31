@@ -692,7 +692,7 @@ final class QueueViewModel: ObservableObject {
         let jobsByID = Dictionary(uniqueKeysWithValues: queue.jobs.map { ($0.id, $0) })
         var savedBytes = 0
         var searchableCount = 0
-        var banked = false
+        var successCount = 0
         var problem = false
         var partial = false
         for id in runQueuedIDs {
@@ -705,7 +705,9 @@ final class QueueViewModel: ObservableObject {
                 // dragging the rest of the batch's genuine savings negative.
                 savedBytes += max(0, sizes.before - sizes.after)
             }
-            if job.resultURL != nil { banked = true }
+            // The "N" in the handoff's "4 of 5 files in Invoices" (F6b) — also stands in for the
+            // old `banked` bool below (`successCount > 0` is exactly that check).
+            if job.resultURL != nil { successCount += 1 }
             switch job.state {
             case .failed:
                 problem = true
@@ -728,7 +730,7 @@ final class QueueViewModel: ObservableObject {
         }
         // A cancelled run with nothing banked leaves no trace (spec §6.9) — the strip and sheet
         // must not show an entry for work that never delivered anything.
-        guard !runCancelled || banked else { return }
+        guard !runCancelled || successCount > 0 else { return }
         // `runIDs` lists this run's queued rows before its armed ones, and `runQueuedIDs` is
         // non-empty (guarded above), so its first member here is always a genuinely queued row.
         guard let firstID = runIDs.first(where: { runQueuedIDs.contains($0) }),
@@ -742,7 +744,27 @@ final class QueueViewModel: ObservableObject {
             presetTitle: settings.compressOn ? settings.preset.title : nil,
             compressOn: settings.compressOn, ocrOn: settings.ocrOn,
             savedBytes: savedBytes, searchableCount: searchableCount,
+            successCount: successCount, failureNote: firstFailureNote(jobsByID: jobsByID),
             partial: partial, problem: problem, cancelled: runCancelled))
+    }
+
+    /// The batch card's failure phrase (design screens 01/11, F6b): the FIRST problem row's
+    /// condition, in `runIDs` order — never `runQueuedIDs`'s own `Set` order, which is
+    /// unspecified. "one was password-locked" is the handoff's own copy; the other two cover
+    /// conditions the handoff has no string for, mirroring `RowInspection.metaLine`'s own
+    /// `.unreadable`/`.compressFailed` fallthrough — a run-time-only compress failure (OCR off)
+    /// never reaches `inspections` at all, so it shares `.unreadable`'s generic phrasing rather
+    /// than going unnoted.
+    private func firstFailureNote(jobsByID: [ToolJob.ID: ToolJob]) -> String? {
+        for id in runIDs where runQueuedIDs.contains(id) {
+            guard let job = jobsByID[id], case .failed = job.state else { continue }
+            switch inspections[id]?.problem {
+            case .locked: return "one was password-locked"
+            case .missing: return "one had moved"
+            case .unreadable, .compressFailed, .none: return "one couldn't be read"
+            }
+        }
+        return nil
     }
 
     /// Recompute the published `batchProgress`. Called at the end of every `publishJobs()`; the

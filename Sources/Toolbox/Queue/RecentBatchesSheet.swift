@@ -63,14 +63,13 @@ struct RecentBatchesSheet: View {
     // MARK: pure logic (PopoverLogicTests)
 
     static func title(for batch: HistoryBatch) -> String {
-        "\(batch.fileCount) file\(batch.fileCount == 1 ? "" : "s") in \(batch.folderName)"
+        batch.displayTitle
     }
 
-    /// "14:22 · Balanced · one made searchable" (screen 11): time, then the verb/preset the
-    /// batch ran with, then a trailing status clause. The render's "one was password-locked" is
-    /// flavour text this data model cannot reproduce — `HistoryBatch` records only a `problem`
-    /// flag, not which condition caused it — so a genuine problem reads a generic, honest clause
-    /// instead of a fabricated specific cause.
+    /// "14:22 · Balanced · one made searchable" for a clean run; "11:05 · Smallest · one was
+    /// password-locked" for a batch with a problem row (screen 11, F6b's `failureNote`) — falls
+    /// back to a generic clause only for a batch recorded before `failureNote` existed (on-disk
+    /// schema predates F6b).
     static func subtitle(for batch: HistoryBatch) -> String {
         var parts = [Self.timeFormatter.string(from: batch.date)]
         if batch.compressOn, let preset = batch.presetTitle {
@@ -78,7 +77,9 @@ struct RecentBatchesSheet: View {
         } else if batch.ocrOn {
             parts.append("OCR only")
         }
-        if batch.problem {
+        if let note = batch.failureNote {
+            parts.append(note)
+        } else if batch.problem {
             parts.append("some files needed attention")
         } else if batch.searchableCount > 0 {
             if batch.searchableCount == batch.fileCount {

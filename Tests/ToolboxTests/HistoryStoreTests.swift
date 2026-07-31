@@ -22,11 +22,13 @@ final class HistoryStoreTests: XCTestCase {
     }
 
     private func batch(savedBytes: Int = 100, date: Date = Date(),
-                       folderName: String = "Contracts") -> HistoryBatch {
+                       folderName: String = "Contracts", successCount: Int = 3,
+                       failureNote: String? = nil) -> HistoryBatch {
         HistoryBatch(date: date, folderName: folderName,
                     folderURL: URL(fileURLWithPath: "/tmp/\(folderName)"),
                     fileCount: 3, presetTitle: "Balanced", compressOn: true, ocrOn: false,
                     savedBytes: savedBytes, searchableCount: 0,
+                    successCount: successCount, failureNote: failureNote,
                     partial: false, problem: false, cancelled: false)
     }
 
@@ -41,6 +43,51 @@ final class HistoryStoreTests: XCTestCase {
         let reloaded = HistoryStore(directory: root)
         XCTAssertEqual(reloaded.batches, [entry])
         XCTAssertEqual(reloaded.lifetimeSavedBytes, 4_096)
+    }
+
+    /// `successCount`/`failureNote` (F6b) round-trip like every other field — a batch with a
+    /// recorded failure note survives encode/decode intact.
+    func testRoundTripPreservesSuccessCountAndFailureNote() throws {
+        let root = try tempRoot()
+        let store = HistoryStore(directory: root)
+        let entry = HistoryBatch(folderName: "Invoices", folderURL: URL(fileURLWithPath: "/tmp/Invoices"),
+                                 fileCount: 5, presetTitle: "Balanced", compressOn: true, ocrOn: false,
+                                 savedBytes: 1_000, searchableCount: 0,
+                                 successCount: 4, failureNote: "one was password-locked",
+                                 partial: false, problem: true, cancelled: false)
+        store.record(entry)
+
+        let reloaded = HistoryStore(directory: root)
+        let decoded = try XCTUnwrap(reloaded.batches.first)
+        XCTAssertEqual(decoded.successCount, 4)
+        XCTAssertEqual(decoded.failureNote, "one was password-locked")
+        XCTAssertEqual(decoded, entry)
+    }
+
+    /// The schema stays version 1 (unshipped): `successCount`/`failureNote` are additive, so an
+    /// on-disk batch recorded before F6b (missing both keys) must still decode — defaulting to 0
+    /// and nil — rather than corrupting the whole envelope. Built by encoding a real batch (so
+    /// `Date`/`URL`'s own encoding is exactly what production writes) and then stripping the two
+    /// new keys, rather than hand-guessing their on-disk shape.
+    func testDecodeDefaultsSuccessCountAndFailureNoteWhenAbsent() throws {
+        let root = try tempRoot()
+        let store = HistoryStore(directory: root)
+        store.record(batch(savedBytes: 500))
+        let fileURL = root.appendingPathComponent("history.json")
+
+        var envelope = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fileURL)) as? [String: Any])
+        var batches = try XCTUnwrap(envelope["batches"] as? [[String: Any]])
+        batches[0]["successCount"] = nil
+        batches[0]["failureNote"] = nil
+        envelope["batches"] = batches
+        try JSONSerialization.data(withJSONObject: envelope).write(to: fileURL)
+
+        let reloaded = HistoryStore(directory: root)
+        let decoded = try XCTUnwrap(reloaded.batches.first)
+        XCTAssertEqual(decoded.successCount, 0)
+        XCTAssertNil(decoded.failureNote)
+        XCTAssertEqual(reloaded.lifetimeSavedBytes, 500)
     }
 
     /// Two batches: newest-first ordering, and the lifetime counter is a running SUM, never
