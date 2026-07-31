@@ -597,7 +597,7 @@ final class SelfUpdaterTests: XCTestCase {
         // launches an application. Everything under test — the wait loop, the `$1`/`$2` offsets,
         // the quoting — is the shipped script.
         var arguments = SelfUpdater.relaunchArguments(pid: standIn.processIdentifier, bundle: marker)
-        arguments[1] = arguments[1].replacingOccurrences(of: "exec open", with: "exec /usr/bin/touch")
+        arguments[1] = arguments[1].replacingOccurrences(of: "exec /usr/bin/open", with: "exec /usr/bin/touch")
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
         helper.arguments = arguments
@@ -625,6 +625,17 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertEqual(arguments.last, awkward.path)
         XCTAssertFalse(arguments[1].contains(awkward.path),
                        "the path must never be interpolated into the script text")
+    }
+
+    func testRelaunchArgumentsUseAbsoluteToolPathsNotTheInheritedPath() {
+        // Every OTHER tool in this file is an absolute literal (SystemTool's own header states
+        // it as an invariant) — `sleep`/`open` must not be the bare-name exception that resolves
+        // through whatever PATH the launching environment happens to hand the child process.
+        let arguments = SelfUpdater.relaunchArguments(pid: 1234, bundle: URL(fileURLWithPath: "/Applications/Toolbox.app"))
+        let script = arguments[1]
+        XCTAssertTrue(script.contains("/bin/sleep"), script)
+        XCTAssertTrue(script.contains("/usr/bin/open"), script)
+        XCTAssertFalse(script.contains(" sleep "), "sleep must not be a bare, PATH-resolved name: \(script)")
     }
 
     // MARK: - Install destination

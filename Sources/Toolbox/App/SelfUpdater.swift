@@ -423,7 +423,7 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     /// The PID and the path are arguments (`$1`, `$2`), never interpolated into the script text
     /// — a path with a quote or a space in it must not become shell syntax.
     nonisolated static func relaunchArguments(pid: Int32, bundle: URL) -> [String] {
-        ["-c", #"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec open "$2""#,
+        ["-c", #"while kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done; exec /usr/bin/open "$2""#,
          "toolbox-relaunch", String(pid), bundle.path]
     }
 
