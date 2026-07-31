@@ -46,6 +46,17 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         /// failed, so the previous version is preserved at that path and named to the user.
         case failed(message: String, asidePath: String?)
         case relaunching
+
+        /// Whether the swap is actually in flight — the OTHER direction of spec §6.10's mutual
+        /// exclusion (the queue's `canStart`'s `isUpdating` term): `.idle`, `.failed` and
+        /// `.degradedToReleasePage` are all resting states a batch may safely start into, and
+        /// `.blockedByRun` means no swap has begun (the update itself was refused).
+        var isActiveUpdate: Bool {
+            switch self {
+            case .downloading, .verifying, .installing, .relaunching: return true
+            case .idle, .blockedByRun, .degradedToReleasePage, .failed: return false
+            }
+        }
     }
 
     /// A failure of the on-disk half of the update, raised off the main actor and mapped to a

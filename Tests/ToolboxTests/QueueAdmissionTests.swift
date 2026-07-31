@@ -309,6 +309,23 @@ final class QueueAdmissionTests: XCTestCase {
         XCTAssertTrue(verbs.ocr, "the floor keeps the row's last verb on (spec §6.1)")
     }
 
+    /// The other direction of spec §6.10's mutual exclusion: `SelfUpdater.isBusy` refuses an
+    /// update while a batch runs, but nothing previously refused a batch started AFTER the swap
+    /// began — the aside-swap + terminate would then land mid-batch, killing the run unannounced.
+    func testCanStartRefusedWhileUpdating() async throws {
+        var updating = false
+        let env = try HeavyEnv(isUpdating: { updating })
+        let model = env.model
+        _ = try await addOne(env)
+        XCTAssertTrue(model.canStart)
+
+        updating = true
+        XCTAssertFalse(model.canStart, "a batch must not start into a swap already in flight")
+
+        updating = false
+        XCTAssertTrue(model.canStart, "the update finishing (e.g. .failed) unblocks Start again")
+    }
+
     func testZeroVerbsDisablesStart() async throws {
         let env = try HeavyEnv()
         let model = env.model

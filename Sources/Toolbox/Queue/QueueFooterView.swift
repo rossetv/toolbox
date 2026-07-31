@@ -109,7 +109,11 @@ struct QueueFooterView: View {
         return "\(overridden) files have their own settings, so their estimates differ from the batch."
     }
 
+    /// While `canStart` is refused by an in-flight update (spec §6.10's other mutual-exclusion
+    /// direction), the ordinary batch caption would read as live when it can't be pressed. Honest
+    /// short copy — a recorded divergence, since the handoff has no line for this state.
     static func startTitle(model: QueueViewModel) -> String {
+        if model.isUpdatingNow { return "Updating\u{2026}" }
         let queued = model.pendingCount, armed = model.armedCount
         if queued > 0, armed > 0 { return "Compress \(queued) \u{00B7} Recompress \(armed)" }
         if armed > 0 { return "Recompress \(armed) PDF\(armed == 1 ? "" : "s")" }

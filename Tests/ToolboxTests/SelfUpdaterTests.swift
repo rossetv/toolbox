@@ -332,6 +332,25 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertEqual(try contents(of: bundle.deletingLastPathComponent()), ["Toolbox.app"])
     }
 
+    /// Pins the exact mapping `QueueViewModel.canStart`'s `isUpdating` term relies on (spec §6.10's
+    /// other mutual-exclusion direction): only the phases with an actual swap in flight refuse a
+    /// batch from starting — the resting phases (including `.blockedByRun`, which means no swap
+    /// began at all) leave Start alone.
+    func testIsActiveUpdateMatchesOnlyPhasesWithASwapInFlight() {
+        let active: [SelfUpdater.Phase] = [.downloading(0), .verifying, .installing, .relaunching]
+        let resting: [SelfUpdater.Phase] = [
+            .idle, .blockedByRun,
+            .degradedToReleasePage(reason: "x"),
+            .failed(message: "x", asidePath: nil),
+        ]
+        for phase in active {
+            XCTAssertTrue(phase.isActiveUpdate, "\(phase) must block a new batch from starting")
+        }
+        for phase in resting {
+            XCTAssertFalse(phase.isActiveUpdate, "\(phase) must leave Start alone")
+        }
+    }
+
     @MainActor
     func testUpdateRefusedWhileBusy() async throws {
         let bundle = try makeInstalledApp()

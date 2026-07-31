@@ -129,6 +129,11 @@ final class QueueViewModel: ObservableObject {
     /// path that discards a parked file.
     private let versionStore: VersionStore
     private var cancellable: AnyCancellable?
+    /// Whether `SelfUpdater` is mid-swap (spec §6.10's mutual exclusion, the other direction from
+    /// `isBusy`): a batch started AFTER the update begins would have `gs` yanked from under it and
+    /// the run killed unannounced. Wired from `updater.phase`'s active states in `RootView`;
+    /// defaults closed so every other construction site (tests, previews) is unaffected.
+    private let isUpdating: () -> Bool
 
     /// The preset each in-flight queue job was dispatched at, consumed once when the job's outcome
     /// is ingested into the store. Not display state — the store owns that.
@@ -401,7 +406,8 @@ final class QueueViewModel: ObservableObject {
 
     /// Production entry point: resolves the real Ghostscript-backed engine.
     convenience init(estimator: CompressEstimator = CompressEstimator(),
-                     store: RunnerUpStore? = nil, history: HistoryStore? = nil) {
+                     store: RunnerUpStore? = nil, history: HistoryStore? = nil,
+                     isUpdating: @escaping () -> Bool = { false }) {
         let engine: (any Compressing)?
         let error: String?
         if let runner = try? GhostscriptRunner() {
@@ -412,7 +418,7 @@ final class QueueViewModel: ObservableObject {
             error = "Ghostscript is missing from the app bundle — the app cannot compress."
         }
         self.init(engine: engine, ocrEngine: OCREngine(), estimator: estimator, store: store,
-                 history: history)
+                 history: history, isUpdating: isUpdating)
         self.loadError = error
     }
 
@@ -424,11 +430,13 @@ final class QueueViewModel: ObservableObject {
          estimator: CompressEstimator = CompressEstimator(),
          store: RunnerUpStore? = nil,
          history: HistoryStore? = nil,
-         defaults: UserDefaults = .standard) {
+         defaults: UserDefaults = .standard,
+         isUpdating: @escaping () -> Bool = { false }) {
         self.engine = engine
         self.ocrEngine = ocrEngine
         self.estimator = estimator
         self.defaults = defaults
+        self.isUpdating = isUpdating
         self.rebuildWithoutAsking = defaults.bool(forKey: Self.rebuildWithoutAskingKey)
         // Built here (not as a default argument) because a default value expression is evaluated in
         // a nonisolated context, and `RunnerUpStore.init`/`HistoryStore.init` are `@MainActor`.
@@ -1064,11 +1072,19 @@ final class QueueViewModel: ObservableObject {
     /// and the queued half of the work must contain at least one HEALTHY row — a file that could
     /// not be opened at add time, or one the user has skipped, is not work this batch can do. Armed
     /// rows count on their own: a re-run of finished rows is a legitimate batch with nothing queued.
+    ///
+    /// `!isUpdating()` closes the OTHER direction of spec §6.10's mutual exclusion: `isBusy` (in
+    /// `SelfUpdater`) refuses an update while a batch runs, but nothing previously refused a batch
+    /// started AFTER the update began — the aside-swap + terminate would then land mid-batch.
     var canStart: Bool {
-        engine != nil && !isRunning && switchesInFlight.isEmpty
+        engine != nil && !isRunning && switchesInFlight.isEmpty && !isUpdating()
             && (compressOn || ocrOn)
             && (healthyQueuedCount > 0 || armedCount > 0)
     }
+
+    /// The one place `startTitle`'s copy reads the same fact `canStart` refuses on — internal
+    /// (not private) so the view's caption can stay honest without re-deriving the closure call.
+    var isUpdatingNow: Bool { isUpdating() }
 
     /// Queued rows this batch could actually work on. A row whose inspection has not landed yet
     /// counts as healthy — the run-time `OpenGuard` pass is the second net, and refusing Start

@@ -360,7 +360,8 @@ struct HeavyEnv {
     init(before: Int = 9000, contentType: PDFContentType? = nil,
          timeBudget: TimeInterval = 0.5,
          ocrEngine: (any OCRing)? = nil,
-         defaults: UserDefaults = .standard) throws {
+         defaults: UserDefaults = .standard,
+         isUpdating: @escaping () -> Bool = { false }) throws {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -391,7 +392,8 @@ struct HeavyEnv {
                                estimator: estimator,
                                store: RunnerUpStore(rootOverride: storeRoot),
                                history: history,
-                               defaults: defaults)
+                               defaults: defaults,
+                               isUpdating: isUpdating)
         model.outputFolder = outputFolder
     }
 

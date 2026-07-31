@@ -28,9 +28,14 @@ struct RootView: View {
     /// are assigned from it.
     init(showAbout: Binding<Bool>) {
         _showAbout = showAbout
-        let m = QueueViewModel()
+        // Forward reference: `m`'s `isUpdating` closure needs `updater`, and `updater`'s `isBusy`
+        // closure needs `m` — neither can be built first. `updaterRef` is only ever CALLED once
+        // both exist; assigning it right after `m` closes the cycle safely.
+        var updaterRef: SelfUpdater!
+        let m = QueueViewModel(isUpdating: { updaterRef.phase.isActiveUpdate })
+        updaterRef = SelfUpdater(isBusy: { m.isRunning })
         _model   = StateObject(wrappedValue: m)
-        _updater = StateObject(wrappedValue: SelfUpdater(isBusy: { m.isRunning }))
+        _updater = StateObject(wrappedValue: updaterRef)
     }
 
     var body: some View {
