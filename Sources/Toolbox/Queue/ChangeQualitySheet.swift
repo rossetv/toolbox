@@ -152,7 +152,8 @@ struct ChangeQualitySheet: View {
                 dismiss()
             }
             PrimaryButton(title: "Switch to \(model.preset.title)", isEnabled: canSwitch) {
-                model.compress()
+                let rows = eligibleJobs
+                Task { await Self.confirm(rows: rows, model: model) }
                 dismiss()
             }
         }
@@ -261,6 +262,21 @@ struct ChangeQualitySheet: View {
     /// must not be offered as if it did something.
     static func canSwitch(_ states: [QueueViewModel.RowRecompressState]) -> Bool {
         states.contains { !rowIsUnchanged($0) }
+    }
+
+    /// The footer CTA's action (spec §7): for each selected-scope row whose `recompressState` is
+    /// `.instantSwitch`, land the parked previous version through the SAME on-disk switch the
+    /// versions popover uses (`useVersion`/`VersionStore`) — never a second, bespoke mechanism —
+    /// and only then run `compress()` for the rows that actually armed. A mixed batch (some
+    /// instant-switch, some armed, some unchanged) honours both mechanisms in one press; unchanged
+    /// rows match neither branch and are left exactly alone.
+    static func confirm(rows: [ToolJob], model: QueueViewModel) async {
+        for job in rows {
+            if case .instantSwitch = model.recompressState(for: job) {
+                await model.useVersion(.previous, for: job)
+            }
+        }
+        model.compress()
     }
 
 }

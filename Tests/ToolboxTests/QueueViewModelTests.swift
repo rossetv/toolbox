@@ -1391,6 +1391,93 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertEqual(model.armedCount, 0)
     }
 
+    /// The Change quality sheet's footer CTA (regression fix, spec §7): an `.instantSwitch` row
+    /// pressed through the sheet must actually land the parked previous version on the delivery
+    /// path — the SAME on-disk switch `useVersion` drives for the versions popover — not silently
+    /// do nothing because the row was in neither `armedJobs` nor a queued state.
+    func testConfirmLandsTheParkedVersionForAnInstantSwitchRow() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Recompress at Smallest, parking the Balanced version.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+        let shippedURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
+
+        await ChangeQualitySheet.confirm(rows: [job], model: model)
+
+        let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertEqual(row.shipped?.preset, .balanced, "the switch, not a recompute, must have landed")
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes,
+                       "the parked Balanced bytes are back on the delivered path")
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)), .none,
+                       "the row now matches its own target — nothing left to switch or arm")
+    }
+
+    /// Mixed batch (spec §7): an instant-switch row and an armed row pressed through the same
+    /// sheet confirm both land — the switch via `useVersion`, the recompress via `compress()` —
+    /// while a row that already matches its target is left exactly alone.
+    func testConfirmHandlesAMixedBatchOfInstantSwitchArmedAndUnchangedRows() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+        let instantID = try XCTUnwrap(model.jobs.first).id
+
+        let unchangedID = try await env.addRow()
+        let armedID = try await env.addRow()
+        model.compress()  // both queued rows land at .balanced, same as the instant-switch row
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        let unchangedShippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(
+            model.jobs.first { $0.id == unchangedID }))?.shipped?.url)
+        // Pinned to a preset the batch never moves to below, so it stays armed against ITS OWN
+        // target throughout, regardless of what `model.preset` does (R1's row-preset rule).
+        model.setOverride(RowOverride(preset: .maximumQuality), for: armedID)
+
+        // Park the instant-switch row's Balanced version behind a Smallest recompress — the
+        // other two rows are excluded so this step leaves them exactly as they are.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.setArmedExclusion(true, for: unchangedID)
+        model.setArmedExclusion(true, for: armedID)
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.setArmedExclusion(false, for: unchangedID)
+        model.setArmedExclusion(false, for: armedID)
+        model.preset = .balanced
+
+        let instantJob = try XCTUnwrap(model.jobs.first { $0.id == instantID })
+        let unchangedJob = try XCTUnwrap(model.jobs.first { $0.id == unchangedID })
+        let armedJob = try XCTUnwrap(model.jobs.first { $0.id == armedID })
+        XCTAssertEqual(model.recompressState(for: instantJob), .instantSwitch(.balanced))
+        XCTAssertEqual(model.recompressState(for: unchangedJob), .none)
+        XCTAssertEqual(model.recompressState(for: armedJob), .armed(.maximumQuality))
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 900),
+                                          shippedBytes: 900, runnerUpBytes: nil) }
+        await ChangeQualitySheet.confirm(rows: [instantJob, unchangedJob, armedJob], model: model)
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let switchedRow = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first { $0.id == instantID })))
+        XCTAssertEqual(switchedRow.shipped?.preset, .balanced, "the parked version landed via the switch")
+
+        let recompressedRow = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first { $0.id == armedID })))
+        XCTAssertEqual(recompressedRow.shipped?.preset, .maximumQuality, "the armed row was recompressed")
+
+        XCTAssertEqual(try fileSize(unchangedShippedURL), HeavyEnv.heavyBytes,
+                       "a row that already matches its target is left exactly alone")
+    }
+
     /// R12: an engine failure keeps the version the user had, on disk and on screen, and says so.
     func testRecompressFailureKeepsThePreviousVersionAndReportsIt() async throws {
         let env = try HeavyEnv()
