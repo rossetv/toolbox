@@ -46,6 +46,7 @@ struct AboutView: View {
 
                 Text(version)
                     .font(.system(size: 12.5, weight: .regular))
+                    .monospacedDigit()
                     .foregroundStyle(Theme.Colors.textTertiary)
 
                 Text("Free PDF tools that never phone home.\nNo account, no subscription, no watermark.")
@@ -73,6 +74,7 @@ struct AboutView: View {
 
                 Text("© 2026 Vilmar Rosset · AGPL-3.0")
                     .font(.system(size: 11, weight: .regular))
+                    .monospacedDigit()
                     .foregroundStyle(Theme.Colors.textTertiary)
                     .padding(.top, Theme.Spacing.small)
             }

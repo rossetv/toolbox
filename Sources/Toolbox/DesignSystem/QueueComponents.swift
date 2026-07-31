@@ -1003,7 +1003,7 @@ struct VariantCard: View {
             HStack(alignment: .lastTextBaseline, spacing: 8) {
                 Text(sizeText).font(.system(size: 22, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
-                Text(percentText).font(.system(size: 12)).foregroundStyle(Theme.Colors.success)
+                Text(percentText).font(.system(size: 12)).monospacedDigit().foregroundStyle(Theme.Colors.success)
             }
             HStack {
                 Spacer(minLength: 0)
