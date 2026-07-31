@@ -25,7 +25,7 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
 | File | Role |
 |------|------|
 | `Sources/Toolbox/Queue/QueueViewModel.swift` | `@MainActor` state for the whole queue: the verb set, preset/output folder, per-row `overrides`/`inspections`, the delivery reservations, the run (`compress()`, `cancel()`), leg progress + ETA, the consent queue, the version switch, the recompress phase |
-| `Sources/Toolbox/Queue/QueueView.swift` | The window's single content view: `QueueScreenState` (`empty`/`ready`/`working`/`finished`/`problems`) as one state machine, plus the frozen nine-slot popover/sheet seam `RootView` fills (see [App](app.md)) |
+| `Sources/Toolbox/Queue/QueueView.swift` | The window's single content view: `QueueScreenState` (`empty`/`ready`/`working`/`finished`/`problems`) as one state machine, and constructs every popover/sheet it presents directly (Quality/OCR/per-file/versions/change-quality/scan-consent/recent-batches/About) — `RootView` only supplies `model`, `history` and the externally-owned `showAbout` binding (see [App](app.md)) |
 | `Sources/Toolbox/Queue/QueueHeaderView.swift` | Top strip in every non-empty state — title, verb chips, save-destination row, working progress bar, finished/problems headlines, and the `⋯` menu |
 | `Sources/Toolbox/Queue/QueueRowsView.swift` | The scrollable list: one row shape (`QueueRow`) whose trailing content and copy are composed per row; `QueueByteFormat` is the byte formatting the header/rows/footer share |
 | `Sources/Toolbox/Queue/QueueFooterView.swift` | Bottom bar in every non-empty state — estimate + Start, saved-so-far + Cancel, save location + Show in Finder/Change quality/Add More |
@@ -140,7 +140,7 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
 
 ## Related
 
-- Modules: [App](app.md) (owns the view model and fills the seam), [Compress](compress.md)
+- Modules: [App](app.md) (owns the view model, constructs `QueueView`), [Compress](compress.md)
   and [OCR](ocr.md) (the two legs' engine-facing surface), [Shared](shared.md)
   (`ToolQueue`, `FileNaming`), [Models](models.md) (`RowOutcome`, `JobState`),
   [DesignSystem](design-system.md) (`QueueComponents.swift`)

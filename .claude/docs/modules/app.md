@@ -23,12 +23,12 @@ and two headless self-test hooks (compress, update).
 | File | Role |
 |------|------|
 | `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `UpdateSmoke.checkRelaunchIfMarked()` (DEBUG) then `CompressSmoke.runIfRequested()` then `UpdateSmoke.runIfRequested()` (DEBUG) then `yieldToExistingInstance()` before any window opens; declares the single `Window("Toolbox", id: "main")` and a `CommandGroup(replacing: .appInfo)` that sets `showAbout`; `AppDelegate` (`applicationWillTerminate`) empties the Rung-3 runner-up cache on quit |
-| `Sources/Toolbox/App/RootView.swift` | The window's single pane: owns `QueueViewModel`, `SelfUpdater` and `UpdateChecker`, shows `UpdateBannerView` when an update is available, and plugs `QueueView`'s frozen nine-slot seam (quality/OCR/per-file/versions/change-quality/scan-consent/recent-batches/about popovers plus `showAbout`) |
+| `Sources/Toolbox/App/RootView.swift` | The window's single pane: owns `QueueViewModel`, `SelfUpdater` and `UpdateChecker`, shows `UpdateBannerView` when an update is available, and constructs `QueueView(model:history:showAbout:)` — `QueueView` builds all of its own popovers/sheets directly, `RootView` only threads the model, history and the externally-owned `showAbout` binding through |
 | `Sources/Toolbox/App/WindowConfigurator.swift` | `WindowSetup.applyMinimumSize(_:)` — enforces the window's minimum size (`preferredSize`, 900×640), title and titlebar style on `NSWindow`, restores/saves the remembered frame, and arms the stray-focus-clear net |
 | `Sources/Toolbox/App/UpdateChecker.swift` | Fetches the latest GitHub release on launch and compares versions — the app's only unprompted network request; parses and host-pins the release page and `.dmg` asset URLs (`https`/`github.com` only), with a DEBUG-only `TOOLBOX_UPDATE_FEED` fixture-feed override |
 | `Sources/Toolbox/App/SelfUpdater.swift` | The user-initiated self-update: download the release DMG, verify its published `.sha256`, mount it, aside-swap the running app bundle, relaunch — mirrors `scripts/install.sh` step for step; every failure leg leaves a working install on disk |
 | `Sources/Toolbox/App/UpdateBannerView.swift` | The strip shown under the titlebar when `UpdateChecker.available` is set: version, release-notes link, Update button (drives `SelfUpdater`), and a per-version dismiss (`bannerDismissed` in `UserDefaults`) |
-| `Sources/Toolbox/App/AboutView.swift` | The About content: bundle icon/name/version (read from `Bundle.main.infoDictionary`, never hard-coded), GitHub/licence/contact links, copyright; presented through `QueueView`'s `about` seam slot |
+| `Sources/Toolbox/App/AboutView.swift` | The About content: bundle icon/name/version (read from `Bundle.main.infoDictionary`, never hard-coded), GitHub/licence/contact links, copyright; presented by `QueueView` itself, driven by the `showAbout` binding |
 | `Sources/Toolbox/App/CompressSmoke.swift` | `TOOLBOX_SMOKE=compress` — runs the real compress path from the app process, exits with a pass/fail line; the CI packaged-app smoke test |
 | `Sources/Toolbox/App/UpdateSmoke.swift` | `TOOLBOX_SMOKE=update` (DEBUG only) — drives a real update against a `TOOLBOX_UPDATE_FEED` fixture feed and proves the relaunch actually swaps to the new bundle, via a marker file (`checkRelaunchIfMarked()`) that crosses the process boundary `open` does not carry env vars across |
 
@@ -87,7 +87,8 @@ and two headless self-test hooks (compress, update).
 - **`showAbout` is owned by `ToolboxApp`, not `RootView` or `QueueView`** — the app
   menu's `CommandGroup(replacing: .appInfo)` and `QueueView`'s `⋯` menu both need to
   toggle the same presentation state, so it is threaded down as a `Binding` through
-  `RootView` into `QueueView`'s seam.
+  `RootView` into `QueueView`, which owns the single `.sheet(item:)`/`.popover` surface
+  it presents against.
 
 ## Gotchas
 
