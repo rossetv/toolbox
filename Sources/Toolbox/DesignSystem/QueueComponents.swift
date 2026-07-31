@@ -275,6 +275,7 @@ private struct CapsuleGlowAndSweep: View {
     private static let capWidth: CGFloat = 30
 
     var body: some View {
+        let clampedCapWidth = min(width, Self.capWidth)
         Group {
             Capsule()
                 .fill(LinearGradient(
@@ -282,8 +283,8 @@ private struct CapsuleGlowAndSweep: View {
                     startPoint: .leading, endPoint: .trailing
                 ))
                 .opacity(capGlowOpacity)
-                .frame(width: min(width, Self.capWidth))
-                .offset(x: width - min(width, Self.capWidth))
+                .frame(width: clampedCapWidth)
+                .offset(x: width - clampedCapWidth)
             Capsule()
                 .fill(Color.white.opacity(0.4))
                 .frame(width: totalWidth * 0.26)
