@@ -11,10 +11,11 @@ import SwiftUI
 
 /// Reusable components built on `Theme`, rebuilt from the Claude Design mockup
 /// (kept outside this repository) — matching its feel, not its pixels.
-/// Presentation-only: none of these depend on `ToolJob`/`CompressPreset`/view-model state, so
-/// they stay reusable across the app. Consumed by the unified queue's views (`QueueComponents.swift`,
-/// `Queue/*`) and the app chrome (`App/*`) — the per-tool `CompressView`/`OCRView`/`SidebarView`
-/// this comment once named were retired in favour of the single-window queue (`QueueView`).
+/// Both this file and `QueueComponents.swift` are presentation-only: neither depends on
+/// `ToolJob`/`CompressPreset`/view-model state. The real split is size: the app's small, generic
+/// controls (buttons, thumbnails, section labels) live here; the larger, queue-specific rows and
+/// cards (`QueueRow`, `VerbChip`, `OptionCard`, etc.) live in `QueueComponents.swift`. Consumed by
+/// the unified queue's views (`QueueComponents.swift`, `Queue/*`) and the app chrome (`App/*`).
 
 // MARK: - Hover tracking
 
@@ -208,6 +209,64 @@ struct LinkButton: View {
     .padding(40)
     .background(Theme.Colors.surface)
     .preferredColorScheme(.dark)
+}
+
+// MARK: - SecondaryButton
+
+/// A neutral filled button — "Show in Finder", "Enter password…", "Compare versions…". Dark
+/// mode's `#3a3a3c` is a component-local pair, not a `Theme` token: it is NOT the same as
+/// `Theme.Colors.surface`'s dark value (`#242426`) — the handoff genuinely uses a lighter grey
+/// for these buttons than the window surface.
+struct SecondaryButton: View {
+    private static let background = Color(light: NSColor(hex: 0xFFFFFF), dark: NSColor(hex: 0x3A3A3C))
+
+    let title: String
+    var icon: Image? = nil
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                icon?.font(.system(size: 12, weight: .medium))
+                Text(title).themeFont(.bodyStrong)
+            }
+            .foregroundStyle(Theme.Colors.text)
+            .padding(.vertical, 9)
+            .padding(.horizontal, 14)
+            // Fill, ring and shadow inside the label so the press scale carries all three (see
+            // `MotionButtonStyle`); `contentShape` stays after the padding.
+            .background(
+                isHovering ? Theme.Colors.background : Self.background,
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 1.5, x: 0, y: 0.5)
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        }
+        .buttonStyle(MotionButtonStyle())
+        .clearsClickFocus()
+        .continuousHover($isHovering)
+        .pointingHandCursor()
+        // Handoff: `transition:background .15s`, hovering to `bg`. No lift — the handoff reserves
+        // that for the filled accent CTAs.
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
+    }
+}
+
+#Preview("SecondaryButton") {
+    HStack(spacing: 10) {
+        SecondaryButton(title: "Show in Finder", icon: Image(systemName: "folder"), action: {})
+        SecondaryButton(title: "Change quality", action: {})
+        SecondaryButton(title: "Cancel", action: {})
+    }
+    .padding(40)
+    .background(Theme.Colors.surface)
 }
 
 // MARK: - PDFThumbnail
