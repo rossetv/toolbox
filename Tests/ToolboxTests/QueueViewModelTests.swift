@@ -9,6 +9,254 @@ import Combine
 import XCTest
 @testable import Toolbox
 
+// MARK: - R-net re-derivation map (spec §11; plan Task P-D)
+//
+// The redesign reverses prior-art rules this suite was written to defend (spec §5's change
+// table), so every test it carried has to be re-derived rather than assumed still meaningful.
+// This is that enumeration: all 62 test funcs present at the redesign's base commit 624d398 —
+// `grep -c 'func test'` on `CompressViewModelTests.swift`, the file this one was renamed from,
+// a count that INCLUDES the three untagged funcs preceding the first `// MARK:` — each with
+// the disposition it now stands at, plus the siblings added since.
+//
+// DERIVATION, not recollection. Dispositions come from per-commit BODY diffs
+// (`git show -M --unified=0 <sha> -- <path>`, each hunk mapped onto its enclosing func), and
+// the cross-suite sweep at the foot comes from grepping the MECHANISM's symbols —
+// `runTask == nil`, `isRunning`, `alternateOutput`, `switchesInFlight`, `compressedHeavy`,
+// `canCompress` — never the R-tags in the MARK headings. An R-tag records which rule a group
+// was written for; it does not record whether the redesign moved it, and three of the four
+// reversals below sit in groups whose heading names no rule that changed.
+//
+//   adapt             the invariant survives; the body changed only to track a renamed symbol
+//                     or a new mechanism, or did not change at all
+//   superseded-by(X)  the assertion no longer exists here; X carries the invariant forward
+//   flipped-by(F<n>)  the asserted BEHAVIOUR itself was reversed by that task
+//   new(F<n>)         sibling added by that task
+//
+// TALLIES, reconciled against the rows below (`git log` for 647fd8c carries an earlier count
+// that did not add to 62 — these are the numbers, and the derivation is in the rows):
+//   of the 62 at base: 3 superseded · 5 body-adapted · 54 carried unchanged  (3 + 5 + 54 = 62)
+//   flipped: 3 — ONE inside this file (`testAddIsIgnoredWhileABatchIsRunning`, which is also one
+//     of the three superseded) and TWO cross-suite (`ToolQueueTests.testAddWhileRunningIsRefused`,
+//     `CompressEngineMRCTests.testHybridLargerThanGsShipsGsOutput`)
+//   new siblings: 3 already landed (F1b ×2, F4 ×1) + 4 filled by P-D
+//   the 5 body-adapted: testThreeFileSyntheticBatchCompressesEndToEnd ·
+//     testCompressIsRefusedWhileASwitchIsInFlight · testMixedRunCountsBothSets ·
+//     testArmedRowsAloneEnableTheButton · testAPlainResultWithAPreviousVersionOffersTheCapsule
+//
+// Task keys: F1 ecb3968 · F1b 8f803b7 · F2 cc3c3cb · F4 a256405 + d46511a + 1e1aa74 ·
+// F5a 08fc827 · F5e f45dc19 · F6 a630def · P-D (this task).
+//
+// F4's rename commit (a256405) rewrote every func in the file. Its diff filtered on
+// `CompressViewModel` → `QueueViewModel` is EMPTY, so it changed no assertion and is not
+// recorded per row.
+//
+// === untagged early block (3 at base) ===
+//   testAddIsIgnoredWhileABatchIsRunning ....... flipped-by(F4) → superseded-by(
+//                                               QueueAdmissionTests.testAddDuringRunJoinsBatch);
+//                                               tombstoned in place at the head of the class body
+//   testThreeFileSyntheticBatchCompressesEndToEnd ... adapt — F1 destructures the compound
+//                                               outcome, F4 `canCompress` → `canStart`,
+//                                               F6 injects a temp-rooted `HistoryStore`
+//   testChangingPresetReestimatesQueuedJobs .... adapt (body unchanged)
+//   testCJKLanguageClampsAccuracyToAccurate .... new(F4)
+//
+// === MARK: runner-up switch + lifecycle (Task 18) — 21 at base ===
+// (3 + 21 + 5 + 4 + 12 + 5 + 3 + 3 + 4 + 2 = 62, the base count derived above.)
+// The spec's R7-asymmetry reversal is an ENGINE change (F2): it decides WHICH variants reach a
+// row, never how the row switches between the ones it has. Every switch invariant below is
+// therefore intact, and the group needed no flips.
+//   testCompressedHeavyOutcomePublishesBothVersions ... adapt (body unchanged)
+//   testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize ... adapt (body unchanged) — the
+//                                               `runnerUpBytes == inputSize` marker F2's
+//                                               withhold rule deliberately exempts
+//   testCompressedHeavyRetainsMRCReportOnJob ... adapt (body unchanged)
+//   testSecondUseVersionTapWhileFirstIsInFlightIsANoOp ... adapt (body unchanged)
+//   testSwitchTogglesInstantlyAndReversibly .... adapt (body unchanged)
+//   testPlainSwitchNeverExposesARunningRowOrDropsAllFinished ... adapt (body unchanged)
+//   testCapsuleTitleFlipsOnSwitch ............. superseded-by(testShippedCardFlipsOnSwitch)
+//                                               (F1b) — `capsuleTitle` became the "N versions"
+//                                               family, so the honest-label invariant moved
+//                                               onto the popover's shipped card
+//   testCapsuleTitleReadsOriginalWhenRunnerUpIsInput ... superseded-by(
+//                                               testCardsSurfaceOriginalKindParkedVariant) (F1b)
+//   testShippedCardFlipsOnSwitch .............. new(F1b), amended by F5a (the always-present
+//                                               Original reference row takes the row to three)
+//   testCardsSurfaceOriginalKindParkedVariant .. new(F1b)
+//   testSavedBytesUsesShippedVersionForHeavyJob ... adapt (body unchanged)
+//   testDisplayedBytesTracksShippedVersion ..... adapt (body unchanged)
+//   testSwitchWithMissingRunnerUpRerunsJob ..... adapt (body unchanged) — the re-run path it
+//                                               drives was rebuilt by F5e; the invariant it
+//                                               asserts (a vanished runner-up is regenerated,
+//                                               not silently dropped) is unchanged, and F5e's
+//                                               own additions live in `QueuePassTests`
+//   testUseVersionIsIgnoredWhileARunIsInFlight .. adapt (body unchanged)
+//   testCompressIsRefusedWhileASwitchIsInFlight . adapt — F4 `canCompress` → `canStart`
+//   testClearFinishedRefusedWhileASwitchIsInFlight ... adapt (body unchanged)
+//   testSwitchFailingAfterRerunLeavesStateCanonical ... adapt (body unchanged)
+//   testRerunSwitchClearsAStaleRecompressErrorOnSuccess ... adapt (body unchanged)
+//   testLaterBatchDoesNotRewriteAFinishedRowsPreset ... adapt (body unchanged) — spec §5 keeps
+//                                               this one BY NAME through the per-row override
+//                                               reversal; `effectivePreset` equals the batch
+//                                               preset on a row with no override
+//   testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling ... adapt (unchanged)
+//   testRemoveRowDiscardsRunnerUp ............. adapt (body unchanged)
+//   testClearFinishedDiscardsRunnerUps ........ adapt (body unchanged)
+//   testCancelDiscardsRunnerUpReservations .... adapt (body unchanged)
+//
+// === MARK: arming (R1/R3/R6/R7) — 5 at base ===
+// F4 step 5 re-keyed arming and futility onto `effectivePreset(for:)`/`effectiveVerbs(for:)`.
+// None of these five needed a body change: with no override the effective preset IS the batch
+// preset, so each still asserts its own invariant. Their per-row siblings are F4's
+// `QueueAdmissionTests.testArmingUsesRowEffectivePreset` and `testFutilityKeyIncludesVerbSet`,
+// and P-D's `testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs` below.
+//   testSelectingADifferentPresetArmsAFinishedRow ... adapt (body unchanged)
+//   testReselectingTheRowsPresetDisarmsIt ..... adapt (body unchanged)
+//   testFailedRowsNeverArm .................... adapt (body unchanged)
+//   testNoGainRowArmsElsewhereAndIsFutileAtItsOwnPreset ... adapt (body unchanged)
+//   testNothingArmsWhileARunIsInFlight ........ adapt (body unchanged)
+//   testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs ... new(P-D)
+//
+// === MARK: recompress prediction (R16) — 4 at base ===
+// R16's calibration gate is the engine's own `wantsMRC` conjunction, and the redesign ADDED a
+// third term to it: the row's `rebuildScan` override. The two path tests below predate that
+// term and exercise only the preset term, hence P-D's sibling.
+//   testPredictionScalesByTheObservedRatioWhenThePathRepeats ... adapt (body unchanged)
+//   testPredictionUsesTheRawEstimateWhenTheEnginePathChanges ... adapt (body unchanged)
+//   testPredictionIsWithheldWhenItWouldNotBeatTheOriginal ... adapt (body unchanged)
+//   testPredictionIsWithheldWhenTheOriginalIsGone ... adapt (body unchanged)
+//   testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut ... new(P-D)
+//
+// === MARK: recompress commit protocol (R10–R13) — 12 at base ===
+// F5e rebuilt `recompress`'s engine call (OCR re-applied, row `rebuildScan` honoured, commit
+// through `replaceItemAt`, `finalBytes` re-stat). Its new assertions live in `QueuePassTests`;
+// every commit-protocol invariant here survives unchanged, because R10–R13 govern WHERE the
+// result lands and WHAT is parked, neither of which the reversals touch.
+//   testRecompressCommitsAndParksThePreviousVersion ... adapt (body unchanged)
+//   testRecompressDeliversTheFreshResultWhenTheShippedFileWasDeletedOutsideTheApp ... adapt
+//   testPreviousVersionsPresetOffersAnInstantSwitchRatherThanArming ... adapt (unchanged)
+//   testRecompressFailureKeepsThePreviousVersionAndReportsIt ... adapt (body unchanged)
+//   testARecompressErrorClearsWhenThePresetChangesOrTheNextRunStarts ... adapt (unchanged)
+//   testCancellingDuringTheQueuePhaseNeverStartsTheRecompressPhase ... adapt (unchanged)
+//   testCancellingARecompressKeepsThePreviousResult ... adapt (body unchanged)
+//   testNoGainRecompressKeepsEveryReference ... adapt (body unchanged)
+//   testRecompressWritesToTheRowsExistingResultPathAfterTheFolderChanged ... adapt (unchanged)
+//   testAQueuedJobNeverClaimsAnArmedRowsResultPath ... adapt (body unchanged) — the reservation
+//                                               ledger moved to add time (F4), and this still
+//                                               asserts the collision it was written for
+//   testAQueuedJobNeverClaimsAnExistingRowsLiveRunnerUpPath ... adapt (body unchanged)
+//   testMissingOriginalReportsPerRowAndLeavesTheResultIntact ... adapt (body unchanged)
+//   testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious ... new(P-D)
+//
+// === MARK: one run, two phases (R5/R9) — 5 at base ===
+//   testMixedRunCountsBothSets ................ adapt — F4 `canCompress` → `canStart`
+//   testArmedRowsAloneEnableTheButton ......... adapt — F4 `canCompress` → `canStart`
+//   testTheRecompressPhaseWaitsForTheQueuePhase ... adapt (body unchanged)
+//   testRunProgressIsScopedToTheRunsOwnRows ... adapt (body unchanged)
+//   testAFailedQueuedRowStillCountsTowardTheProgressBar ... adapt (body unchanged)
+//
+// === MARK: armed-state aggregates and cache lifecycle (R4/R17/R18) — 3 at base ===
+//   testAllFinishedIsFalseWhileARowIsArmed .... adapt (body unchanged)
+//   testClearFinishedDiscardsTheParkedPreviousVersion ... adapt (body unchanged)
+//   testAPlainResultWithAPreviousVersionOffersTheCapsule ... adapt — F1b moved the capsule to
+//                                               the "N versions" family, F5a took the row to
+//                                               three cards; the GATE it pins (a parked slot,
+//                                               never the card count) is unchanged
+//
+// === MARK: the armed banner's arithmetic (R4) — 3 at base ===
+//   testArmedSummarySumsThePredictedExtraSaving ... adapt (body unchanged)
+//   testArmedSummaryGoesNonPositiveWhenTheArmedPresetIsLessAggressive ... adapt (unchanged)
+//   testArmedSummaryWithholdsTheExtraWhenNoRowPredictsConfidently ... adapt (unchanged)
+//   testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset ... new(P-D)
+//
+// === MARK: the previous version, end to end (R7/R15) — 4 at base ===
+// The R7 in this heading is RECOMPRESS R7 (the previous-version slot), not MRC R7 (the
+// discarded losing hybrid). Only the latter is reversed — the tag-grep trap this map exists
+// to avoid.
+//   testUsingThePreviousVersionSwapsTheDeliveredFileBack ... adapt (body unchanged)
+//   testUsingAVanishedPreviousVersionReportsItAndDropsTheSlot ... adapt (body unchanged)
+//   testAFailedSwitchKeepsAPreviousVersionThatIsStillOnDisk ... adapt (body unchanged)
+//   testAFailedRunnerUpSwitchKeepsTheRunnerUpThatIsStillOnDisk ... adapt (body unchanged)
+//
+// === MARK: lead derivation (R2/R6/R10/R12) — 2 at base ===
+//   testANoGainRowIsBothUnchangedAndArmed ..... adapt (body unchanged)
+//   testAnArmedRowWithAMissingOriginalOffersNoPrediction ... adapt (body unchanged)
+//
+// === cross-suite: every test elsewhere whose asserted behaviour this spec reverses ===
+// Located by the mechanism greps above, not by rule tags. Each disposition below was VERIFIED
+// against the commit that owns it; the flips are their owners' work, recorded here so the
+// re-derivation is complete in one place.
+//
+//   `alternateOutput` — CompressEngineMRCTests (F2 owns all eight; verified landed):
+//     testHybridLargerThanGsShipsGsOutput ..... flipped-by(F2) → superseded-by(
+//                                               testHybridLostGateStillWritesRunnerUp).
+//                                               It asserted `alternateOutput` was NOT written
+//                                               when the hybrid lost — the exact R7 asymmetry
+//                                               spec §5 removes
+//     testHybridSmallerThanGsShipsHybridWithRunnerUp ......... adapt — hybrid-won retention was
+//                                               already symmetric; body changed only for F2's
+//                                               `ReportSpy` count refactor
+//     testHybridWinsButGsCandidateNotSmallerThanInputParksOriginalAsRunnerUp ... adapt — the
+//                                               untouched-original park is not a compress
+//                                               artefact, so §6.3's withhold rule spares it
+//                                               (DECISIONS 2026-07-24)
+//     testMRCInternalFailureShipsGsSilently ... adapt — no valid hybrid exists, so retention
+//                                               cannot fire
+//     testNeverLargerThanInputStillHolds ...... adapt — no-gain path, nothing to retain
+//     testScanColourOnMaximumQualityNeverAttemptsMRC ......... adapt — no hybrid built (D3)
+//     testScanBilevelStillRoutesToRungTwo ..... adapt — no hybrid built
+//     testCancelDuringRungThreeDeliversNoOutput ............... adapt — body untouched by F2
+//   MRCInvariantTests.testEndToEndMixedDocumentBeatsGs ....... adapt — the hybrid WINS there,
+//                                               and the winning path always retained its loser
+//
+//   `isRunning` / the add-time guard — F4 owns both flips (verified landed):
+//     ToolQueueTests.testAddWhileRunningIsRefused ............. flipped-by(F4) → superseded-by(
+//                                               testAddDuringRunJoinsTheLiveBatch), the
+//                                               queue-level half; tombstoned in that file
+//     QueueViewModelTests.testAddIsIgnoredWhileABatchIsRunning ... see the untagged block above
+//   ToolQueueTests.testSecondRunIsRefusedSoTheLiveBatchStaysCancellable ... adapt — the `run`
+//                                               re-entrancy guard is NOT the add guard and is
+//                                               deliberately untouched (plan F4)
+//
+//   `switchesInFlight` — no reversal: the switch guard's semantics are unchanged by the spec, and
+//                                               its only consumer outside this file is
+//                                               `QueuePassTests`, written by F5a/F5b/F5e AFTER
+//                                               the reversals landed — it cannot be asserting the
+//                                               old behaviour. All adapt.
+//
+//   Checked and INERT — the two files `grep -rln isRunning Tests/` returns that no row above
+//   accounts for. Named so the sweep is re-runnable: a reader repeating that grep gets five
+//   files and must be able to tell a null result from an omission.
+//     `BatchProgressTests` ..................... created by F5c (bb45372), after every reversal,
+//                                               so it cannot assert pre-reversal behaviour; its
+//                                               `isRunning` hits are `waitUntil` conditions, not
+//                                               assertions
+//     `SeatbeltRunTests` ....................... homonym: every hit is `Foundation.Process`'s own
+//                                               `isRunning` on the gs child, not the view model's.
+//                                               Untouched since 624d398, and the seatbelt scope is
+//                                               a KEPT constraint (spec §5), not a reversed one
+//
+//   Recompress R19 (OCR gains no recompress behaviour) — reversed by F5e. No test asserted R19
+//                                               anywhere: the mechanism grep returns only two
+//                                               `Sources/` comments and no assertion, so the
+//                                               reversal's whole test surface is F5e's new
+//                                               `QueuePassTests` re-run block. (One of those
+//                                               comments is now a stale claim — reported to the
+//                                               orchestrator, not fixed here: no `Sources/`
+//                                               edits in this track.)
+//
+// === gaps this task filled (4) ===
+// Each is a rule that survives R1–R18 but whose mechanism the redesign changed underneath it,
+// leaving the rule asserted only against the pre-redesign shape. Every one was seen to FAIL
+// against a deliberately broken assertion before being committed — the suite is green by
+// construction here, so a test that has never been red is a test that proves nothing.
+//   testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs — R6 futility, preset axis, per row
+//   testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut — R16 calibration, the
+//     `rebuildScan` term the redesign added to the path test
+//   testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset — R4 banner arithmetic, per row
+//   testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious — spec §5's version-cap
+//     collision driven end to end through the view model (`VersionStoreTests`'
+//     `testConsentRetentionPlusPreviousParkStaysWithinCap` proves it at the store)
+
 /// Drives `QueueViewModel` exactly as the view does — the full batch/preset/estimate/
 /// output-folder GUI path (Track C, Task C.2), end to end, with no UI harness involved (the
 /// view itself has no logic beyond calling into this model).
@@ -877,6 +1125,45 @@ final class QueueViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.isRunning }
     }
 
+    /// R6's futile record is keyed by `(row, effective preset, verb set)`, and the PRESET term is
+    /// the row's own — the half the redesign moved and the half nothing covered. F4's
+    /// `QueueAdmissionTests.testFutilityKeyIncludesVerbSet` varies the verb set;
+    /// `testNoGainRowArmsElsewhereAndIsFutileAtItsOwnPreset` above varies the BATCH preset. Neither
+    /// drives the row back onto a futile preset by override, which is the case that discriminates:
+    /// a lookup still reading the batch preset would find no record at Smallest Size and offer to
+    /// re-run a job it has already been told cannot shrink — R6's whole point.
+    func testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
+                                          shippedBytes: nil, runnerUpBytes: nil) }
+        model.preset = .balanced
+        let id = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .futile(.balanced), "the record is made at the preset the row ran at")
+
+        // The batch moves away, so the row re-opens at the new preset — the positive control.
+        model.preset = .smallestSize
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize))
+
+        // …and an override pointing the ROW back at Balanced must find the record again, while the
+        // batch still sits at Smallest Size.
+        model.setOverride(RowOverride(preset: .balanced), for: id)
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .futile(.balanced),
+                       "futility follows the preset the row would actually run at")
+        XCTAssertEqual(model.armedCount, 0, "and a futile row is not in the armed set")
+
+        // Dropping the override hands the row back to the batch, proving the effective preset — not
+        // some sticky per-row copy of it — is what the lookup reads.
+        model.setOverride(nil, for: id)
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize))
+    }
+
     // MARK: recompress prediction (R16)
 
     /// A row whose engine path repeats scales the raw estimate by what the engine actually did —
@@ -971,6 +1258,55 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertNil(model.recompressPrediction(for: job, at: .smallestSize),
                      "no input, no prediction — R10 applies at arming time, not just at run time")
         XCTAssertTrue(model.isOriginalMissing(for: job))
+    }
+
+    /// The third term of R16's path test. The calibration gate is the engine's own `wantsMRC`
+    /// conjunction — the row's `rebuildScan`, `.scanColour`, and a preset other than Maximum
+    /// quality — and the redesign ADDED the first of those (spec §7's per-file settings). The two
+    /// path tests above predate it and both move the PRESET term, so an implementation that read
+    /// the batch's rebuild decision, or none at all, would pass every one of them while quoting a
+    /// scan-rebuild's ratio to a row that has just been told not to rebuild — the over-promise the
+    /// calibration exists to remove.
+    func testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut() async throws {
+        // A large original for the reason `testPredictionUsesTheRawEstimateWhenTheEnginePathChanges`
+        // needs one: the "must beat the original" guard is checked LAST and would return nil for
+        // both legs, testing nothing. `timeBudget` is raised because this asserts on a real
+        // analysis — a fallback estimate arrives once and no waiting recovers it.
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour, timeBudget: 5)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.runToDone().id
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        // Positive control: rebuild on, `.scanColour`, Smallest Size, shipped MRC — all three terms
+        // agree, so the observed ratio is applied and the answer is NOT the raw estimate.
+        var job = try XCTUnwrap(model.jobs.first)
+        let rawBefore = try XCTUnwrap(model.analysis(for: job)?
+            .estimates[.smallestSize]?.predictedBytes)
+        let calibrated = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        XCTAssertNotEqual(calibrated, rawBefore,
+                          "precondition: with the rebuild on, this row calibrates")
+
+        // The row opts out. That re-prices the analysis onto the gs-only path (spec §6.7), so the
+        // raw figure the prediction must now equal is a NEW number — read it after the re-price
+        // lands, or this compares against the rebuild's own estimate.
+        let displayed = try XCTUnwrap(model.jobs.first?.estimate?.predictedBytes)
+        model.setOverride(RowOverride(rebuildScan: false), for: id)
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate?.predictedBytes != displayed }
+
+        job = try XCTUnwrap(model.jobs.first)
+        let raw = try XCTUnwrap(model.analysis(for: job)?.estimates[.smallestSize]?.predictedBytes)
+        XCTAssertEqual(model.recompressPrediction(for: job, at: .smallestSize), raw,
+                       "an MRC-shipped row whose rebuild is off changes path — the ratio learned "
+                       + "on the rebuild does not transfer, so the raw estimate stands")
+
+        // Named negative control: the figure an implementation blind to the override would give.
+        // Associated exactly as the implementation associates it, and three orders of magnitude
+        // away from the right answer, so this test can never pass by accident.
+        let baseline = try XCTUnwrap(model.analysis(for: job)?.estimates[.balanced]?.predictedBytes)
+        XCTAssertNotEqual(model.recompressPrediction(for: job, at: .smallestSize),
+                          Int((Double(HeavyEnv.heavyBytes) / Double(baseline)) * Double(raw)),
+                          "quoting the rebuild's own ratio here is the defect this pins")
     }
 
     // MARK: recompress commit protocol (R10–R13)
@@ -1342,6 +1678,60 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertNotNil(model.versions(for: job)?.shipped)
     }
 
+    /// Spec §5's version-cap collision (R14/R15), driven end to end. Both parked slots fill at once
+    /// the moment a re-run keeps a second variant of its own: the fresh loser takes the runner-up
+    /// slot while the version it replaced parks as the previous. `VersionStoreTests`'
+    /// `testConsentRetentionPlusPreviousParkStaysWithinCap` proves the store holds that shape;
+    /// nothing proved a real recompress PRODUCES it — and both incumbent re-run tests here
+    /// (`testRecompressCommitsAndParksThePreviousVersion`,
+    /// `testAPlainResultWithAPreviousVersionOffersTheCapsule`) script a re-run that comes back with
+    /// no runner-up at all, so the commit's two slot writes have only ever been exercised apart.
+    func testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+        let firstRunnerUp = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?
+            .runnerUp?.url)
+        XCTAssertNil(model.versions(for: try XCTUnwrap(model.jobs.first))?.previous,
+                     "precondition: only one slot is occupied before the re-run")
+
+        env.stub.script = { _, _ in .init(outcome: .compressedHeavy(before: 9000, after: 600,
+                                                                    runnerUpBytes: 2_000),
+                                          shippedBytes: 600, runnerUpBytes: 2_000) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertEqual(row.shipped?.bytes, 600)
+        XCTAssertEqual(row.shipped?.preset, .smallestSize)
+        XCTAssertEqual(row.runnerUp?.bytes, 2_000, "the runner-up slot holds THIS run's loser")
+        XCTAssertEqual(row.previous?.bytes, HeavyEnv.heavyBytes,
+                       "and the previous slot the version this run replaced")
+        XCTAssertEqual(row.previous?.preset, .balanced)
+
+        // The cap is four ROWS, not four slots: two parked versions, the file in use, and the
+        // untouched original referenced in place (spec §5's ruling; the popover lists exactly this).
+        XCTAssertEqual(row.cards.map(\.key), [.shipped, .runnerUp, .previous, .originalReference])
+        XCTAssertEqual(row.capsuleTitle, "4 versions")
+
+        // Every named version is really on disk — a card advertising a switch to a file that is not
+        // there is the mislabel R12 forbids.
+        for card in row.cards {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: card.version.url.path),
+                          "\(card.key) must name a file that exists")
+        }
+        XCTAssertEqual(try fileSize(try XCTUnwrap(row.runnerUp?.url)), 2_000)
+        XCTAssertEqual(try fileSize(try XCTUnwrap(row.previous?.url)), HeavyEnv.heavyBytes)
+
+        // …and the superseded runner-up is NOT still lying around: replacing the slot discards the
+        // file it held, or the session cache grows a version nothing can reach (D6/R18).
+        XCTAssertNotEqual(row.runnerUp?.url, firstRunnerUp)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstRunnerUp.path),
+                       "the version the runner-up slot no longer holds is discarded, not orphaned")
+    }
+
     // MARK: one run, two phases (R5/R9)
 
     /// R5: newly added files and armed rows form ONE run behind one button. The counts the button
@@ -1608,6 +1998,45 @@ final class QueueViewModelTests: XCTestCase {
         let summary = try XCTUnwrap(model.armedSummary)
         XCTAssertEqual(summary.armedCount, 1, "the row IS armed — the number is what is missing")
         XCTAssertNil(summary.extraSaving)
+    }
+
+    /// The banner's arithmetic is per ROW, not per batch (spec §6.1). All three branches above
+    /// price their row at the batch preset because none of them overrides anything, so a summary
+    /// still summing at `preset` passes every one — while promising a saving for a run the row
+    /// will never make. The pill and the banner must describe the same run.
+    func testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset() async throws {
+        // The 50 MB original keeps BOTH legs confident: at Maximum quality the row changes engine
+        // path and takes the raw estimate, which the "must beat the original" guard would refuse
+        // against `HeavyEnv`'s default 9 kB — and a nil prediction contributes nothing, so the
+        // test would compare two identical sums.
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour, timeBudget: 5)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.runToDone().id
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .smallestSize
+        var job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .armed(.smallestSize))
+        let atSmallest = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        XCTAssertEqual(model.armedSummary?.extraSaving, HeavyEnv.heavyBytes - atSmallest,
+                       "with no override the row prices at the batch preset")
+
+        // The row alone moves to Maximum quality. A preset override re-prices nothing (every preset
+        // is predicted in one analysis pass), so the numbers below come from the same estimates.
+        model.setOverride(RowOverride(preset: .maximumQuality), for: id)
+        job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .armed(.maximumQuality),
+                       "the row arms at its own preset")
+        let atMaximum = try XCTUnwrap(model.recompressPrediction(for: job, at: .maximumQuality))
+        XCTAssertNotEqual(atMaximum, atSmallest, "precondition: the two presets price apart")
+
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.armedCount, 1)
+        XCTAssertEqual(summary.extraSaving, HeavyEnv.heavyBytes - atMaximum,
+                       "the banner sums what the row will actually run, not what the batch selects")
+        XCTAssertNotEqual(summary.extraSaving, HeavyEnv.heavyBytes - atSmallest,
+                          "quoting the batch preset's figure here is the defect this pins")
     }
 
     // MARK: the previous version, end to end (R7/R15)
