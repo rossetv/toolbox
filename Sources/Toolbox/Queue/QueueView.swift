@@ -307,6 +307,12 @@ private struct QueueDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         isTargeted = false
+        // The modal gate (`QueueView.shouldAcceptDrop`) must be evaluated HERE, synchronously,
+        // not inside the async `loadObject` completion below: AppKit reads this return value
+        // immediately to decide the drop's accept/reject animation, so returning `true`
+        // unconditionally animates acceptance even while the Choose Files/Folder panel is up —
+        // the exact case the gate exists for — and silently drops the files with no feedback.
+        guard QueueView.shouldAcceptDrop(modalWindowPresented: NSApp.modalWindow != nil) else { return false }
         let providers = info.itemProviders(for: [.fileURL])
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
