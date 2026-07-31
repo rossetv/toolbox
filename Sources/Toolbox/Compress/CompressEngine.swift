@@ -66,6 +66,12 @@ struct CompressEngine {
     /// verify it, so its per-page peak is several times Rung 2's — hence the tighter ceiling.
     /// Beyond this the document declines to the gs path, which streams and has no such limit.
     static let maxMRCPages = 400
+    /// Where the gs pass's progress ceiling sits on a row attempting the Rung-2/3 rebuild — the
+    /// gs pass maps into `0...rungProgressCeiling`, the rebuild leg into `rungProgressCeiling...1`
+    /// (see `compress`'s `gsProgressCeiling`). Named so `QueueViewModel`'s "Compressing…" /
+    /// "Rebuilding scan…" active-meta label (spec §6.8) reads the SAME threshold this engine
+    /// composes progress against, rather than an independently-chosen number that could drift.
+    static let rungProgressCeiling = 0.45
 
     let runner: any GhostscriptRunning
     let service: PDFService
@@ -140,7 +146,7 @@ struct CompressEngine {
         // A `.scanBilevel` document now runs the gs pass too, so Rung 2's CCITT rebuild can be
         // *raced* against it (D7) rather than shipped merely for beating the input — see step 4b.
         let wantsBilevel = classification == .scanBilevel
-        let gsProgressCeiling = (wantsMRC || wantsBilevel) ? 0.45 : 1.0
+        let gsProgressCeiling = (wantsMRC || wantsBilevel) ? Self.rungProgressCeiling : 1.0
 
         // gs runs first (0…0.45) and the Rung-2/Rung-3 leg maps into 0.45…0.95, so a decline that
         // falls back to the gs delivery must never let a late progress callback move the bar

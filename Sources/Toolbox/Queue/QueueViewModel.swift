@@ -273,6 +273,117 @@ final class QueueViewModel: ObservableObject {
     }
     @Published private(set) var runComposition = RunComposition(queued: 0, armed: 0)
 
+    // MARK: batch progress + ETA (spec §6.8/§7)
+
+    /// The Working/Finished header's aggregate figures. Persists after the batch ends until the
+    /// queue is cleared — `clearFinished()` resets it — because screen 06 reads `savedSoFarBytes`
+    /// as its "N MB lighter" headline, the same figure the Working header showed live.
+    @Published private(set) var batchProgress: BatchProgress?
+
+    /// One row's active leg (spec §6.8). Compress and OCR each report their OWN raw 0...1
+    /// progress; a two-leg row's per-row ring must show ONE continuous fill, never two resets, so
+    /// every progress tick is mapped into a sub-range of the composed fraction `job.state`
+    /// publishes — the compress leg into `[0, width]`, the OCR leg into `[width, 1]` (or the
+    /// whole `[0, 1]` when a row runs only one leg).
+    private enum Leg: Equatable { case compress, ocr }
+
+    /// Where a row's CURRENT leg maps into that composed fraction, and when it began. Set exactly
+    /// ONCE per leg — never per tick, which would need an actor hop the engines' background-queue
+    /// progress callbacks cannot legitimately take (`ToolQueue.process`'s own report closure is the
+    /// sanctioned shape for that hop, and it already owns the composed value). `legLabel` and
+    /// `rowETASeconds` recover the leg's own raw progress by INVERTING the published composed
+    /// fraction against this span — reading the same number the ring shows, never a second one
+    /// that could disagree with it.
+    private struct LegSpan: Equatable {
+        let leg: Leg
+        /// Where this leg begins in the composed 0...1 fraction.
+        let start: Double
+        /// The slice of the composed range this leg owns. Always > 0 — a leg that never runs
+        /// never gets a span.
+        let width: Double
+        let began: Date
+    }
+    private var legSpans: [ToolJob.ID: LegSpan] = [:]
+
+    /// The even split a two-leg row's composed ring divides into. The exact ratio has no display
+    /// consequence beyond where the visible seam falls between the two fills — every other
+    /// computation reads the leg's own raw progress, recovered by inverting this same split.
+    private static let compressLegWeight = 0.5
+
+    /// This row's own wall-clock start (`runPass`'s first line) and total completed duration,
+    /// recorded once — and only once — the queue reports it `.done` (never `.failed`: a failed
+    /// row proves nothing about how long finishing would have taken). Renders screen 05's
+    /// "finished in 12 seconds".
+    private var rowStartTimes: [ToolJob.ID: Date] = [:]
+    private var rowDurations: [ToolJob.ID: TimeInterval] = [:]
+    /// The compress leg's OWN elapsed time, recorded when it completes — whether or not an OCR
+    /// leg follows. `measuredPageRate` divides THIS by page count, never the whole row's
+    /// duration: P-B's change-quality preview re-runs compress alone, and OCR (the far slower
+    /// leg) would badly over-predict its time if the two were conflated.
+    private var compressLegDurations: [ToolJob.ID: TimeInterval] = [:]
+
+    /// The row ids the current (or most recently run) batch is made of. Deliberately NOT `runIDs`:
+    /// that resets to empty at the end of `compress()`'s task (see its own doc), which would make
+    /// `batchProgress` vanish the instant the batch finishes instead of persisting until the queue
+    /// is cleared.
+    private var batchRowIDs: Set<ToolJob.ID> = []
+    private var batchStartTime: Date?
+    /// The ETA smoothing's own running state (`Self.smoothedETA`'s pure arithmetic), reset at
+    /// every batch start. Kept here, not on `BatchProgress`, because that type must stay a plain
+    /// value snapshot — the smoothing needs to persist ACROSS snapshots.
+    private var etaSmoothedRate: Double?
+    private var lastDisplayedETASeconds: Int?
+    private var lastBatchFraction: Double?
+
+    /// "Reading page N of M" (spec §6.8). `n` is clamped into `1...pageCount`: the job can reach
+    /// `.done` a MainActor hop before its state stops being read as `.running` (the same regression
+    /// `batchProgressText`'s old clamp test documented), and an unclamped read would print "page 5
+    /// of 4". Pure and static so it is directly testable without a live run.
+    static func readingPageLabel(rawFraction: Double, pageCount: Int) -> String {
+        let n = min(pageCount, max(1, Int((rawFraction * Double(pageCount)).rounded())))
+        return "Reading page \(n) of \(pageCount)"
+    }
+
+    /// The compress leg's active-meta label (spec §6.8 "per rung"): "Compressing…" while the gs
+    /// pass runs, "Rebuilding scan…" once the row's raw compress-leg progress crosses
+    /// `CompressEngine.rungProgressCeiling` — the SAME threshold the engine composes its own
+    /// progress against, never an independently-guessed one. A row that does not attempt the
+    /// rebuild has an effective ceiling of 1.0 (the engine's own `gsProgressCeiling` in that
+    /// branch), so `attemptsRebuild: false` reads "Compressing…" throughout — it never crosses a
+    /// threshold that, for it, does not exist.
+    static func compressLegLabel(rawFraction: Double, attemptsRebuild: Bool) -> String {
+        attemptsRebuild && rawFraction >= CompressEngine.rungProgressCeiling
+            ? "Rebuilding scan…" : "Compressing…"
+    }
+
+    /// A row's own ETA to finish its CURRENT leg — nil before 10% of the LEG's own raw progress
+    /// has elapsed (spec §6.8: the gate is per leg, never per batch). Deliberately un-smoothed:
+    /// a leg is one short measurement, unlike the batch figure's longer-running rate.
+    static func legETASeconds(rawFraction: Double, elapsed: TimeInterval) -> Int? {
+        guard rawFraction >= 0.1, elapsed > 0 else { return nil }
+        let rate = rawFraction / elapsed
+        guard rate > 0 else { return nil }
+        return max(0, Int(((1 - rawFraction) / rate).rounded()))
+    }
+
+    /// The batch header's ETA (spec §6.8): an exponentially-smoothed completed-fraction rate, nil
+    /// before 10%, clamped to never increase while the batch runs ("monotonic display" — a late
+    /// slow tick must not make the countdown jump back up). Pure: takes and returns the smoothing
+    /// state explicitly rather than mutating instance state, so it is testable without a live run.
+    static func smoothedETA(fraction: Double, elapsed: TimeInterval, previousRate: Double?,
+                           previousETA: Int?) -> (etaSeconds: Int?, rate: Double?) {
+        guard fraction >= 0.1, elapsed > 0 else { return (nil, previousRate) }
+        let instantaneous = fraction / elapsed
+        guard instantaneous > 0 else { return (nil, previousRate) }
+        // A fixed 0.3 weight on the newest reading: enough to track a genuine slowdown/speedup
+        // within a few ticks without letting one noisy tick swing the displayed countdown.
+        let smoothing = 0.3
+        let rate = previousRate.map { smoothing * instantaneous + (1 - smoothing) * $0 } ?? instantaneous
+        var seconds = Int(max(0, (1 - fraction) / rate).rounded())
+        if let previousETA { seconds = min(seconds, previousETA) }
+        return (seconds, rate)
+    }
+
     /// The queue's own jobs, unmodified — `jobs` above is derived from this plus the local
     /// estimate/analysing state below.
     private var rawJobs: [ToolJob] = []
@@ -332,6 +443,7 @@ final class QueueViewModel: ObservableObject {
             self.rawJobs = jobs
             self.ingestCompletedJobs()
             self.recordTerminalRunRows()
+            self.recordRowDurations()
             self.pruneStaleEstimateState()
             self.publishJobs()
         }
@@ -521,6 +633,123 @@ final class QueueViewModel: ObservableObject {
             case .queued, .analysing, .running: continue
             }
         }
+    }
+
+    // MARK: batch progress + ETA (spec §6.8/§7)
+
+    /// This row's total wall-clock time, the instant the queue reports it `.done`. Recorded once
+    /// (guarded by `rowDurations[job.id] == nil`) and never for `.failed` — see `rowDurations`'
+    /// own doc.
+    private func recordRowDurations() {
+        for job in rawJobs {
+            guard rowDurations[job.id] == nil, let start = rowStartTimes[job.id],
+                  case .done = job.state else { continue }
+            rowDurations[job.id] = Date().timeIntervalSince(start)
+        }
+    }
+
+    /// Bytes saved so far: rows whose compress leg actually shipped a smaller file, summed from
+    /// `VersionStore` — the display authority — never from `job.state`'s own `RowOutcome`, which
+    /// stays the row's ORIGINAL pass outcome for ever once a recompress has landed (R8: a
+    /// recompressed row is `.done` throughout, and only `VersionStore` learns of its new size).
+    /// A rescue, a noGain and an OCR-only row all record no `shipped` version (spec §6.5) and so
+    /// contribute nothing here — never assumed present, always read through the optional.
+    private var savedSoFarBytes: Int {
+        queue.jobs.reduce(0) { total, job in
+            guard let row = versionStore.versions(for: job.id), let shipped = row.shipped else {
+                return total
+            }
+            return total + (row.originalBytes - shipped.bytes)
+        }
+    }
+
+    /// Recompute the published `batchProgress`. Called at the end of every `publishJobs()`; the
+    /// smoothing state only advances when the fraction has genuinely changed — `publishJobs()`
+    /// re-runs on every queue tick, including ones this batch has nothing to do with, and letting
+    /// the ETA's EMA walk on unchanged input would defeat its own monotonic-display guarantee.
+    private func updateBatchProgress() {
+        // Empty only before the first batch ever ran, or once `clearFinished()` has emptied the
+        // queue of every row the last batch touched (`pruneStaleEstimateState`'s sweep) — either
+        // way, nothing to show.
+        guard !batchRowIDs.isEmpty, let start = batchStartTime else {
+            batchProgress = nil
+            return
+        }
+        var completed = 0.0
+        for job in jobs where batchRowIDs.contains(job.id) {
+            switch job.state {
+            case .done, .failed: completed += 1
+            case .running(let fraction): completed += fraction
+            case .queued, .analysing: break
+            }
+        }
+        let fraction = completed / Double(batchRowIDs.count)
+        if fraction != lastBatchFraction {
+            let elapsed = Date().timeIntervalSince(start)
+            let (eta, rate) = Self.smoothedETA(fraction: fraction, elapsed: elapsed,
+                                               previousRate: etaSmoothedRate,
+                                               previousETA: lastDisplayedETASeconds)
+            etaSmoothedRate = rate
+            lastDisplayedETASeconds = eta
+            lastBatchFraction = fraction
+        }
+        batchProgress = BatchProgress(fraction: fraction, etaSeconds: lastDisplayedETASeconds,
+                                      savedSoFarBytes: savedSoFarBytes)
+    }
+
+    /// Whether this row's compress leg attempts the scan rebuild (Rung 2/3) — mirrors
+    /// `CompressEngine`'s own `wantsMRC`/`wantsBilevel` derivation (spec §6.7/F2) from the same
+    /// inputs available here: the ESTIMATOR's own analysis, which can legitimately never arrive
+    /// (it is time-boxed), never the engine's runtime classification. This is a display label,
+    /// not a delivery decision, so an absent analysis just reads as "assume no rebuild" — the
+    /// same "Compressing…" a born-digital document gets.
+    private func attemptsScanRebuild(for id: ToolJob.ID) -> Bool {
+        guard let contentType = analyses[id]?.contentType else { return false }
+        if contentType == .scanBilevel { return true }
+        return contentType == .scanColour
+            && (overrides[id]?.rebuildScan ?? true)
+            && effectivePreset(for: id) != .maximumQuality
+    }
+
+    /// The compress leg's active-meta line, or "Reading page N of M" during OCR (spec §6.8) — nil
+    /// when the row is not currently running.
+    func legLabel(for id: ToolJob.ID) -> String? {
+        guard case .running(let composed) = jobs.first(where: { $0.id == id })?.state,
+              let span = legSpans[id], span.width > 0 else { return nil }
+        let raw = min(1, max(0, (composed - span.start) / span.width))
+        switch span.leg {
+        case .ocr:
+            guard let pages = inspections[id]?.pageCount, pages > 0 else { return nil }
+            return Self.readingPageLabel(rawFraction: raw, pageCount: pages)
+        case .compress:
+            return Self.compressLegLabel(rawFraction: raw, attemptsRebuild: attemptsScanRebuild(for: id))
+        }
+    }
+
+    /// Seconds until this row's CURRENT leg finishes, or nil before 10% of it has elapsed (spec
+    /// §6.8's per-leg gate) — recovered by inverting the composed fraction `job.state` already
+    /// publishes against the leg's own span, never a second, independently-tracked fraction.
+    func rowETASeconds(for id: ToolJob.ID) -> Int? {
+        guard case .running(let composed) = jobs.first(where: { $0.id == id })?.state,
+              let span = legSpans[id], span.width > 0 else { return nil }
+        let raw = min(1, max(0, (composed - span.start) / span.width))
+        return Self.legETASeconds(rawFraction: raw, elapsed: Date().timeIntervalSince(span.began))
+    }
+
+    /// This row's total processing time, recorded once the queue reports it `.done` — nil for a
+    /// row still in flight, still queued, or that ultimately failed (screen 05's "finished in 12
+    /// seconds").
+    func rowDuration(for id: ToolJob.ID) -> TimeInterval? { rowDurations[id] }
+
+    /// Seconds per page from this row's own completed compress leg (spec §6.7: P-B's change-
+    /// quality duration preview derives "about Ns" from the row's own measured run, never a
+    /// fabrication). Nil unless the row is `.done`: one that ultimately failed proves nothing
+    /// about its compress leg's speed, whatever partial time got recorded for it.
+    func measuredPageRate(for id: ToolJob.ID) -> Double? {
+        guard case .done = jobs.first(where: { $0.id == id })?.state,
+              let duration = compressLegDurations[id],
+              let pages = inspections[id]?.pageCount, pages > 0 else { return nil }
+        return duration / Double(pages)
     }
 
     // MARK: effective per-row settings (spec §6.1)
@@ -810,6 +1039,11 @@ final class QueueViewModel: ObservableObject {
         rerunReports[id] = nil
         versionStore.discardRow(id)
         futileAttempts = futileAttempts.filter { $0.id != id }
+        // The old file's leg/duration measurements describe a document this row no longer names.
+        legSpans[id] = nil
+        rowStartTimes[id] = nil
+        rowDurations[id] = nil
+        compressLegDurations[id] = nil
         // Cleared BEFORE the fresh analysis is scheduled: left standing, the old file's numbers
         // would price the new one until the estimator caught up.
         analyses[id] = nil
@@ -993,6 +1227,14 @@ final class QueueViewModel: ObservableObject {
         runCompleted = []
         runCancelled = false
         runReservations = alternates
+        // `batchRowIDs` — unlike `runIDs` — is deliberately NOT reset when this run ends, so
+        // `batchProgress` keeps describing it until `clearFinished()` clears the queue. The
+        // smoothing state resets fresh here: a new batch's rate has nothing to do with the last.
+        batchRowIDs = Set(runIDs)
+        batchStartTime = Date()
+        etaSmoothedRate = nil
+        lastDisplayedETASeconds = nil
+        lastBatchFraction = nil
         isRunning = true
         Task {
             // Phase 1 — the queued rows, through the shared queue: one pass per file, both legs.
@@ -1069,6 +1311,9 @@ final class QueueViewModel: ObservableObject {
                          report: @escaping @Sendable (Double) -> Void) async throws -> JobResult {
         let verbs = effectiveVerbs(for: job.id)
         var state: PassState
+        // The row's own wall-clock start (spec §6.8's "finished in 12 seconds") — set once, here,
+        // regardless of which leg(s) this row runs.
+        rowStartTimes[job.id] = Date()
 
         if verbs.compress {
             // Read from the LEDGER, not from a snapshot: a row that joined this batch after it
@@ -1083,6 +1328,13 @@ final class QueueViewModel: ObservableObject {
             // batch that is already cancelling must not start an engine run.
             try Task.checkCancellation()
             var mrcReport: MRCDocumentReport?
+            // The compress leg's own composed slice (spec §6.8's continuous per-row fill): the
+            // WHOLE range when nothing follows, else the leading half — the OCR leg takes the
+            // rest. Captured as plain `Double`s (trivially `Sendable`) so the wrapped `progress`
+            // closure below needs no actor hop per tick — only this ONE write, here, is isolated.
+            let compressWeight = verbs.ocr ? Self.compressLegWeight : 1.0
+            legSpans[job.id] = LegSpan(leg: .compress, start: 0, width: compressWeight, began: Date())
+            let compressLegStarted = Date()
             do {
                 // The ROW's rebuild decision, never the batch's and never nil: a per-file opt-out
                 // that reached the reservation but not the engine would reserve no runner-up name
@@ -1091,8 +1343,14 @@ final class QueueViewModel: ObservableObject {
                                                         preset: effectivePreset(for: job.id),
                                                         to: output, alternateOutput: alternate,
                                                         rebuildScan: overrides[job.id]?.rebuildScan,
-                                                        mrcReport: { mrcReport = $0 }) { report($0) }
+                                                        mrcReport: { mrcReport = $0 }) { raw in
+                    report(min(1, max(0, raw)) * compressWeight)
+                }
                 state = PassState(outcome: outcome, mrcReport: mrcReport)
+                // Recorded on this, the SUCCESS path, only: a leg that threw (the rescue below)
+                // completed nothing, and `measuredPageRate` must never be fed a partial measurement
+                // as though it were a genuine one.
+                compressLegDurations[job.id] = Date().timeIntervalSince(compressLegStarted)
                 switch outcome.compress {
                 case .noGain:
                     break       // writes nothing, so there is no output file to point at
@@ -1147,6 +1405,14 @@ final class QueueViewModel: ObservableObject {
                            report: @escaping @Sendable (Double) -> Void) async throws -> JobResult {
         guard let ocrEngine else { throw MissingOCREngineError() }
         var state = initial
+        // The OCR leg's own composed slice — the trailing half when a compress leg ran before it,
+        // else the whole range (spec §6.8's continuous per-row fill). `effectiveVerbs` is a pure
+        // function of already-current state, so recomputing it here (rather than threading it
+        // through as a parameter) costs nothing and stays consistent with `runPass`'s own read.
+        let ocrVerbs = effectiveVerbs(for: job.id)
+        let ocrStart = ocrVerbs.compress ? Self.compressLegWeight : 0.0
+        let ocrWidth = ocrVerbs.compress ? (1.0 - Self.compressLegWeight) : 1.0
+        legSpans[job.id] = LegSpan(leg: .ocr, start: ocrStart, width: ocrWidth, began: Date())
         // Whether this leg is the only thing the row will deliver: the compress leg failed (the
         // rescue), found nothing to gain (its sibling), or was never on. Such a file carries no
         // compression, so it ships as `<name>-ocr.pdf` — naming it `-compressed` would be the lie
@@ -1176,7 +1442,9 @@ final class QueueViewModel: ObservableObject {
 
         let recognised: RecognisedDocument
         do {
-            recognised = try await ocrEngine.recognise(job.url, options: ocrOptions) { report($0) }
+            recognised = try await ocrEngine.recognise(job.url, options: ocrOptions) { raw in
+                report(ocrStart + min(1, max(0, raw)) * ocrWidth)
+            }
         } catch {
             if ocrDelivers {
                 // Nothing was delivered and nothing will be: both names go back and the row fails
@@ -1618,6 +1886,14 @@ final class QueueViewModel: ObservableObject {
         // rest of the session even after the re-run's own tail has nothing left to clear it with.
         switchesInFlight = switchesInFlight.filter { liveIDs.contains($0) }
         rerunProgress = rerunProgress.filter { liveIDs.contains($0.key) }
+        // Batch progress bookkeeping (spec §6.8): a row cleared or removed carries none of this
+        // with it, and `batchRowIDs` emptying out entirely is exactly how `clearFinished()` makes
+        // `batchProgress` go back to nil (`updateBatchProgress`'s own guard).
+        legSpans = legSpans.filter { liveIDs.contains($0.key) }
+        rowStartTimes = rowStartTimes.filter { liveIDs.contains($0.key) }
+        rowDurations = rowDurations.filter { liveIDs.contains($0.key) }
+        compressLegDurations = compressLegDurations.filter { liveIDs.contains($0.key) }
+        batchRowIDs = batchRowIDs.filter { liveIDs.contains($0) }
         for (id, task) in estimationTasks where !liveIDs.contains(id) {
             task.cancel()
             estimationTasks[id] = nil
@@ -1656,6 +1932,7 @@ final class QueueViewModel: ObservableObject {
             }
             return display
         }
+        updateBatchProgress()
     }
 
     // MARK: derived arming (R1/R3/R6/R7)
