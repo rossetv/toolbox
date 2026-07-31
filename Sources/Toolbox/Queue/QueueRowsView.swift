@@ -289,7 +289,10 @@ struct QueueRowsView: View {
         }
         switch problem {
         case .missing:
-            let findIt = RowDescriptor.RowAction(title: "Find it…", action: { rebindViaOpenPanel(job, model: model) })
+            // `rebind` refuses mid-run (spec §7) — offering "Find it…" then would be a silent
+            // no-op, so the affordance is absent for the run's duration and reappears once it ends.
+            let findIt = model.isRunning ? nil :
+                RowDescriptor.RowAction(title: "Find it…", action: { rebindViaOpenPanel(job, model: model) })
             return RowDescriptor(meta: meta, emphasis: .problemWarn, trailing: .problem(primary: findIt, link: remove))
         case .locked, .unreadable:
             return RowDescriptor(meta: meta, emphasis: .problemDanger, trailing: .problemPair(skip, remove))

@@ -493,6 +493,36 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(link.title, "Remove")
     }
 
+    /// Mid-run, `rebind` refuses (spec §7) so "Find it…" would be a silent no-op — the affordance
+    /// must be absent while `isRunning`, and reappear once the run ends (fix R3).
+    func testRunTimeMissingFailureHidesFindItWhileRunningThenShowsItAfter() async throws {
+        let env = try HeavyEnv()
+        let gate = Gate()
+        env.stub.gate = gate
+        _ = try await env.addRow()
+        env.model.compress()
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
+        XCTAssertTrue(env.model.isRunning)
+
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/moved.pdf"))
+        job.state = .failed("The file could not be found.")
+        let runningDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .working)
+        guard case .problem(let runningPrimary, let runningLink) = runningDescriptor.trailing else {
+            return XCTFail("expected .problem trailing, got \(runningDescriptor.trailing)")
+        }
+        XCTAssertNil(runningPrimary, "Find it… must not appear mid-run since rebind refuses while isRunning")
+        XCTAssertEqual(runningLink.title, "Remove")
+
+        await gate.open()
+        try await waitUntil(timeout: 15) { !env.model.isRunning }
+
+        let doneDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .problems)
+        guard case .problem(let donePrimary, _) = doneDescriptor.trailing else {
+            return XCTFail("expected .problem trailing, got \(doneDescriptor.trailing)")
+        }
+        XCTAssertEqual(donePrimary?.title, "Find it…", "the affordance must return once the run ends")
+    }
+
     /// A run-time locked failure gets the same "Needs a password to open" copy and danger tint as
     /// add-time inspection — Skip/Remove only, never "Find it…" (D3: no password entry).
     func testRunTimeLockedFailureGetsPasswordCopyAndDangerTint() {
