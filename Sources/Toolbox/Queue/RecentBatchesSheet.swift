@@ -40,6 +40,13 @@ struct RecentBatchesSheet: View {
                                             trailingValue: (text: Self.savedText(batch),
                                                            isMuted: batch.savedBytes <= 0),
                                             action: { NSWorkspace.shared.open(batch.folderURL) })
+                                            // This sheet is its own `NSWindow` (a real sheet, not
+                                            // an in-window overlay) and `canBecomeMain` excludes
+                                            // it from `WindowSetup`'s stray-focus-ring net, so
+                                            // AppKit's auto-assigned first responder on open is
+                                            // never cleared here — same carve-out as `AboutView`
+                                            // (memory: stray-focus-ring invariant).
+                                            .focusEffectDisabled()
                                     }
                                 }
                             }
