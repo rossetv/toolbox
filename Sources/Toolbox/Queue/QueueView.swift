@@ -27,10 +27,11 @@ enum QueueScreenState: Equatable {
 }
 
 /// The main window's single content view (handoff: "the window is one thing"). Hosts every
-/// screen the design specifies as one state machine over `QueueViewModel` + `HistoryStore`,
-/// and constructs every popover/sheet it presents directly — `QualityPopover`, `OCRPopover`,
-/// `PerFileSettingsPopover`, `VersionsPopoverContent`, `ChangeQualitySheet`, `ScanConsentSheet`,
-/// `RecentBatchesSheet`, `AboutView` — since all of them live in this module. `showAbout` is the
+/// screen the design specifies as one state machine over `QueueViewModel` + `HistoryStore`, and
+/// constructs the sheets it presents directly — `ChangeQualitySheet`, `ScanConsentSheet`,
+/// `RecentBatchesSheet`, `AboutView` — since all of them live in this module. `QualityPopover`,
+/// `OCRPopover`, `PerFileSettingsPopover`, `VersionsPopoverContent` are constructed by
+/// `QueueHeaderView`/`QueueRowsView` themselves, each with exactly one caller. `showAbout` is the
 /// one genuinely externally-owned piece of state — `QueueView` presents the About sheet off it,
 /// the `⋯` menu's "About Toolbox" item and `ToolboxApp`'s app-menu command both toggle the SAME
 /// binding.
@@ -67,8 +68,6 @@ struct QueueView: View {
             } else {
                 QueueHeaderView(
                     model: model, state: screenState,
-                    quality: { AnyView(QualityPopover(model: model)) },
-                    ocrOptions: { AnyView(OCRPopover(model: model)) },
                     onAdd: { model.add(FilePicker.choosePDFs()) },
                     onClear: { model.clearFinished() },
                     onChooseFolder: { if let folder = FilePicker.chooseFolder() { model.outputFolder = folder } },
@@ -78,11 +77,7 @@ struct QueueView: View {
                     qualityPresented: $qualityPresented, ocrPresented: $ocrPresented
                 )
                 Divider()
-                QueueRowsView(
-                    model: model, state: screenState,
-                    perFile: { AnyView(PerFileSettingsPopover(model: model, jobID: $0)) },
-                    versions: { AnyView(VersionsPopoverContent(model: model, jobID: $0)) }
-                )
+                QueueRowsView(model: model, state: screenState)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .opacity(Self.rowsDimOpacity(qualityOpen: qualityPresented, ocrOpen: ocrPresented))
                 Divider()

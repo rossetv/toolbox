@@ -15,8 +15,6 @@ struct QueueHeaderView: View {
     @ObservedObject var model: QueueViewModel
     let state: QueueScreenState
 
-    let quality: () -> AnyView
-    let ocrOptions: () -> AnyView
     let onAdd: () -> Void
     let onClear: () -> Void
     let onChooseFolder: () -> Void
@@ -60,8 +58,8 @@ struct QueueHeaderView: View {
         .padding(.horizontal, Theme.Spacing.large)
         .padding(.top, 20)
         .padding(.bottom, state == .ready ? 14 : 16)
-        .popover(isPresented: $qualityPresented) { quality() }
-        .popover(isPresented: $ocrPresented) { ocrOptions() }
+        .popover(isPresented: $qualityPresented) { QualityPopover(model: model) }
+        .popover(isPresented: $ocrPresented) { OCRPopover(model: model) }
     }
 
     // MARK: Ready (screen 03)
@@ -237,7 +235,6 @@ struct QueueHeaderView: View {
 
 #Preview("Header – Ready") {
     QueueHeaderView(model: QueueViewModel(), state: .ready,
-                    quality: { AnyView(EmptyView()) }, ocrOptions: { AnyView(EmptyView()) },
                     onAdd: {}, onClear: {}, onChooseFolder: {}, onRecentBatches: {}, onAbout: {}, onCancel: {},
                     qualityPresented: .constant(false), ocrPresented: .constant(false))
         .frame(width: 900)

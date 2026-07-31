@@ -28,8 +28,6 @@ enum QueueByteFormat {
 struct QueueRowsView: View {
     @ObservedObject var model: QueueViewModel
     let state: QueueScreenState
-    let perFile: (ToolJob.ID) -> AnyView
-    let versions: (ToolJob.ID) -> AnyView
 
     @State private var perFileJobID: ToolJob.ID?
     @State private var versionsJobID: ToolJob.ID?
@@ -80,10 +78,10 @@ struct QueueRowsView: View {
             trailing(for: job, descriptor: descriptor)
         }
         .popover(isPresented: Binding(get: { perFileJobID == job.id }, set: { if !$0 { perFileJobID = nil } })) {
-            perFile(job.id)
+            PerFileSettingsPopover(model: model, jobID: job.id)
         }
         .popover(isPresented: Binding(get: { versionsJobID == job.id }, set: { if !$0 { versionsJobID = nil } })) {
-            versions(job.id)
+            VersionsPopoverContent(model: model, jobID: job.id)
         }
     }
 
@@ -444,8 +442,7 @@ struct QueueRowsView: View {
 }
 
 #Preview("Rows – mixed") {
-    QueueRowsView(model: QueueViewModel(), state: .ready,
-                  perFile: { _ in AnyView(EmptyView()) }, versions: { _ in AnyView(EmptyView()) })
+    QueueRowsView(model: QueueViewModel(), state: .ready)
         .frame(width: 900, height: 400)
         .background(Theme.Colors.surface)
 }
