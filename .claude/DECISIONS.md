@@ -809,8 +809,7 @@ against the shipped code and the handoff and are corrected here.
    earlier entry's "everything added beyond them is expressed in the same `Theme.Motion` token
    vocabulary rather than as per-component literals" overstates what was built. The durations
    and curves the added motion rides *are* tokens (`standard`, `hover`, `press`, `checkPop`,
-   `capGlow`, …), and every value used by more than one component is one. The transition
-   *transforms* — the header's −8/−6pt settles, the bar's 0.4 leading scale, the screen swap's
+   `capGlow`, …). The transition *transforms* — the header's −8/−6pt settles, the bar's 0.4 leading scale, the screen swap's
    ±10pt, the row's +26pt landing and 0.96 removal, the gear's 0.7, the radio dot's 0.1, the
    tick box's 0.92 — are per-component literals, each with a single caller, and stay that way:
    a token with one caller is scatter, not vocabulary. They are law all the same, enumerated in

@@ -321,8 +321,9 @@ queued dashed ring's breathing (~2s–2.2s); the drag-over fan's entrance + floa
 back over 0.5s on exit).
 
 One-shot transition transforms are likewise un-tokenised, and deliberately so: the curve
-they ride *is* a token (`standard`), and a `Theme.Motion` constant with a single caller is
-scatter, not vocabulary. The full set, each with its home:
+they ride *is* a token (`standard`, or `hover` where a hover drives the change), and a
+`Theme.Motion` constant with a single caller is scatter, not vocabulary. The set the motion
+polish of §11 added, each with its home:
 
 - the header's title row settles from −8pt and its verb-chip row from −6pt, and the
   progress bar grows out of the hairline from scale 0.4 anchored leading
@@ -335,7 +336,10 @@ scatter, not vocabulary. The full set, each with its home:
   from 0.92 (`CheckRow`).
 
 Of these the handoff itself pins the −8pt header settle (`@keyframes landHead`) and the
-+26pt row landing (`@keyframes landRow`); the rest are this app's own (§11).
++26pt row landing (`@keyframes landRow`); the rest of these transforms are this app's own
+(the gear's *fade* is the handoff's, its 0.7 scale is not) — §11. The popover, sheet and
+banner entrances above are separate: their durations are tokens (`popover`, `sheet`,
+`banner`) and their own offsets/scales sit with their chrome views.
 
 Press states are carried by one shared `MotionButtonStyle` (`Components.swift`) rather than
 per-component gesture handling, so every button in the app presses identically; a component's
