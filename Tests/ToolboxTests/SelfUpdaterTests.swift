@@ -622,6 +622,50 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertEqual(SelfUpdater.bundleVersion(of: URL(fileURLWithPath: aside)), Self.installedVersion,
                        "a working install survives, at the named path")
     }
+
+    // MARK: - Banner dismissal (per version)
+
+    /// A UserDefaults suite of this test's own — the app's real domain must never carry test
+    /// state, and each run starts clean.
+    private func makeStore() throws -> UserDefaults {
+        let suite = "toolbox.tests.\(UUID().uuidString)"
+        let store = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
+        return store
+    }
+
+    @MainActor
+    func testBannerDismissalPersistsPerVersion() throws {
+        let store = try makeStore()
+        let updater = SelfUpdater(isBusy: { false })
+        let banner = UpdateBannerView(release: release(dmgURL: nil, version: "9.9.9"),
+                                      updater: updater, store: store)
+
+        XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.9", in: store))
+
+        banner.dismiss()
+
+        XCTAssertTrue(UpdateBannerView.isDismissed(version: "9.9.9", in: store),
+                      "the × writes through the same key the banner's own reader uses")
+    }
+
+    @MainActor
+    func testNewerVersionReShowsBanner() throws {
+        let store = try makeStore()
+        let updater = SelfUpdater(isBusy: { false })
+        UpdateBannerView(release: release(dmgURL: nil, version: "9.9.9"),
+                         updater: updater, store: store).dismiss()
+
+        XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.10", in: store),
+                       "dismissal is per version — a newer release raises the banner again")
+
+        UpdateBannerView(release: release(dmgURL: nil, version: "9.9.10"),
+                         updater: updater, store: store).dismiss()
+
+        XCTAssertTrue(UpdateBannerView.isDismissed(version: "9.9.10", in: store))
+        XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.9", in: store),
+                       "one key, newest dismissal wins")
+    }
 }
 
 // MARK: - Fixtures: a loopback HTTP server, an in-process https hop, small recorders
