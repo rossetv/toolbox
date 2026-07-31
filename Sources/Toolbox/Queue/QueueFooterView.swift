@@ -122,12 +122,7 @@ struct QueueFooterView: View {
     /// completeness against `model.jobs.count` would silently fall through to the honest-but-vague
     /// "total" form on every mixed done+pending screen.
     static func readyHeadline(model: QueueViewModel) -> String {
-        let pending = model.jobs.filter { job in
-            switch job.state {
-            case .queued, .analysing: return true
-            case .running, .done, .failed: return false
-            }
-        }
+        let pending = model.pendingJobs
         var before = 0, predicted = 0, counted = 0
         for job in pending {
             guard let size = QueueByteFormat.size(of: job.url) else { continue }

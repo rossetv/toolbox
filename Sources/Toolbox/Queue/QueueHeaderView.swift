@@ -106,12 +106,7 @@ struct QueueHeaderView: View {
     /// (Add More on a finished batch, spec §7) already ran and contributes nothing to a figure
     /// meant to describe what Start is about to do.
     private var totalInputBytes: Int {
-        model.jobs.filter { job in
-            switch job.state {
-            case .queued, .analysing: return true
-            case .running, .done, .failed: return false
-            }
-        }.compactMap { QueueByteFormat.size(of: $0.url) }.reduce(0, +)
+        model.pendingJobs.compactMap { QueueByteFormat.size(of: $0.url) }.reduce(0, +)
     }
 
     private var ocrLanguageDisplay: String {

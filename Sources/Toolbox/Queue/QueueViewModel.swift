@@ -1070,15 +1070,21 @@ final class QueueViewModel: ObservableObject {
         return total / Double(runIDs.count)
     }
 
-    /// Rows waiting to be compressed for the first time (R5's K).
-    var pendingCount: Int {
+    /// Rows waiting to be compressed for the first time (R5's K) — a `.done`/`.failed` row that
+    /// shares this screen with fresh ones (Add More on a finished batch, spec §7) already ran and
+    /// contributes nothing to a figure meant to describe what Start is about to do. The one owner
+    /// of this predicate (CODE_GUIDELINES.md §8.2) — `QueueHeaderView.totalInputBytes` and
+    /// `QueueFooterView.readyHeadline` both read `pendingJobs` rather than re-deriving it.
+    var pendingJobs: [ToolJob] {
         jobs.filter { job in
             switch job.state {
             case .queued, .analysing: return true
             case .running, .done, .failed: return false
             }
-        }.count
+        }
     }
+
+    var pendingCount: Int { pendingJobs.count }
 
     /// Whether Start may run — the one gate `compress()` and the view that offers it must agree on
     /// (CODE_GUIDELINES.md §8.2).
