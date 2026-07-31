@@ -1413,7 +1413,7 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
         let shippedURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
 
-        await ChangeQualitySheet.confirm(rows: [job], model: model)
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced)
 
         let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
         XCTAssertEqual(row.shipped?.preset, .balanced, "the switch, not a recompute, must have landed")
@@ -1421,6 +1421,30 @@ final class QueueViewModelTests: XCTestCase {
                        "the parked Balanced bytes are back on the delivered path")
         XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)), .none,
                        "the row now matches its own target — nothing left to switch or arm")
+    }
+
+    /// Regression (review finding, spec §7): a press that lands NEITHER an instant switch nor a
+    /// `compress()` run — because `canStart` refuses (here: the updater reports busy) and there is
+    /// nothing to switch — must not leave the previewed batch preset stuck. The sheet's `isEnabled`
+    /// gate (`canSwitch`) only checks row states, so this refusal is invisible to the button.
+    func testConfirmRestoresTheFallbackPresetWhenNothingActuallyStarts() async throws {
+        final class Flag { var busy = false }
+        let flag = Flag()
+        let env = try HeavyEnv(isUpdating: { flag.busy })
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .none, "already at its own preset — no work to do")
+        flag.busy = true
+        XCTAssertFalse(model.canStart, "the updater being busy must refuse the start")
+
+        model.preset = .smallestSize  // the sheet's live preview
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced)
+
+        XCTAssertEqual(model.preset, .balanced,
+                       "nothing started — the previewed preset must not stick")
     }
 
     /// Mixed batch (spec §7): an instant-switch row and an armed row pressed through the same
@@ -1465,7 +1489,8 @@ final class QueueViewModelTests: XCTestCase {
 
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 900),
                                           shippedBytes: 900, runnerUpBytes: nil) }
-        await ChangeQualitySheet.confirm(rows: [instantJob, unchangedJob, armedJob], model: model)
+        await ChangeQualitySheet.confirm(rows: [instantJob, unchangedJob, armedJob], model: model,
+                                         fallback: .balanced)
         try await waitUntil(timeout: 5) { !model.isRunning }
 
         let switchedRow = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first { $0.id == instantID })))

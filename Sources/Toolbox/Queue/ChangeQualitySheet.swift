@@ -14,12 +14,19 @@ import SwiftUI
 /// popover writes — which is what makes the row list below re-arm live: `recompressState`/
 /// `recompressPrediction` already key off `effectivePreset(for:)`, so this sheet previews by
 /// genuinely (if reversibly) moving the batch preset, never a second, parallel "candidate" of
-/// its own. Cancel restores whatever `model.preset` was before the sheet opened.
+/// its own. The restore is structural, not per-button: `onDisappear` puts `model.preset` back to
+/// whatever it was before the sheet opened on EVERY exit — Cancel, Escape, the window closing,
+/// anything else — unless the confirm action has already handed off to `Self.confirm`.
 struct ChangeQualitySheet: View {
     @ObservedObject var model: QueueViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var initialPreset: CompressPreset
     @State private var showingFileChoice = false
+    /// Set the moment the confirm action hands off to `Self.confirm` — the ONLY thing that stops
+    /// `onDisappear` restoring `initialPreset`. Every other exit (Cancel, Escape, the window
+    /// closing, anything else) leaves this false, so the restore fires structurally rather than
+    /// depending on which button happened to be pressed.
+    @State private var confirmed = false
 
     init(model: QueueViewModel) {
         self.model = model
@@ -37,6 +44,9 @@ struct ChangeQualitySheet: View {
             .padding(20)
         }
         .popover(isPresented: $showingFileChoice) { fileChoicePopover }
+        .onDisappear {
+            if !confirmed { model.preset = initialPreset }
+        }
     }
 
     // MARK: rows
@@ -148,12 +158,13 @@ struct ChangeQualitySheet: View {
             }
             Spacer(minLength: Theme.Spacing.small)
             SecondaryButton(title: "Cancel") {
-                model.preset = initialPreset
                 dismiss()
             }
             PrimaryButton(title: "Switch to \(model.preset.title)", isEnabled: canSwitch) {
                 let rows = eligibleJobs
-                Task { await Self.confirm(rows: rows, model: model) }
+                let fallback = initialPreset
+                confirmed = true
+                Task { await Self.confirm(rows: rows, model: model, fallback: fallback) }
                 dismiss()
             }
         }
@@ -270,13 +281,27 @@ struct ChangeQualitySheet: View {
     /// and only then run `compress()` for the rows that actually armed. A mixed batch (some
     /// instant-switch, some armed, some unchanged) honours both mechanisms in one press; unchanged
     /// rows match neither branch and are left exactly alone.
-    static func confirm(rows: [ToolJob], model: QueueViewModel) async {
+    ///
+    /// `compress()` itself refuses to start when `canStart` is false (a switch already in flight,
+    /// the updater running, no engine) — a case this button's `isEnabled` (`canSwitch`, which only
+    /// checks row states) does not rule out. If nothing actually started — no instant switch
+    /// landed AND `compress()` was refused — the preview must not stick: `fallback` (the batch
+    /// preset from before the sheet opened) is restored so a no-op press leaves no trace.
+    static func confirm(rows: [ToolJob], model: QueueViewModel, fallback: CompressPreset) async {
+        var started = false
         for job in rows {
             if case .instantSwitch = model.recompressState(for: job) {
                 await model.useVersion(.previous, for: job)
+                started = true
             }
         }
-        model.compress()
+        if model.canStart {
+            model.compress()
+            started = true
+        }
+        if !started {
+            model.preset = fallback
+        }
     }
 
 }
