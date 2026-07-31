@@ -160,16 +160,30 @@ struct EmptyStateView: View {
 
     private var recentBatches: [HistoryBatch] { Array(history.batches.prefix(2)) }
 
-    /// "14:22 · 21.2 MB smaller" for a clean run; "11:05 · one was password-locked" for a batch
-    /// with a problem row (screen 01, `failureNote`) — falls back to a generic line only for
-    /// a batch recorded before `failureNote` existed (an older on-disk schema).
+    /// "14:22 · Smallest · one was password-locked" for a batch with a problem row (screen 01,
+    /// `failureNote`) — the quality segment rides alongside the note rather than being replaced
+    /// by it, matching `RecentBatchesSheet.subtitle`'s composition. "14:22 · 21.2 MB smaller" for
+    /// a clean run. Falls back to a generic line only for a batch recorded before `failureNote`
+    /// existed (an older on-disk schema).
     static func subtitle(for batch: HistoryBatch) -> String {
-        let time = batch.date.formatted(date: .omitted, time: .shortened)
-        if let note = batch.failureNote { return "\(time) · \(note)" }
-        if batch.problem { return "\(time) · needs attention" }
-        if batch.savedBytes > 0 { return "\(time) · \(QueueByteFormat.string(batch.savedBytes)) smaller" }
-        if batch.searchableCount > 0 { return "\(time) · made searchable" }
-        return "\(time) · no change"
+        var parts = [batch.date.formatted(date: .omitted, time: .shortened)]
+        if batch.compressOn, let preset = batch.presetTitle {
+            parts.append(preset)
+        } else if batch.ocrOn {
+            parts.append("OCR only")
+        }
+        if let note = batch.failureNote {
+            parts.append(note)
+        } else if batch.problem {
+            parts.append("needs attention")
+        } else if batch.savedBytes > 0 {
+            parts.append("\(QueueByteFormat.string(batch.savedBytes)) smaller")
+        } else if batch.searchableCount > 0 {
+            parts.append("made searchable")
+        } else {
+            parts.append("no change")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private func openFolder(_ batch: HistoryBatch) {
