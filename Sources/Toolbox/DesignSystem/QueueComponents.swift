@@ -50,7 +50,7 @@ struct VerbChip: View {
                 Button(action: openOptions) {
                     HStack(spacing: 0) {
                         if let suffix {
-                            Text("· \(suffix)").themeFont(.body13).opacity(0.75)
+                            Text(" · \(suffix)").themeFont(.body13).opacity(0.75)
                                 .foregroundStyle(.white)
                         }
                         Image(systemName: "chevron.down")
