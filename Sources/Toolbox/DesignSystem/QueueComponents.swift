@@ -135,11 +135,9 @@ struct VerbChip: View {
                 HStack(spacing: 7) {
                     icon.font(.system(size: 13, weight: .semibold))
                     Text(title).themeFont(.bodyStrong)
-                    if let suffix {
-                        Text("· \(suffix)").themeFont(.body13).opacity(isOn ? 0.75 : 1)
-                    }
                 }
                 .foregroundStyle(isOn ? .white : Theme.Colors.textSecondary)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .clearsClickFocus()
@@ -149,11 +147,18 @@ struct VerbChip: View {
 
             if isOn, let openOptions {
                 Button(action: openOptions) {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white.opacity(isHoveringOptions ? 1 : 0.85))
-                        .padding(.leading, 6)
-                        .padding(.trailing, 2)
+                    HStack(spacing: 0) {
+                        if let suffix {
+                            Text("· \(suffix)").themeFont(.body13).opacity(0.75)
+                                .foregroundStyle(.white)
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white.opacity(isHoveringOptions ? 1 : 0.85))
+                            .padding(.leading, 6)
+                            .padding(.trailing, 2)
+                    }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .clearsClickFocus()
