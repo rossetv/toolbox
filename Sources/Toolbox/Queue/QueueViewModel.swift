@@ -1374,7 +1374,13 @@ final class QueueViewModel: ObservableObject {
         runComposition = RunComposition(queued: queuedIDs.count, armed: plans.count)
         // Per-run state, cleared at the START of the run: the messages of the run before are stale
         // the moment a new one begins, and the cancel flag must not outlive the run that set it.
-        recompressErrors = [:]
+        // Scoped to the rows THIS run actually touches (`runIDs`, just computed above), not every
+        // key in the dict: `confirm`'s instant-switch loop can record a failure note on a row that
+        // — precisely because its switch failed — never joins `runnableIDs`/`armedJobs` and so
+        // never appears in `runIDs` (R12). A blanket reset here wiped that note before the user
+        // ever saw it, the instant the same press's `compress()` call ran.
+        let enteringRunIDs = Set(runIDs)
+        recompressErrors = recompressErrors.filter { !enteringRunIDs.contains($0.key) }
         runCompleted = []
         runCancelled = false
         runReservations = alternates

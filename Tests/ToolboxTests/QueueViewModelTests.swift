@@ -1503,6 +1503,70 @@ final class QueueViewModelTests: XCTestCase {
                        "a row that already matches its target is left exactly alone")
     }
 
+    /// Regression (review finding, R12): `confirm`'s instant-switch loop can record a failure note
+    /// on a row whose switch failed for a transient reason that leaves the ROW STATE unchanged
+    /// (store contract: any ordinary throw restores the shipped file, so `recompressState` still
+    /// reads `.instantSwitch` afterwards — never `.armed`, never queued). `confirm` unconditionally
+    /// calls `compress()` right after in the same press whenever `canStart` allows it (its own
+    /// doc: a case the button's `isEnabled` does not rule out) — and `compress()` used to blank
+    /// `recompressErrors` wholesale at the start of every run, wiping that note before the user
+    /// ever saw it, even though this row never actually entered the run it just started.
+    func testConfirmPreservesAFailedInstantSwitchNoteAcrossTheSamePresssCompress() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Park the Balanced version behind a Smallest recompress, so the row reads as an
+        // instant-switch candidate back at Balanced.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let instantJob = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: instantJob), .instantSwitch(.balanced))
+
+        // `compress()` refuses outright (`canStart`) unless something is queued or armed, so a
+        // second, unrelated row is needed for the press to actually start a run at all —
+        // `confirm`'s own doc names this exact shape ("a case this button's `isEnabled` does not
+        // rule out"). Run it to done, then override its target so it reads `.armed`.
+        let armedID = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.setOverride(RowOverride(preset: .maximumQuality), for: armedID)
+        let armedJob = try XCTUnwrap(model.jobs.first { $0.id == armedID })
+        XCTAssertEqual(model.recompressState(for: armedJob), .armed(.maximumQuality))
+
+        // Same asymmetric ACL lever `testAFailedSwitchKeepsAPreviousVersionThatIsStillOnDisk`
+        // uses: denying new entries in the OUTPUT folder makes parking the shipped file throw
+        // while the parked (previous) file, living in the cache root, is never touched — so the
+        // row's `versionStore` record, and hence `recompressState`, is unchanged by the failure.
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        try Fixtures.denyingNewEntries(true, at: outputFolder)
+
+        await ChangeQualitySheet.confirm(rows: [instantJob, armedJob], model: model,
+                                         fallback: .balanced)
+
+        // `recompressState` reads `.none` for every row while `isRunning` (arming is suppressed
+        // for the run's duration, R9) — the load-bearing check here is `recompressErrors` itself,
+        // not the derived arming state.
+        XCTAssertEqual(model.recompressErrors[instantJob.id],
+                       "Switch failed — kept your \(CompressPreset.smallestSize.title) version. "
+                       + "Try again.",
+                       "the failed switch's note must survive the SAME press's compress() call")
+
+        // Let the armed row's own recompress (which the same press just started) actually land,
+        // so teardown isn't left with a run in flight.
+        try Fixtures.denyingNewEntries(false, at: outputFolder)
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.recompressErrors[instantJob.id],
+                       "Switch failed — kept your \(CompressPreset.smallestSize.title) version. "
+                       + "Try again.",
+                       "and survive to the run's end too")
+    }
+
     /// R12: an engine failure keeps the version the user had, on disk and on screen, and says so.
     func testRecompressFailureKeepsThePreviousVersionAndReportsIt() async throws {
         let env = try HeavyEnv()
