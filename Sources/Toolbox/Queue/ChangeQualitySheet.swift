@@ -130,12 +130,16 @@ struct ChangeQualitySheet: View {
                 if let row = model.versions(for: job) {
                     let state = model.recompressState(for: job)
                     let currentBytes = row.shipped?.bytes ?? row.originalBytes
+                    // Same preset `recompressState` itself armed against — `model.effectivePreset`,
+                    // not the batch's `model.preset` — so an overridden row's shown target/DPI can
+                    // never disagree with the preset its `.armed` state actually names.
+                    let rowPreset = model.effectivePreset(for: job.id)
                     let target = Self.rowTargetBytes(
                         state: state, currentBytes: currentBytes,
-                        prediction: model.recompressPrediction(for: job, at: model.preset))
+                        prediction: model.recompressPrediction(for: job, at: rowPreset))
                     QueueRow(name: job.url.lastPathComponent,
                             meta: Self.mechanismLine(
-                                state: state, preset: model.preset,
+                                state: state, preset: rowPreset,
                                 measuredRate: model.measuredPageRate(for: job.id),
                                 pageCount: model.inspections[job.id]?.pageCount)) {
                         QueueRowSizeColumn(
