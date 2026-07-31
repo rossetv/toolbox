@@ -66,7 +66,7 @@ struct QueueHeaderView: View {
 
     private var readyTitleRow: some View {
         HStack(alignment: .lastTextBaseline) {
-            Text("\(model.jobs.count) file\(model.jobs.count == 1 ? "" : "s")")
+            Text("\(model.pendingCount) file\(model.pendingCount == 1 ? "" : "s")")
                 .themeFont(.windowHeadline).foregroundStyle(Theme.Colors.text)
             if totalInputBytes > 0 {
                 Text(QueueByteFormat.string(totalInputBytes))
@@ -81,8 +81,16 @@ struct QueueHeaderView: View {
         }
     }
 
+    /// Only still-pending rows: a `.done`/`.failed` row that shares this screen with fresh ones
+    /// (Add More on a finished batch, spec §7) already ran and contributes nothing to a figure
+    /// meant to describe what Start is about to do.
     private var totalInputBytes: Int {
-        model.jobs.compactMap { QueueByteFormat.size(of: $0.url) }.reduce(0, +)
+        model.jobs.filter { job in
+            switch job.state {
+            case .queued, .analysing: return true
+            case .running, .done, .failed: return false
+            }
+        }.compactMap { QueueByteFormat.size(of: $0.url) }.reduce(0, +)
     }
 
     private var ocrLanguageDisplay: String {

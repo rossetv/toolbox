@@ -81,10 +81,21 @@ struct QueueFooterView: View {
 
     // MARK: pure, testable copy
 
-    /// "48.2 MB → about 12.6 MB" from every queued row's own input size and estimate.
+    /// "48.2 MB → about 12.6 MB" from every still-pending row's own input size and estimate — a
+    /// row already `.done`/`.failed` (Add More on a finished batch, spec §7) contributed nothing
+    /// last run and won't run again from this Start, so it is excluded from both the sum and the
+    /// denominator here, not just the sum: counting it in `before`/`predicted` while measuring
+    /// completeness against `model.jobs.count` would silently fall through to the honest-but-vague
+    /// "total" form on every mixed done+pending screen.
     static func readyHeadline(model: QueueViewModel) -> String {
+        let pending = model.jobs.filter { job in
+            switch job.state {
+            case .queued, .analysing: return true
+            case .running, .done, .failed: return false
+            }
+        }
         var before = 0, predicted = 0, counted = 0
-        for job in model.jobs {
+        for job in pending {
             guard let size = QueueByteFormat.size(of: job.url) else { continue }
             before += size
             if let estimate = job.estimate {
@@ -93,7 +104,7 @@ struct QueueFooterView: View {
             }
         }
         guard before > 0 else { return "Ready to start" }
-        guard counted == model.jobs.count else { return "\(QueueByteFormat.string(before)) total" }
+        guard counted == pending.count else { return "\(QueueByteFormat.string(before)) total" }
         return "\(QueueByteFormat.string(before)) \u{2192} about \(QueueByteFormat.string(predicted))"
     }
 

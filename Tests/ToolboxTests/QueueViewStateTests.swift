@@ -84,6 +84,66 @@ final class QueueViewStateTests: XCTestCase {
                                              inspections: inspections, skipped: [skipped.id]), .finished)
     }
 
+    /// Add More on a finished batch (spec §7): a clean `.queued` row (no problem, not skipped)
+    /// alongside terminal rows must pull the screen back to `.ready` — the strand this finding
+    /// fixed — with `canStart` agreeing there is runnable work, never `.ready` with Start refused.
+    func testScreenStateReadyWhenACleanQueuedRowJoinsAFinishedBatch() {
+        var done = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        done.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        let added = ToolJob(url: URL(fileURLWithPath: "/tmp/added.pdf"))
+        XCTAssertEqual(QueueView.screenState(jobs: [done, added], isRunning: false, inspections: [:]), .ready)
+    }
+
+    /// End-to-end: the exact repro (finished batch → Add More) through the real pipeline. The
+    /// screen must return to `.ready` and `canStart` must agree the new row is runnable.
+    func testAddMoreOnAFinishedBatchReturnsToReadyAndCanStartRunsIt() async throws {
+        let env = try HeavyEnv()
+        _ = try await env.runToDone()
+        XCTAssertEqual(QueueView.screenState(jobs: env.model.jobs, isRunning: env.model.isRunning,
+                                             inspections: env.model.inspections,
+                                             skipped: env.model.skippedRows), .finished,
+                       "sanity: the batch really is finished before Add More")
+
+        try await env.addRow(Fixtures.textImagePDF())
+
+        XCTAssertEqual(QueueView.screenState(jobs: env.model.jobs, isRunning: env.model.isRunning,
+                                             inspections: env.model.inspections,
+                                             skipped: env.model.skippedRows), .ready,
+                       "the added clean row must pull the screen back to .ready, never stranding it")
+        XCTAssertTrue(env.model.canStart, "the added clean row must be startable, not stranded")
+    }
+
+    /// The sibling behaviour landed this round (8753c76) must survive: a skipped problem row
+    /// alone, with nothing else queued, must NOT flip a finished batch back to `.ready`/`.problems`.
+    func testScreenStateFinishedWhenOnlyRowBesideTerminalIsASkippedProblem() {
+        var done = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        done.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        let skipped = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        let inspections = [skipped.id: RowInspection(problem: .locked)]
+        XCTAssertEqual(QueueView.screenState(jobs: [done, skipped], isRunning: false,
+                                             inspections: inspections, skipped: [skipped.id]), .finished)
+    }
+
+    /// A clean pending row alongside an unresolved problem row must still report `.problems` — a
+    /// clean row never launders away a genuine unresolved problem left behind by the batch.
+    func testScreenStateProblemsWhenACleanPendingRowJoinsAnUnresolvedProblemRow() {
+        var done = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        done.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        let stuck = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        let added = ToolJob(url: URL(fileURLWithPath: "/tmp/added.pdf"))
+        let inspections = [stuck.id: RowInspection(problem: .locked)]
+        XCTAssertEqual(QueueView.screenState(jobs: [done, stuck, added], isRunning: false,
+                                             inspections: inspections), .problems)
+    }
+
+    /// Likewise a clean pending row must not launder away a failed row.
+    func testScreenStateProblemsWhenACleanPendingRowJoinsAFailedRow() {
+        var failed = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        failed.state = .failed("Couldn't be compressed")
+        let added = ToolJob(url: URL(fileURLWithPath: "/tmp/added.pdf"))
+        XCTAssertEqual(QueueView.screenState(jobs: [failed, added], isRunning: false, inspections: [:]), .problems)
+    }
+
     // MARK: rows dim while Quality/OCR popover is open (spec §7, DESIGN.md §9 04/04b)
 
     func testRowsDimOpacityFullWhenNeitherPopoverIsOpen() {

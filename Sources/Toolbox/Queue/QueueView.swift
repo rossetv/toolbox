@@ -188,6 +188,16 @@ struct QueueView: View {
     /// `allFinished` is NOT this function: a skipped problem row stays `.queued` forever (it is
     /// never included in a run), which would make `allFinished` permanently false in exactly the
     /// state screen 10 depicts — so this is derived independently, from the jobs themselves.
+    ///
+    /// Add More on a finished batch (spec §7) appends a clean `.queued` row — no problem, not
+    /// skipped — alongside the batch's terminal rows. That row is real, runnable work the idle
+    /// queue is sitting on, so it must pull the screen back to `.ready` (mixed done+pending rows
+    /// on screen 03) rather than leaving it on `.finished`/`.problems`, where the footer has no
+    /// Start affordance and the new file could never run. `hasCleanPending` uses exactly
+    /// `QueueViewModel.healthyQueuedCount`'s predicate, deliberately: any drift between the two
+    /// reopens this same strand wearing a different hat — `.ready` with `canStart` refusing.
+    /// A genuine failure or an unresolved problem still wins over this and reports `.problems`,
+    /// same as before — a clean pending row never launders those away.
     static func screenState(jobs: [ToolJob], isRunning: Bool,
                             inspections: [ToolJob.ID: RowInspection],
                             skipped: Set<ToolJob.ID> = []) -> QueueScreenState {
@@ -196,6 +206,7 @@ struct QueueView: View {
         var hasFailed = false
         var hasTerminal = false
         var hasUnresolvedProblem = false
+        var hasCleanPending = false
         for job in jobs {
             switch job.state {
             case .done:
@@ -204,14 +215,17 @@ struct QueueView: View {
                 hasTerminal = true
                 hasFailed = true
             case .queued, .analysing:
-                if inspections[job.id]?.problem != nil && !skipped.contains(job.id) {
-                    hasUnresolvedProblem = true
+                if inspections[job.id]?.problem != nil {
+                    if !skipped.contains(job.id) { hasUnresolvedProblem = true }
+                } else {
+                    hasCleanPending = true
                 }
             case .running:
                 break   // unreachable once `isRunning` is false, kept for exhaustiveness
             }
         }
         guard hasTerminal else { return .ready }
+        if hasCleanPending, !hasFailed, !hasUnresolvedProblem { return .ready }
         return (hasFailed || hasUnresolvedProblem) ? .problems : .finished
     }
 
