@@ -114,11 +114,8 @@ enum UpdateSmoke {
             // starts, not a gap in what's verified: this process calling `exit()` below ends
             // it exactly as validly, for spec §11's "the old instance exits" assertion, as
             // the production NSApp.terminate(nil) would in a normally-running app.
-            let helper = Process()
-            helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-            helper.arguments = SelfUpdater.relaunchArguments(
-                pid: ProcessInfo.processInfo.processIdentifier, bundle: url)
-            try? helper.run()
+            try? SystemTool.launchDetached("/bin/sh", SelfUpdater.relaunchArguments(
+                pid: ProcessInfo.processInfo.processIdentifier, bundle: url))
         })
         await updater.update(release: release)
 

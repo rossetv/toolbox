@@ -428,7 +428,7 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
 ///
 /// Every tool path is an absolute literal supplied by the caller; arguments are always passed as
 /// an array, never interpolated into a shell string (see `SelfUpdater.relaunchArguments`).
-private enum SystemTool {
+internal enum SystemTool {
     /// Runs `tool`, waits for it to exit, and captures its stdout. stderr is discarded, never
     /// left as an undrained pipe — a full stderr buffer would stall the tool forever.
     static func run(_ tool: String, _ arguments: [String]) throws -> (status: Int32, stdout: Data) {
