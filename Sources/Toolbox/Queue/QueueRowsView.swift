@@ -76,10 +76,13 @@ struct QueueRowsView: View {
     @ViewBuilder
     private func row(for job: ToolJob) -> some View {
         let descriptor = Self.describe(job: job, model: model, state: state)
+        let isChoosingVersion = versionsJobID == job.id
         QueueRow(
             name: job.url.lastPathComponent,
-            meta: descriptor.meta,
-            metaAccent: descriptor.metaAccent,
+            // DESIGN.md §9 07: the row meta reads "Choosing a version" for as long as its own
+            // versions popover is open, overriding whatever this row would otherwise say.
+            meta: isChoosingVersion ? "Choosing a version" : descriptor.meta,
+            metaAccent: isChoosingVersion ? nil : descriptor.metaAccent,
             fileURL: job.url,
             emphasis: descriptor.emphasis,
             onOpen: descriptor.canOpen ? { NSWorkspace.shared.open(Self.urlToOpen(for: job, model: model)) } : nil,
