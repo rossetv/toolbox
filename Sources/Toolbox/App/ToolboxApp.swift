@@ -17,9 +17,20 @@ struct ToolboxApp: App {
     @State private var showAbout = false
 
     init() {
+        #if DEBUG
+        // Detects a relaunch triggered by UpdateSmoke's real update-smoke run (spec §11) and
+        // exits before anything else runs — see UpdateSmoke.swift's doc comment for why this
+        // has to be a marker file rather than an environment variable.
+        UpdateSmoke.checkRelaunchIfMarked()
+        #endif
         // Headless self-test hook (TOOLBOX_SMOKE=compress) — runs the real compress path
         // from the app process and exits, before any window appears.
         CompressSmoke.runIfRequested()
+        #if DEBUG
+        // Headless self-test hook (TOOLBOX_SMOKE=update) — runs a real update against a
+        // fixture feed and exits, before any window appears.
+        UpdateSmoke.runIfRequested()
+        #endif
         Self.yieldToExistingInstance()
         // As an XCTest host (the same detection the instance guard uses) the app is
         // scaffolding, not a product: drop to accessory activation so no Dock icon appears

@@ -82,6 +82,57 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertNil(release.dmgURL)
     }
 
+    // MARK: - DEBUG fixture carve-out for the dmg host pin (spec §11)
+
+    /// `pinnedDMGURL` is exercised directly with an explicit `feedOverrideActive` boolean —
+    /// never by mutating `TOOLBOX_UPDATE_FEED` on the process, which would be shared,
+    /// order-dependent state across a suite that runs `-parallel-testing-enabled`.
+    func testLoopbackDmgURLIsRejectedWithoutTheFeedOverride() {
+        let candidate = URL(string: "http://127.0.0.1:9999/Toolbox.dmg")!
+        XCTAssertNil(UpdateChecker.pinnedDMGURL(candidate, feedOverrideActive: false),
+                     "the production pin must reject loopback even in a DEBUG build when the override isn't active")
+    }
+
+    func testLoopbackDmgURLIsAcceptedOnlyUnderTheFeedOverride() {
+        let http = URL(string: "http://127.0.0.1:9999/Toolbox.dmg")!
+        let https = URL(string: "https://127.0.0.1:9999/Toolbox.dmg")!
+        XCTAssertEqual(UpdateChecker.pinnedDMGURL(http, feedOverrideActive: true), http,
+                       "the fixture carve-out must accept plain http — the loopback server has no TLS")
+        XCTAssertEqual(UpdateChecker.pinnedDMGURL(https, feedOverrideActive: true), https)
+    }
+
+    func testNonLoopbackHostIsStillRejectedEvenUnderTheFeedOverride() {
+        let candidate = URL(string: "https://evil.example/Toolbox.dmg")!
+        XCTAssertNil(UpdateChecker.pinnedDMGURL(candidate, feedOverrideActive: true),
+                     "the override widens the pin to loopback only — it must not become a general bypass")
+    }
+
+    func testGitHubDmgURLIsAcceptedRegardlessOfTheFeedOverride() {
+        let candidate = URL(string: "https://github.com/rossetv/toolbox/releases/download/v0.2.0/Toolbox.dmg")!
+        XCTAssertEqual(UpdateChecker.pinnedDMGURL(candidate, feedOverrideActive: true), candidate)
+        XCTAssertEqual(UpdateChecker.pinnedDMGURL(candidate, feedOverrideActive: false), candidate)
+    }
+
+    /// The one test that DOES touch the real environment variable, to prove the production
+    /// seam (not just the pure `pinnedDMGURL` helper) actually reads it. Scoped tightly:
+    /// `setenv`/`unsetenv` bracket a single synchronous-per-test-method XCTest run (workers
+    /// under `-parallel-testing-enabled` are separate processes; within one worker, test
+    /// methods run one at a time), and the value is always removed before the test returns.
+    @MainActor
+    func testUpdateCheckerDefaultFetchUsesTheFeedOverrideWhenSet() async throws {
+        let server = try startServer()
+        server.route("/feed.json", .init(status: 200, body: payload(
+            tag: "v9.9.9", url: pageURL, assets: [dmgURL])))
+        setenv("TOOLBOX_UPDATE_FEED", server.url("/feed.json").absoluteString, 1)
+        defer { unsetenv("TOOLBOX_UPDATE_FEED") }
+
+        let checker = UpdateChecker()
+        await checker.check(currentVersion: "0.1.0")
+
+        XCTAssertEqual(server.servedPaths, ["/feed.json"], "the default fetch must hit the override, not api.github.com")
+        XCTAssertEqual(checker.available?.version, "9.9.9")
+    }
+
     // MARK: - Fixture DMGs (built once — `hdiutil create` is not cheap)
 
     private static let newVersion = "9.9.9"

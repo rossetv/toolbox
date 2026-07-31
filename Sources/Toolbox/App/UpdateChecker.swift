@@ -18,7 +18,9 @@ import Foundation
 /// The trust anchor is HTTPS to GitHub and nothing else: the DMG is self-signed, so no code
 /// signature can be verified. Both URLs this type hands on — the release page and the DMG
 /// asset — are therefore pinned to `https` + `github.com` exactly, here, at the one place a
-/// hostile API response could redirect the user or the downloader.
+/// hostile API response could redirect the user or the downloader. (`pinnedDMGURL` carries a
+/// DEBUG-only, env-gated loopback carve-out for spec §11's empirical relaunch verification —
+/// see its doc comment; a Release binary contains none of that code.)
 ///
 /// Any failure — offline, rate-limited, malformed response — resolves to "no update";
 /// a version check must never degrade the tools that work entirely offline.
@@ -40,7 +42,19 @@ final class UpdateChecker: ObservableObject {
 
     init(fetchLatest: (() async throws -> Data)? = nil) {
         self.fetchLatest = fetchLatest ?? {
-            var request = URLRequest(url: URL(string: "https://api.github.com/repos/rossetv/toolbox/releases/latest")!)
+            var feed = URL(string: "https://api.github.com/repos/rossetv/toolbox/releases/latest")!
+            #if DEBUG
+            // DEBUG-only fixture seam for spec §11's empirical relaunch verification: when
+            // set, fetch the release feed from here instead of the real GitHub API, so the
+            // whole download/verify/install/relaunch pipeline can be driven against a local
+            // fixture server. Compiled out of every Release build — a shipped binary has no
+            // code path that reads this variable, so it can never be redirected in the wild.
+            if let override = ProcessInfo.processInfo.environment["TOOLBOX_UPDATE_FEED"],
+               let overrideURL = URL(string: override) {
+                feed = overrideURL
+            }
+            #endif
+            var request = URLRequest(url: feed)
             request.timeoutInterval = 10
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
@@ -95,8 +109,37 @@ final class UpdateChecker: ObservableObject {
         let firstDMG = (payload.assets ?? [])
             .lazy.compactMap { URL(string: $0.browser_download_url) }
             .first { $0.pathExtension.lowercased() == "dmg" }
-        let dmgURL = firstDMG.flatMap { $0.scheme == "https" && $0.host == "github.com" ? $0 : nil }
+        let dmgURL = firstDMG.flatMap { Self.pinnedDMGURL($0) }
         return Release(version: version, pageURL: url, dmgURL: dmgURL)
+    }
+
+    /// Whether a candidate `.dmg` asset URL survives the host pin. Split out from
+    /// `parseRelease` (rather than inlined) so both the production pin and the DEBUG-only
+    /// fixture carve-out below are directly unit-testable via the `feedOverrideActive`
+    /// parameter — never by mutating process-global environment inside a suite that runs
+    /// `-parallel-testing-enabled`.
+    nonisolated static func pinnedDMGURL(
+        _ candidate: URL,
+        feedOverrideActive: Bool = {
+            #if DEBUG
+            return ProcessInfo.processInfo.environment["TOOLBOX_UPDATE_FEED"] != nil
+            #else
+            return false
+            #endif
+        }()
+    ) -> URL? {
+        if candidate.scheme == "https", candidate.host == "github.com" { return candidate }
+        #if DEBUG
+        // Spec §11's empirical relaunch verification needs the WHOLE pipeline — download,
+        // checksum, mount, install, relaunch — to run against a local fixture server, never
+        // live GitHub. This is the one place that pipeline is allowed to resolve to a
+        // non-GitHub host, and it is gated three ways at once: the `#if DEBUG` compile flag
+        // (a Release binary contains none of this code), the feed override actually being
+        // active (a DEBUG build with no override set still enforces the production pin
+        // below), and the literal loopback host — never a suffix or prefix match.
+        if feedOverrideActive, candidate.host == "127.0.0.1" { return candidate }
+        #endif
+        return nil
     }
 
     /// Numeric dot-component comparison: "0.2.0" > "0.1.0", "0.10.0" > "0.9.1",
