@@ -359,7 +359,8 @@ struct CapsuleProgressBar: View {
                         .frame(width: min(width, Self.capWidth))
                         .offset(x: width - min(width, Self.capWidth))
                         .onAppear {
-                            withAnimation(.easeInOut(duration: Theme.Motion.capGlow).repeatForever(autoreverses: true)) {
+                            // Autoreverse doubles the duration, so use half for a 1.6s full cycle.
+                            withAnimation(.easeInOut(duration: Theme.Motion.capGlow / 2).repeatForever(autoreverses: true)) {
                                 capGlowOpacity = 0.95
                             }
                         }
