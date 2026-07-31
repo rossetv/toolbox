@@ -1653,6 +1653,60 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertNotNil(model.versions(for: job)?.shipped)
     }
 
+    /// Spec §5's version-cap collision (R14/R15), driven end to end. Both parked slots fill at once
+    /// the moment a re-run keeps a second variant of its own: the fresh loser takes the runner-up
+    /// slot while the version it replaced parks as the previous. `VersionStoreTests`'
+    /// `testConsentRetentionPlusPreviousParkStaysWithinCap` proves the store holds that shape;
+    /// nothing proved a real recompress PRODUCES it — and both incumbent re-run tests here
+    /// (`testRecompressCommitsAndParksThePreviousVersion`,
+    /// `testAPlainResultWithAPreviousVersionOffersTheCapsule`) script a re-run that comes back with
+    /// no runner-up at all, so the commit's two slot writes have only ever been exercised apart.
+    func testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+        let firstRunnerUp = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?
+            .runnerUp?.url)
+        XCTAssertNil(model.versions(for: try XCTUnwrap(model.jobs.first))?.previous,
+                     "precondition: only one slot is occupied before the re-run")
+
+        env.stub.script = { _, _ in .init(outcome: .compressedHeavy(before: 9000, after: 600,
+                                                                    runnerUpBytes: 2_000),
+                                          shippedBytes: 600, runnerUpBytes: 2_000) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertEqual(row.shipped?.bytes, 600)
+        XCTAssertEqual(row.shipped?.preset, .smallestSize)
+        XCTAssertEqual(row.runnerUp?.bytes, 2_000, "the runner-up slot holds THIS run's loser")
+        XCTAssertEqual(row.previous?.bytes, HeavyEnv.heavyBytes,
+                       "and the previous slot the version this run replaced")
+        XCTAssertEqual(row.previous?.preset, .balanced)
+
+        // The cap is four ROWS, not four slots: two parked versions, the file in use, and the
+        // untouched original referenced in place (spec §5's ruling; the popover lists exactly this).
+        XCTAssertEqual(row.cards.map(\.key), [.shipped, .runnerUp, .previous, .originalReference])
+        XCTAssertEqual(row.capsuleTitle, "4 versions")
+
+        // Every named version is really on disk — a card advertising a switch to a file that is not
+        // there is the mislabel R12 forbids.
+        for card in row.cards {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: card.version.url.path),
+                          "\(card.key) must name a file that exists")
+        }
+        XCTAssertEqual(try fileSize(try XCTUnwrap(row.runnerUp?.url)), 2_000)
+        XCTAssertEqual(try fileSize(try XCTUnwrap(row.previous?.url)), HeavyEnv.heavyBytes)
+
+        // …and the superseded runner-up is NOT still lying around: replacing the slot discards the
+        // file it held, or the session cache grows a version nothing can reach (D6/R18).
+        XCTAssertNotEqual(row.runnerUp?.url, firstRunnerUp)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstRunnerUp.path),
+                       "the version the runner-up slot no longer holds is discarded, not orphaned")
+    }
+
     // MARK: one run, two phases (R5/R9)
 
     /// R5: newly added files and armed rows form ONE run behind one button. The counts the button
