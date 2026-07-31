@@ -167,13 +167,9 @@ struct QueueFooterView: View {
     static func workingHeadline(model: QueueViewModel) -> String {
         let saved = model.batchProgress?.savedSoFarBytes ?? 0
         if saved > 0 { return "\(QueueByteFormat.string(saved)) saved so far" }
-        let searchable = searchableCount(model)
+        let searchable = model.searchableRowCount
         guard searchable > 0 else { return "Working…" }
         return "\(searchable) file\(searchable == 1 ? "" : "s") made searchable so far"
-    }
-
-    private static func searchableCount(_ model: QueueViewModel) -> Int {
-        model.jobs.filter { model.versions(for: $0)?.searchableByCard[.shipped] == true }.count
     }
 
     /// The last two path components ("Documents › Contracts") of the save destination, or the

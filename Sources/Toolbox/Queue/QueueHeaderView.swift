@@ -197,7 +197,7 @@ struct QueueHeaderView: View {
         if saved > 0 { return "\(QueueByteFormat.string(saved)) lighter" }
         // All-OCR / no-savings batch (spec §6.3): never "0 MB lighter" — the searchable count
         // carries the headline instead.
-        let searchable = searchableRowCount
+        let searchable = model.searchableRowCount
         return searchable > 0 ? "\(searchable) file\(searchable == 1 ? "" : "s") now searchable" : "Already optimised"
     }
 
@@ -208,16 +208,9 @@ struct QueueHeaderView: View {
             before += sizes.before; after += sizes.after; files += 1
         }
         let totals = files > 0 ? "\(QueueByteFormat.string(before)) → \(QueueByteFormat.string(after)) across \(files) file\(files == 1 ? "" : "s")" : "\(model.jobs.count) file\(model.jobs.count == 1 ? "" : "s")"
-        let searchable = searchableRowCount
+        let searchable = model.searchableRowCount
         guard searchable > 0 else { return "\(totals)." }
         return "\(totals). \(searchable == 1 ? "One is" : "\(searchable) are") now searchable."
-    }
-
-    /// Rows OCR made searchable (mirrors `HistoryStore`'s own `searchableCount` derivation: the
-    /// STORE's flag, never `job.state`'s outcome, which is stale after a re-run and disagrees by
-    /// design on the all-lossy path).
-    private var searchableRowCount: Int {
-        model.jobs.filter { model.versions(for: $0)?.searchableByCard[.shipped] == true }.count
     }
 
     private var problemsHeadline: String { Self.problemsHeadline(jobs: model.jobs) }

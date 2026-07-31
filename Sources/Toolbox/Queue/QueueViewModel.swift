@@ -2395,6 +2395,14 @@ final class QueueViewModel: ObservableObject {
         return versionStore.versions(for: job.id)
     }
 
+    /// Rows OCR made searchable (mirrors `HistoryStore`'s own `searchableCount` derivation: the
+    /// STORE's flag, never `job.state`'s outcome, which is stale after a re-run and disagrees by
+    /// design on the all-lossy path) — the one figure the header and footer both render, so a
+    /// drift between two private copies can never make the two halves of the same window disagree.
+    var searchableRowCount: Int {
+        jobs.filter { versions(for: $0)?.searchableByCard[.shipped] == true }.count
+    }
+
     /// The before/after byte pair `job` contributes to the batch totals, or nil when the row has
     /// shipped nothing (queued/running/failed/no-gain/OCR). `after` is always the SHIPPED version's
     /// size, so a switch or a recompress keeps the totals in step with the row's own badge.
