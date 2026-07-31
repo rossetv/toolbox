@@ -1,0 +1,241 @@
+// Toolbox
+// Copyright (C) 2026 Vilmar Rosset (toolbox@rosset.ie)
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// This file is part of Toolbox, released under the GNU Affero General
+// Public License v3.0 or later. See the LICENSE file in the project root.
+
+import SwiftUI
+
+/// The window's top strip across every non-empty screen state: screen 03's title + verb chips +
+/// save-destination row, screen 05's working title + progress bar, and screens 06/10's big
+/// finished/problems headlines. Owns the `⋯` button and its three-item menu (spec P-A task:
+/// Recent batches…, Where files are saved…, About Toolbox) in every state that shows it.
+struct QueueHeaderView: View {
+    @ObservedObject var model: QueueViewModel
+    let state: QueueScreenState
+
+    let quality: () -> AnyView
+    let ocrOptions: () -> AnyView
+    let onAdd: () -> Void
+    let onClear: () -> Void
+    let onChooseFolder: () -> Void
+    let onRecentBatches: () -> Void
+    let onAbout: () -> Void
+    let onCancel: () -> Void
+
+    @State private var qualityPresented = false
+    @State private var ocrPresented = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            switch state {
+            case .empty: EmptyView()
+            case .ready: readyTitleRow
+            case .working: workingTitleRow
+            case .finished: bigHeadline(kind: .finished, headline: finishedHeadline, subtitle: finishedSubtitle)
+            case .problems: bigHeadline(kind: .warn, headline: problemsHeadline, subtitle: problemsSubtitle)
+            }
+            if state == .ready {
+                HStack(spacing: 8) {
+                    VerbChip(title: "Compress", suffix: model.compressOn ? model.preset.title : nil,
+                             isOn: model.compressOn, icon: Image(systemName: "arrow.down.right.and.arrow.up.left"),
+                             toggle: { model.compressOn.toggle() },
+                             openOptions: model.compressOn ? { qualityPresented = true } : nil)
+                    VerbChip(title: "OCR", suffix: model.ocrOn ? ocrLanguageDisplay : nil,
+                             isOn: model.ocrOn, icon: Image(systemName: "doc.text.magnifyingglass"),
+                             toggle: { model.ocrOn.toggle() },
+                             openOptions: model.ocrOn ? { ocrPresented = true } : nil)
+                    Spacer(minLength: Theme.Spacing.small)
+                    saveDestinationMenu
+                }
+            }
+            if state == .working, let progress = model.batchProgress {
+                CapsuleProgressBar(fraction: progress.fraction)
+            }
+        }
+        .padding(.horizontal, Theme.Spacing.large)
+        .padding(.top, 20)
+        .padding(.bottom, state == .ready ? 14 : 16)
+        .popover(isPresented: $qualityPresented) { quality() }
+        .popover(isPresented: $ocrPresented) { ocrOptions() }
+    }
+
+    // MARK: Ready (screen 03)
+
+    private var readyTitleRow: some View {
+        HStack(alignment: .lastTextBaseline) {
+            Text("\(model.jobs.count) file\(model.jobs.count == 1 ? "" : "s")")
+                .themeFont(.windowHeadline).foregroundStyle(Theme.Colors.text)
+            if totalInputBytes > 0 {
+                Text(QueueByteFormat.string(totalInputBytes))
+                    .themeFont(.body13).foregroundStyle(Theme.Colors.textTertiary)
+            }
+            Spacer(minLength: Theme.Spacing.small)
+            LinkButton(title: "+ Add", action: onAdd)
+            if model.canClearFinished {
+                LinkButton(title: "⊗ Clear", action: onClear)
+            }
+            ellipsisMenu
+        }
+    }
+
+    private var totalInputBytes: Int {
+        model.jobs.compactMap { QueueByteFormat.size(of: $0.url) }.reduce(0, +)
+    }
+
+    private var ocrLanguageDisplay: String {
+        guard let code = model.ocrOptions.languages.first,
+              let entry = OCROptions.curatedLanguages.first(where: { $0.code == code }) else {
+            return "English"
+        }
+        return entry.display
+    }
+
+    @ViewBuilder
+    private var saveDestinationMenu: some View {
+        let destinationLabel = model.outputFolder?.lastPathComponent ?? "Saving beside the originals"
+        Menu {
+            Button("Beside the originals") { model.outputFolder = nil }
+            Button("Choose folder…", action: onChooseFolder)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.doc").font(.system(size: 11))
+                Text(destinationLabel).themeFont(.body13)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+            }
+            .foregroundStyle(Theme.Colors.textTertiary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Save destination, \(destinationLabel)")
+        .accessibilityHint("Opens a menu to change where files are saved")
+    }
+
+    // MARK: Working (screen 05)
+
+    private var workingTitleRow: some View {
+        HStack(alignment: .lastTextBaseline) {
+            Text("Working on \(model.jobs.count) file\(model.jobs.count == 1 ? "" : "s")")
+                .themeFont(.windowHeadline).foregroundStyle(Theme.Colors.text)
+            if let progress = model.batchProgress {
+                Text(workingStatusText(progress))
+                    .themeFont(.body13).foregroundStyle(Theme.Colors.textTertiary)
+            }
+            Spacer(minLength: Theme.Spacing.small)
+            LinkButton(title: "Cancel", action: onCancel)
+        }
+    }
+
+    private func workingStatusText(_ progress: BatchProgress) -> String {
+        let percent = Int((progress.fraction * 100).rounded())
+        guard let eta = progress.etaSeconds else { return "\(percent)%" }
+        return "\(percent)% · about \(eta) second\(eta == 1 ? "" : "s") left"
+    }
+
+    // MARK: Finished / Problems big headlines (P-A composition — no handoff component; see
+    // `QueueComponents.swift`'s per-screen map)
+
+    private enum HeadlineKind { case finished, warn }
+
+    @ViewBuilder
+    private func bigHeadline(kind: HeadlineKind, headline: String, subtitle: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            headlineGlyph(kind)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headline).themeFont(.windowHeadline).foregroundStyle(Theme.Colors.text)
+                Text(subtitle).themeFont(.body13).foregroundStyle(Theme.Colors.textSecondary)
+            }
+            Spacer(minLength: Theme.Spacing.small)
+            ellipsisMenu
+        }
+    }
+
+    /// The filled disc + glyph screen 06/10 use — deliberately NOT `StatusIndicator`, whose
+    /// `.warn` case is a different (outline) shape reserved for row-level degraded outcomes; see
+    /// its doc comment.
+    private func headlineGlyph(_ kind: HeadlineKind) -> some View {
+        let (tint, symbol): (Color, String) = kind == .finished
+            ? (Theme.Colors.success, "checkmark") : (Theme.Colors.warn, "exclamationmark")
+        return ZStack {
+            Circle().fill(tint)
+            Image(systemName: symbol).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+        }
+        .frame(width: 30, height: 30)
+    }
+
+    private var finishedHeadline: String {
+        let saved = model.batchProgress?.savedSoFarBytes ?? 0
+        if saved > 0 { return "\(QueueByteFormat.string(saved)) lighter" }
+        // All-OCR / no-savings batch (spec §6.3): never "0 MB lighter" — the searchable count
+        // carries the headline instead.
+        let searchable = searchableRowCount
+        return searchable > 0 ? "\(searchable) file\(searchable == 1 ? "" : "s") now searchable" : "Already optimised"
+    }
+
+    private var finishedSubtitle: String {
+        var before = 0, after = 0, files = 0
+        for job in model.jobs {
+            guard let sizes = model.displayedSizes(for: job) else { continue }
+            before += sizes.before; after += sizes.after; files += 1
+        }
+        let totals = files > 0 ? "\(QueueByteFormat.string(before)) → \(QueueByteFormat.string(after)) across \(files) file\(files == 1 ? "" : "s")" : "\(model.jobs.count) file\(model.jobs.count == 1 ? "" : "s")"
+        let searchable = searchableRowCount
+        guard searchable > 0 else { return "\(totals)." }
+        return "\(totals). \(searchable == 1 ? "One is" : "\(searchable) are") now searchable."
+    }
+
+    /// Rows OCR made searchable (mirrors `HistoryStore`'s own `searchableCount` derivation,
+    /// binding carry #1: the STORE's flag, never `job.state`'s outcome, which is stale after a
+    /// re-run and disagrees by design on the all-lossy path).
+    private var searchableRowCount: Int {
+        model.jobs.filter { model.versions(for: $0)?.searchableByCard[.shipped] == true }.count
+    }
+
+    private var problemsHeadline: String {
+        let done = model.jobs.filter { if case .done = $0.state { return true }; if case .failed = $0.state { return true }; return false }.count
+        return "\(done) of \(model.jobs.count) files done"
+    }
+
+    /// Rows needing the user's attention: a run-time failure, or an add-time problem
+    /// (locked/missing/unreadable) that was never skipped or fixed and so never joined the run —
+    /// mirrors `QueueView.screenState`'s own `hasUnresolvedProblem` definition.
+    private var problemsSubtitle: String {
+        let saved = model.batchProgress?.savedSoFarBytes ?? 0
+        let needAttention = model.jobs.filter { job in
+            switch job.state {
+            case .failed: return true
+            case .queued, .analysing: return model.inspections[job.id]?.problem != nil
+            case .done, .running: return false
+            }
+        }.count
+        let savedPart = saved > 0 ? "\(QueueByteFormat.string(saved)) saved. " : ""
+        return needAttention == 1 ? "\(savedPart)One file needs something from you."
+                                  : "\(savedPart)\(needAttention) files need something from you."
+    }
+
+    private var ellipsisMenu: some View {
+        Menu {
+            Button("Recent Batches…", action: onRecentBatches)
+            Button("Where Files Are Saved…", action: onChooseFolder)
+            Button("About Toolbox", action: onAbout)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.Colors.textSecondary)
+                .frame(width: 28, height: 28)
+                .background(Theme.Colors.fill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("More")
+    }
+}
+
+#Preview("Header – Ready") {
+    QueueHeaderView(model: QueueViewModel(), state: .ready,
+                    quality: { AnyView(EmptyView()) }, ocrOptions: { AnyView(EmptyView()) },
+                    onAdd: {}, onClear: {}, onChooseFolder: {}, onRecentBatches: {}, onAbout: {}, onCancel: {})
+        .frame(width: 900)
+        .background(Theme.Colors.surface)
+}
