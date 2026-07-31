@@ -9,6 +9,229 @@ import Combine
 import XCTest
 @testable import Toolbox
 
+// MARK: - R-net re-derivation map (spec §11; plan Task P-D)
+//
+// The redesign reverses prior-art rules this suite was written to defend (spec §5's change
+// table), so every test it carried has to be re-derived rather than assumed still meaningful.
+// This is that enumeration: all 62 test funcs present at the redesign's base commit 624d398 —
+// `grep -c 'func test'` on `CompressViewModelTests.swift`, the file this one was renamed from,
+// a count that INCLUDES the three untagged funcs preceding the first `// MARK:` — each with
+// the disposition it now stands at, plus the siblings added since.
+//
+// DERIVATION, not recollection. Dispositions come from per-commit BODY diffs
+// (`git show -M --unified=0 <sha> -- <path>`, each hunk mapped onto its enclosing func), and
+// the cross-suite sweep at the foot comes from grepping the MECHANISM's symbols —
+// `runTask == nil`, `isRunning`, `alternateOutput`, `switchesInFlight`, `compressedHeavy`,
+// `canCompress` — never the R-tags in the MARK headings. An R-tag records which rule a group
+// was written for; it does not record whether the redesign moved it, and three of the four
+// reversals below sit in groups whose heading names no rule that changed.
+//
+//   adapt             the invariant survives; the body changed only to track a renamed symbol
+//                     or a new mechanism, or did not change at all
+//   superseded-by(X)  the assertion no longer exists here; X carries the invariant forward
+//   flipped-by(F<n>)  the asserted BEHAVIOUR itself was reversed by that task
+//   new(F<n>)         sibling added by that task
+//
+// Task keys: F1 ecb3968 · F1b 8f803b7 · F2 cc3c3cb · F4 a256405 + d46511a + 1e1aa74 ·
+// F5a 08fc827 · F5e f45dc19 · F6 a630def · P-D (this task).
+//
+// F4's rename commit (a256405) rewrote every func in the file. Its diff filtered on
+// `CompressViewModel` → `QueueViewModel` is EMPTY, so it changed no assertion and is not
+// recorded per row.
+//
+// === untagged early block (3 at base) ===
+//   testAddIsIgnoredWhileABatchIsRunning ....... flipped-by(F4) → superseded-by(
+//                                               QueueAdmissionTests.testAddDuringRunJoinsBatch);
+//                                               tombstoned in place at the head of the class body
+//   testThreeFileSyntheticBatchCompressesEndToEnd ... adapt — F1 destructures the compound
+//                                               outcome, F4 `canCompress` → `canStart`,
+//                                               F6 injects a temp-rooted `HistoryStore`
+//   testChangingPresetReestimatesQueuedJobs .... adapt (body unchanged)
+//   testCJKLanguageClampsAccuracyToAccurate .... new(F4)
+//
+// === MARK: runner-up switch + lifecycle (Task 18) — 21 at base ===
+// (3 + 21 + 5 + 4 + 12 + 5 + 3 + 3 + 4 + 2 = 62, the base count derived above.)
+// The spec's R7-asymmetry reversal is an ENGINE change (F2): it decides WHICH variants reach a
+// row, never how the row switches between the ones it has. Every switch invariant below is
+// therefore intact, and the group needed no flips.
+//   testCompressedHeavyOutcomePublishesBothVersions ... adapt (body unchanged)
+//   testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize ... adapt (body unchanged) — the
+//                                               `runnerUpBytes == inputSize` marker F2's
+//                                               withhold rule deliberately exempts
+//   testCompressedHeavyRetainsMRCReportOnJob ... adapt (body unchanged)
+//   testSecondUseVersionTapWhileFirstIsInFlightIsANoOp ... adapt (body unchanged)
+//   testSwitchTogglesInstantlyAndReversibly .... adapt (body unchanged)
+//   testPlainSwitchNeverExposesARunningRowOrDropsAllFinished ... adapt (body unchanged)
+//   testCapsuleTitleFlipsOnSwitch ............. superseded-by(testShippedCardFlipsOnSwitch)
+//                                               (F1b) — `capsuleTitle` became the "N versions"
+//                                               family, so the honest-label invariant moved
+//                                               onto the popover's shipped card
+//   testCapsuleTitleReadsOriginalWhenRunnerUpIsInput ... superseded-by(
+//                                               testCardsSurfaceOriginalKindParkedVariant) (F1b)
+//   testShippedCardFlipsOnSwitch .............. new(F1b), amended by F5a (the always-present
+//                                               Original reference row takes the row to three)
+//   testCardsSurfaceOriginalKindParkedVariant .. new(F1b)
+//   testSavedBytesUsesShippedVersionForHeavyJob ... adapt (body unchanged)
+//   testDisplayedBytesTracksShippedVersion ..... adapt (body unchanged)
+//   testSwitchWithMissingRunnerUpRerunsJob ..... adapt (body unchanged) — the re-run path it
+//                                               drives was rebuilt by F5e; the invariant it
+//                                               asserts (a vanished runner-up is regenerated,
+//                                               not silently dropped) is unchanged, and F5e's
+//                                               own additions live in `QueuePassTests`
+//   testUseVersionIsIgnoredWhileARunIsInFlight .. adapt (body unchanged)
+//   testCompressIsRefusedWhileASwitchIsInFlight . adapt — F4 `canCompress` → `canStart`
+//   testClearFinishedRefusedWhileASwitchIsInFlight ... adapt (body unchanged)
+//   testSwitchFailingAfterRerunLeavesStateCanonical ... adapt (body unchanged)
+//   testRerunSwitchClearsAStaleRecompressErrorOnSuccess ... adapt (body unchanged)
+//   testLaterBatchDoesNotRewriteAFinishedRowsPreset ... adapt (body unchanged) — spec §5 keeps
+//                                               this one BY NAME through the per-row override
+//                                               reversal; `effectivePreset` equals the batch
+//                                               preset on a row with no override
+//   testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling ... adapt (unchanged)
+//   testRemoveRowDiscardsRunnerUp ............. adapt (body unchanged)
+//   testClearFinishedDiscardsRunnerUps ........ adapt (body unchanged)
+//   testCancelDiscardsRunnerUpReservations .... adapt (body unchanged)
+//
+// === MARK: arming (R1/R3/R6/R7) — 5 at base ===
+// F4 step 5 re-keyed arming and futility onto `effectivePreset(for:)`/`effectiveVerbs(for:)`.
+// None of these five needed a body change: with no override the effective preset IS the batch
+// preset, so each still asserts its own invariant. Their per-row siblings are F4's
+// `QueueAdmissionTests.testArmingUsesRowEffectivePreset` and `testFutilityKeyIncludesVerbSet`,
+// and P-D's `testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs` below.
+//   testSelectingADifferentPresetArmsAFinishedRow ... adapt (body unchanged)
+//   testReselectingTheRowsPresetDisarmsIt ..... adapt (body unchanged)
+//   testFailedRowsNeverArm .................... adapt (body unchanged)
+//   testNoGainRowArmsElsewhereAndIsFutileAtItsOwnPreset ... adapt (body unchanged)
+//   testNothingArmsWhileARunIsInFlight ........ adapt (body unchanged)
+//   testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs ... new(P-D)
+//
+// === MARK: recompress prediction (R16) — 4 at base ===
+// R16's calibration gate is the engine's own `wantsMRC` conjunction, and the redesign ADDED a
+// third term to it: the row's `rebuildScan` override. The two path tests below predate that
+// term and exercise only the preset term, hence P-D's sibling.
+//   testPredictionScalesByTheObservedRatioWhenThePathRepeats ... adapt (body unchanged)
+//   testPredictionUsesTheRawEstimateWhenTheEnginePathChanges ... adapt (body unchanged)
+//   testPredictionIsWithheldWhenItWouldNotBeatTheOriginal ... adapt (body unchanged)
+//   testPredictionIsWithheldWhenTheOriginalIsGone ... adapt (body unchanged)
+//   testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut ... new(P-D)
+//
+// === MARK: recompress commit protocol (R10–R13) — 12 at base ===
+// F5e rebuilt `recompress`'s engine call (OCR re-applied, row `rebuildScan` honoured, commit
+// through `replaceItemAt`, `finalBytes` re-stat). Its new assertions live in `QueuePassTests`;
+// every commit-protocol invariant here survives unchanged, because R10–R13 govern WHERE the
+// result lands and WHAT is parked, neither of which the reversals touch.
+//   testRecompressCommitsAndParksThePreviousVersion ... adapt (body unchanged)
+//   testRecompressDeliversTheFreshResultWhenTheShippedFileWasDeletedOutsideTheApp ... adapt
+//   testPreviousVersionsPresetOffersAnInstantSwitchRatherThanArming ... adapt (unchanged)
+//   testRecompressFailureKeepsThePreviousVersionAndReportsIt ... adapt (body unchanged)
+//   testARecompressErrorClearsWhenThePresetChangesOrTheNextRunStarts ... adapt (unchanged)
+//   testCancellingDuringTheQueuePhaseNeverStartsTheRecompressPhase ... adapt (unchanged)
+//   testCancellingARecompressKeepsThePreviousResult ... adapt (body unchanged)
+//   testNoGainRecompressKeepsEveryReference ... adapt (body unchanged)
+//   testRecompressWritesToTheRowsExistingResultPathAfterTheFolderChanged ... adapt (unchanged)
+//   testAQueuedJobNeverClaimsAnArmedRowsResultPath ... adapt (body unchanged) — the reservation
+//                                               ledger moved to add time (F4), and this still
+//                                               asserts the collision it was written for
+//   testAQueuedJobNeverClaimsAnExistingRowsLiveRunnerUpPath ... adapt (body unchanged)
+//   testMissingOriginalReportsPerRowAndLeavesTheResultIntact ... adapt (body unchanged)
+//   testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious ... new(P-D)
+//
+// === MARK: one run, two phases (R5/R9) — 5 at base ===
+//   testMixedRunCountsBothSets ................ adapt — F4 `canCompress` → `canStart`
+//   testArmedRowsAloneEnableTheButton ......... adapt — F4 `canCompress` → `canStart`
+//   testTheRecompressPhaseWaitsForTheQueuePhase ... adapt (body unchanged)
+//   testRunProgressIsScopedToTheRunsOwnRows ... adapt (body unchanged)
+//   testAFailedQueuedRowStillCountsTowardTheProgressBar ... adapt (body unchanged)
+//
+// === MARK: armed-state aggregates and cache lifecycle (R4/R17/R18) — 3 at base ===
+//   testAllFinishedIsFalseWhileARowIsArmed .... adapt (body unchanged)
+//   testClearFinishedDiscardsTheParkedPreviousVersion ... adapt (body unchanged)
+//   testAPlainResultWithAPreviousVersionOffersTheCapsule ... adapt — F1b moved the capsule to
+//                                               the "N versions" family, F5a took the row to
+//                                               three cards; the GATE it pins (a parked slot,
+//                                               never the card count) is unchanged
+//
+// === MARK: the armed banner's arithmetic (R4) — 3 at base ===
+//   testArmedSummarySumsThePredictedExtraSaving ... adapt (body unchanged)
+//   testArmedSummaryGoesNonPositiveWhenTheArmedPresetIsLessAggressive ... adapt (unchanged)
+//   testArmedSummaryWithholdsTheExtraWhenNoRowPredictsConfidently ... adapt (unchanged)
+//   testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset ... new(P-D)
+//
+// === MARK: the previous version, end to end (R7/R15) — 4 at base ===
+// The R7 in this heading is RECOMPRESS R7 (the previous-version slot), not MRC R7 (the
+// discarded losing hybrid). Only the latter is reversed — the tag-grep trap this map exists
+// to avoid.
+//   testUsingThePreviousVersionSwapsTheDeliveredFileBack ... adapt (body unchanged)
+//   testUsingAVanishedPreviousVersionReportsItAndDropsTheSlot ... adapt (body unchanged)
+//   testAFailedSwitchKeepsAPreviousVersionThatIsStillOnDisk ... adapt (body unchanged)
+//   testAFailedRunnerUpSwitchKeepsTheRunnerUpThatIsStillOnDisk ... adapt (body unchanged)
+//
+// === MARK: lead derivation (R2/R6/R10/R12) — 2 at base ===
+//   testANoGainRowIsBothUnchangedAndArmed ..... adapt (body unchanged)
+//   testAnArmedRowWithAMissingOriginalOffersNoPrediction ... adapt (body unchanged)
+//
+// === cross-suite: every test elsewhere whose asserted behaviour this spec reverses ===
+// Located by the mechanism greps above, not by rule tags. Each disposition below was VERIFIED
+// against the commit that owns it; the flips are their owners' work, recorded here so the
+// re-derivation is complete in one place.
+//
+//   `alternateOutput` — CompressEngineMRCTests (F2 owns all eight; verified landed):
+//     testHybridLargerThanGsShipsGsOutput ..... flipped-by(F2) → superseded-by(
+//                                               testHybridLostGateStillWritesRunnerUp).
+//                                               It asserted `alternateOutput` was NOT written
+//                                               when the hybrid lost — the exact R7 asymmetry
+//                                               spec §5 removes
+//     testHybridSmallerThanGsShipsHybridWithRunnerUp ......... adapt — hybrid-won retention was
+//                                               already symmetric; body changed only for F2's
+//                                               `ReportSpy` count refactor
+//     testHybridWinsButGsCandidateNotSmallerThanInputParksOriginalAsRunnerUp ... adapt — the
+//                                               untouched-original park is not a compress
+//                                               artefact, so §6.3's withhold rule spares it
+//                                               (DECISIONS 2026-07-24)
+//     testMRCInternalFailureShipsGsSilently ... adapt — no valid hybrid exists, so retention
+//                                               cannot fire
+//     testNeverLargerThanInputStillHolds ...... adapt — no-gain path, nothing to retain
+//     testScanColourOnMaximumQualityNeverAttemptsMRC ......... adapt — no hybrid built (D3)
+//     testScanBilevelStillRoutesToRungTwo ..... adapt — no hybrid built
+//     testCancelDuringRungThreeDeliversNoOutput ............... adapt — body untouched by F2
+//   MRCInvariantTests.testEndToEndMixedDocumentBeatsGs ....... adapt — the hybrid WINS there,
+//                                               and the winning path always retained its loser
+//
+//   `isRunning` / the add-time guard — F4 owns both flips (verified landed):
+//     ToolQueueTests.testAddWhileRunningIsRefused ............. flipped-by(F4) → superseded-by(
+//                                               testAddDuringRunJoinsTheLiveBatch), the
+//                                               queue-level half; tombstoned in that file
+//     QueueViewModelTests.testAddIsIgnoredWhileABatchIsRunning ... see the untagged block above
+//   ToolQueueTests.testSecondRunIsRefusedSoTheLiveBatchStaysCancellable ... adapt — the `run`
+//                                               re-entrancy guard is NOT the add guard and is
+//                                               deliberately untouched (plan F4)
+//
+//   `switchesInFlight` — no reversal: the switch guard's semantics are unchanged by the spec.
+//                                               Every consumer is in this file and in
+//                                               `QueuePassTests`, all adapt.
+//
+//   Recompress R19 (OCR gains no recompress behaviour) — reversed by F5e. No test asserted R19
+//                                               anywhere: the mechanism grep returns only two
+//                                               `Sources/` comments and no assertion, so the
+//                                               reversal's whole test surface is F5e's new
+//                                               `QueuePassTests` re-run block. (One of those
+//                                               comments is now a stale claim — reported to the
+//                                               orchestrator, not fixed here: no `Sources/`
+//                                               edits in this track.)
+//
+// === gaps this task filled (4) ===
+// Each is a rule that survives R1–R18 but whose mechanism the redesign changed underneath it,
+// leaving the rule asserted only against the pre-redesign shape. Every one was seen to FAIL
+// against a deliberately broken assertion before being committed — the suite is green by
+// construction here, so a test that has never been red is a test that proves nothing.
+//   testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs — R6 futility, preset axis, per row
+//   testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut — R16 calibration, the
+//     `rebuildScan` term the redesign added to the path test
+//   testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset — R4 banner arithmetic, per row
+//   testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious — spec §5's version-cap
+//     collision driven end to end through the view model (`VersionStoreTests`'
+//     `testConsentRetentionPlusPreviousParkStaysWithinCap` proves it at the store)
+
 /// Drives `QueueViewModel` exactly as the view does — the full batch/preset/estimate/
 /// output-folder GUI path (Track C, Task C.2), end to end, with no UI harness involved (the
 /// view itself has no logic beyond calling into this model).
