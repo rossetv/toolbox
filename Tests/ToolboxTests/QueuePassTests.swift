@@ -1225,6 +1225,49 @@ final class QueuePassTests: XCTestCase {
                        "a winner that carries no layer still records what it actually weighs")
     }
 
+    /// The untouched original is NEVER appended to (spec §6.4), and that binds the re-run path
+    /// too: a row whose gs candidate bloated past the input parks the input itself, so an append
+    /// there would modify the one file the app promises to leave alone. Its card is labelled from
+    /// the OUTCOME instead — and the consent sheet stays away from a pair that has no "just
+    /// lighter" variant to offer (spec §6.3, the `.original`-park exclusion).
+    func testReRunNeverAppendsToAParkedOriginal() async throws {
+        let (env, ocr) = try env(added)
+        let model = env.model
+        model.preset = .balanced
+        ocr.growthBytes = 10        // an append is then visible in the file's own size
+        // `runnerUpBytes == before` is the R6/R7 marker: the gs candidate bloated past the input,
+        // so what got parked is the untouched input.
+        env.stub.script = { _, _ in
+            .init(outcome: .compressedHeavy(before: 9_000, after: 1_200, runnerUpBytes: 9_000),
+                  shippedBytes: 1_200, runnerUpBytes: 9_000)
+        }
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.versions(for: try job(model, id))?.runnerUp?.variant, .original,
+                       "sanity: the untouched input is what was parked")
+        let appendsBefore = ocr.appendCallCount
+
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        let parked = try XCTUnwrap(row.runnerUp?.url)
+        XCTAssertEqual(row.runnerUp?.variant, .original)
+        XCTAssertEqual(ocr.appendCallCount, appendsBefore + 1,
+                       "the re-run appends to its winner ONLY")
+        XCTAssertFalse(ocr.appendTargets.contains(parked),
+                       "the parked original was never handed to the writer")
+        XCTAssertEqual(TestSupport.fileSize(parked), 9_000,
+                       "byte-for-byte the input — an append would have grown it")
+        XCTAssertEqual(row.searchableByCard[.runnerUp], false,
+                       "outcome-keyed: this read returned .added, never .alreadySearchable")
+        XCTAssertTrue(model.pendingConsents.isEmpty,
+                      "an original park is not the pair the sheet is about")
+    }
+
     /// The WinAnsi guard is the batch leg's own, shared rather than reimplemented: a document whose
     /// every recognised run would land as `?` gets NO layer on the re-run path either. Both
     /// regenerated files say so instead of carrying a page of question marks that would pass every
