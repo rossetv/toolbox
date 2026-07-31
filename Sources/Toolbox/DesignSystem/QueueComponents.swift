@@ -1587,9 +1587,7 @@ struct UpdateBannerChrome<Content: View>: View {
 
 // MARK: - Shared row helpers
 
-/// Backs `QueueRow`'s click-to-open — mirrors `Components.swift`'s `RowOpenModifier` for
-/// `FileRow`, duplicated rather than shared across files because `FileRow` predates the
-/// redesign and is slated for deletion in Phase I, not a dependency this task should introduce.
+/// Backs `QueueRow`'s click-to-open.
 private struct RowOpenModifier: ViewModifier {
     let onOpen: (() -> Void)?
 

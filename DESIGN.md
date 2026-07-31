@@ -703,10 +703,10 @@ named surface next):
 - `Theme.Typography.sectionLabel` (11/semibold/+0.4, §3) is correctly specified and
   matches the handoff, but nothing renders through it yet: the `SectionLabel` view
   (`Components.swift`) still hard-codes `.microBold` (12pt) with a manual `.tracking(0.4)`
-  override. Every current call site but one dies with its file in Task I1b
-  (`CompressView`, `OCRView`, `SidebarView`); the sole survivor is `QueueComponents.swift`'s
-  `DropdownRow` label (screen 04b). Whoever finishes that screen should retone
-  `SectionLabel` onto the `sectionLabel` case.
+  override. Task I1b's deletions (`CompressView`, `OCRView`, `SidebarView`) have landed;
+  `SectionLabel` now has five call sites (`OCRPopover`, `PerFileSettingsPopover`,
+  `EmptyStateView`, `QueueComponents`'s `DropdownRow` label, `RecentBatchesSheet`).
+  Whoever retones `SectionLabel` onto the `sectionLabel` case should update all five.
 - `Theme.Radius.input` (11, "Comfortable") has no handoff counterpart and, per its own
   doc comment, exists only for `SegmentedPreset` and `Card` — both slated for deletion in
   Task I1b. It may become an orphaned token once that task lands.

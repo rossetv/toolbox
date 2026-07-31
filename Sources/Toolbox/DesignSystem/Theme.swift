@@ -31,7 +31,7 @@ import SwiftUI
 ///
 /// **Radius**: `capsule`(980)→`pill`, `popover`(12)→`card`; no incumbent, so NEW: `row`(10),
 /// `sheet`(14). `input`(11) and `control`(8, already the handoff's `control` value) are
-/// untouched — `input` has no handoff counterpart and stays for `SegmentedPreset`/`Card`.
+/// untouched — neither has a handoff counterpart.
 ///
 /// **Typography**: the incumbent `caption` case is RE-VALUED to the handoff's small-caption
 /// size (11.5 — distinct from the new `meta` case's 12, so the two don't collide); every

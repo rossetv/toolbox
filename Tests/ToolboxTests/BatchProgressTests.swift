@@ -9,10 +9,9 @@ import CoreGraphics
 import XCTest
 @testable import Toolbox
 
-// Re-homing note (plan F5c, step 1): `BatchProgressTextTests` predates the redesign's per-row leg
-// labels; its subject, `batchProgressText`, is unchanged here and dies only at I1b's `CompressView`
-// deletion (its own file stays in place until then). Its three assertions are superseded by tests
-// in THIS file as follows:
+// Re-homing note (plan F5c, step 1): `BatchProgressTextTests` predated the redesign's per-row leg
+// labels; its subject, `batchProgressText`, died along with its own file at I1b's `CompressView`
+// deletion. Its three assertions were superseded by tests in THIS file as follows:
 //   - `testCountsTheFileCurrentlyBeingProcessed` -> superseded by the aggregation tests below:
 //     `BatchProgress.fraction` sums the batch's rows directly, so there is no "N of M" string left
 //     to re-derive at all.
