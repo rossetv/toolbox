@@ -259,10 +259,13 @@ enum Theme {
         }
     }
 
-    /// Animation durations from the handoff's "Animations (durations & easings)" section — no
-    /// incumbent tokens existed for motion before F7. Every interactive `QueueComponents` view
-    /// gates its use of `standard`/the per-purpose durations on `accessibilityReduceMotion`,
-    /// substituting a plain (or no) transition rather than skipping the state change itself.
+    /// Animation durations, the transform values that go with them, and the Reduce Motion gates
+    /// every animated surface asks — from the handoff's "Animations (durations & easings)"
+    /// section and its per-control hover/active CSS (DESIGN.md §8). No incumbent tokens existed
+    /// for motion before F7; the values and gates below arrived with the 2026-08-01 motion-polish
+    /// mandate (DECISIONS.md). Every interactive view gates its use of these on
+    /// `accessibilityReduceMotion`, substituting a plain (or no) transition rather than skipping
+    /// the state change itself.
     enum Motion {
         /// The handoff's "standard curve" (`cubic-bezier(.2,.8,.25,1)`), reproduced as its stated
         /// SwiftUI spring equivalent. `standardResponse`/`standardDamping` are exposed alongside
@@ -284,6 +287,53 @@ enum Theme {
         static let banner: Double = 0.45
         /// Success/warn check "pop" (scale .4→1.16→1).
         static let checkPop: Double = 0.45
+
+        // MARK: values
+
+        /// Filled-button hover fade (handoff `opacity:.9`).
+        static let hoverOpacity: Double = 0.9
+        /// Filled-CTA hover rise (handoff `transform:translateY(-1px)`) — negative is up.
+        static let hoverLift: CGFloat = -1
+        /// Pressed scale for every button. The handoff writes `scale(.97)` on four of its six
+        /// primary buttons and `.98` on the other two; one token at .97 is the deliberate
+        /// consolidation (DESIGN.md §8) — a second constant for a 0.01 delta nobody can see is
+        /// magic-number scatter, not fidelity.
+        static let pressScale: CGFloat = 0.97
+        /// Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel"
+        /// spans).
+        static let linkHoverOpacity: Double = 0.6
+
+        // MARK: Reduce Motion gates
+        //
+        // Every animated surface asks one of these rather than writing its own
+        // `reduceMotion ? nil : …` ternary, so "Reduce Motion means static" is decided in one
+        // place and is directly testable (`ThemeTests`) without rendering a view.
+
+        /// The hover curve, or `nil` (no animation — the state change still happens instantly).
+        static func hoverCurve(reduceMotion: Bool) -> Animation? {
+            reduceMotion ? nil : .easeOut(duration: hover)
+        }
+
+        /// The press curve, or `nil`.
+        static func pressCurve(reduceMotion: Bool) -> Animation? {
+            reduceMotion ? nil : .easeOut(duration: press)
+        }
+
+        /// The standard spring, or `nil` — screen/row transitions and selection changes.
+        static func standardCurve(reduceMotion: Bool) -> Animation? {
+            reduceMotion ? nil : standard
+        }
+
+        /// Pressed scale, flattened to 1 under Reduce Motion (a transform, so it goes).
+        static func scale(isPressed: Bool, reduceMotion: Bool) -> CGFloat {
+            isPressed && !reduceMotion ? pressScale : 1
+        }
+
+        /// Hover lift, flattened to 0 under Reduce Motion. A pressed control sits back at rest
+        /// even while hovered — the handoff's active rule is `translateY(0) scale(.97)`.
+        static func lift(isHovering: Bool, isPressed: Bool = false, reduceMotion: Bool) -> CGFloat {
+            isHovering && !isPressed && !reduceMotion ? hoverLift : 0
+        }
     }
 }
 

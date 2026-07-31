@@ -203,4 +203,43 @@ final class ThemeTests: XCTestCase {
         XCTAssertEqual(Theme.Motion.banner, 0.45, accuracy: 0.0001)
         XCTAssertEqual(Theme.Motion.checkPop, 0.45, accuracy: 0.0001)
     }
+
+    /// The handoff's per-control hover/active CSS (DESIGN.md §8): `opacity:.9` +
+    /// `translateY(-1px)` on hover, `scale(.97)` on press, `opacity:.6` on text links.
+    func testTransformValues() {
+        XCTAssertEqual(Theme.Motion.hoverOpacity, 0.9, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.hoverLift, -1, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.pressScale, 0.97, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.linkHoverOpacity, 0.6, accuracy: 0.0001)
+    }
+
+    // MARK: - Reduce Motion gates
+    //
+    // Nil-ness, not `Animation` equality: `Animation` carries no useful `Equatable` semantics for
+    // this (which is why `standardResponse`/`standardDamping` are pinned as Doubles above).
+
+    func testCurvesAreNilUnderReduceMotion() {
+        XCTAssertNil(Theme.Motion.hoverCurve(reduceMotion: true))
+        XCTAssertNil(Theme.Motion.pressCurve(reduceMotion: true))
+        XCTAssertNil(Theme.Motion.standardCurve(reduceMotion: true))
+
+        XCTAssertNotNil(Theme.Motion.hoverCurve(reduceMotion: false))
+        XCTAssertNotNil(Theme.Motion.pressCurve(reduceMotion: false))
+        XCTAssertNotNil(Theme.Motion.standardCurve(reduceMotion: false))
+    }
+
+    func testPressScaleFlattensUnderReduceMotion() {
+        XCTAssertEqual(Theme.Motion.scale(isPressed: true, reduceMotion: false), Theme.Motion.pressScale, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.scale(isPressed: false, reduceMotion: false), 1, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.scale(isPressed: true, reduceMotion: true), 1, accuracy: 0.0001)
+    }
+
+    /// A pressed control sits back at rest even while the pointer is still over it — the
+    /// handoff's active rule is `transform:translateY(0) scale(.97)`, not a lifted press.
+    func testHoverLiftReturnsToRestWhenPressedOrReducedMotion() {
+        XCTAssertEqual(Theme.Motion.lift(isHovering: true, reduceMotion: false), Theme.Motion.hoverLift, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.lift(isHovering: false, reduceMotion: false), 0, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.lift(isHovering: true, isPressed: true, reduceMotion: false), 0, accuracy: 0.0001)
+        XCTAssertEqual(Theme.Motion.lift(isHovering: true, reduceMotion: true), 0, accuracy: 0.0001)
+    }
 }
