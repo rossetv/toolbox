@@ -1576,37 +1576,70 @@ final class QueueViewModel: ObservableObject {
         await acquireOCRSlot()
         defer { releaseOCRSlot() }
 
+        // `delivers: true` means this leg is the ONLY thing the row will ship: a recognise or
+        // append failure here must fail the whole job and give back both reserved names, exactly
+        // as no rescue at all would (spec §6.5). `delivers: false` means a compress leg already
+        // shipped something, so any OCR failure here degrades gracefully — kept file, honest
+        // caveat, no manufactured claim.
+        let flags = try await ocrLeg(recognising: job.url, ocrEngine: ocrEngine,
+                                     delivers: ocrDelivers,
+                                     shippedSource: ocrDelivers ? job.url : destination,
+                                     shippedDestination: destination,
+                                     runnerUpFile: state.runnerUpFile,
+                                     outcome: &state.outcome,
+                                     report: { raw in report(ocrStart + min(1, max(0, raw)) * ocrWidth) },
+                                     releaseOnFailure: { [self] in
+                                         releaseDelivery(for: job.id)
+                                         releaseAlternate(for: job.id)
+                                     })
+        guard let flags else { return state.result }
+        if ocrDelivers, flags[.shipped] == true { state.delivered = destination }
+        pendingSearchable[job.id] = flags
+        return state.result
+    }
+
+    /// The shared recognise → label → append sequence behind every OCR leg — the batch pass above
+    /// and every re-run path (`rerunOCRLeg`) — so the searchability/flag/append rules (spec §6.4,
+    /// amended 2026-07-30) live in exactly ONE place. `delivers` is the one real behavioural fork:
+    /// when true, this leg is the row's only source of output, so a failure releases whatever it
+    /// reserved (`releaseOnFailure`) and is rethrown; when false, a failure degrades gracefully —
+    /// the row keeps whatever it already shipped and carries an honest caveat instead. Returns nil
+    /// when the leg produced no flags to record (a genuine failure on the non-delivering path, or
+    /// an OCR-only run that turned out to need no rescue at all).
+    private func ocrLeg(recognising original: URL, ocrEngine: any OCRing, delivers: Bool,
+                        shippedSource: URL, shippedDestination: URL, runnerUpFile: URL?,
+                        outcome: inout RowOutcome, report: @escaping @Sendable (Double) -> Void,
+                        releaseOnFailure: () -> Void) async throws -> [VersionCardKey: Bool]? {
         let recognised: RecognisedDocument
         do {
-            recognised = try await ocrEngine.recognise(job.url, options: ocrOptions) { raw in
-                report(ocrStart + min(1, max(0, raw)) * ocrWidth)
+            recognised = try await ocrEngine.recognise(original, options: ocrOptions) { raw in
+                report(raw)
             }
         } catch {
-            if ocrDelivers {
-                // Nothing was delivered and nothing will be: both names go back and the row fails
-                // with the original untouched — the worst case is identical to no rescue at all
-                // (spec §6.5).
-                releaseDelivery(for: job.id)
-                releaseAlternate(for: job.id)
-                throw error
-            }
             // A read that failed AFTER a compress delivery never fails the job: the file is kept
             // and banked, and the row carries the caveat (spec §7's degraded family). No
             // searchability flags are written — a failed read is evidence of nothing, and a
             // manufactured "not searchable" would be as false as a manufactured "searchable".
-            state.outcome.ocr = error is CancellationError
+            outcome.ocr = error is CancellationError
                 ? .cancelled
                 : .failed(error.localizedDescription)
-            return state.result
+            guard delivers else { return nil }
+            // Nothing was delivered and nothing will be: both names go back and the row fails with
+            // the original untouched — the worst case is identical to no rescue at all (spec §6.5).
+            releaseOnFailure()
+            throw error
         }
 
-        state.outcome.ocr = recognised.outcome
+        outcome.ocr = recognised.outcome
         // The Original reference row, and any parked variant that IS the original, are labelled
         // from the OUTCOME (spec §6.4, amended 2026-07-30): the engine returns `.alreadySearchable`
         // only after every page passed `pageHasText`, so that is the one evidence-backed claim. The
         // original itself is never appended to.
         let originalIsSearchable = recognised.outcome == .alreadySearchable
         var flags: [VersionCardKey: Bool] = [.originalReference: originalIsSearchable]
+        // Read before any mutation below (this leg only ever touches `.bytes`, never `.kind`, but
+        // capturing it here keeps the labelling decision independent of what follows either way).
+        let retainedKind = outcome.runnerUp?.kind
 
         // Nothing to append, for three reasons the row must not confuse: every page already reads,
         // nothing usable was found, or every recognised run would be destroyed by the WinAnsi text
@@ -1614,35 +1647,30 @@ final class QueueViewModel: ObservableObject {
         // the user's document.
         let layerIsUnwritable = Self.layerWouldBeLost(recognised)
         guard case .added = recognised.outcome, !layerIsUnwritable else {
-            if ocrDelivers {
-                releaseDelivery(for: job.id)
-                releaseAlternate(for: job.id)
+            if delivers {
+                releaseOnFailure()
                 // `.alreadySearchable`/`.tooFaint` deliver nothing and take the OCR-only pipeline's
                 // own disposition; an unwritable layer had nothing else to hand over, so it fails.
                 guard !layerIsUnwritable else { throw UnwritableTextLayerError() }
-                return state.result
+                return nil
             }
             flags[.shipped] = false
-            if let kind = state.outcome.runnerUp?.kind {
-                flags[.runnerUp] = kind == .original ? originalIsSearchable : false
+            if let retainedKind {
+                flags[.runnerUp] = retainedKind == .original ? originalIsSearchable : false
             }
-            pendingSearchable[job.id] = flags
-            return state.result
+            return flags
         }
 
         do {
             try await appendLayer(recognised, using: ocrEngine,
-                                  reading: ocrDelivers ? job.url : destination,
-                                  writing: destination)
+                                  reading: shippedSource, writing: shippedDestination)
             flags[.shipped] = true
-            state.delivered = destination
             // Re-stat: the engine reported the COMPRESS artefact's size and the append has just
             // grown the file the user actually gets (`RowOutcome.finalBytes`' ownership note).
-            if let bytes = fileBytes(destination) { state.outcome.finalBytes = bytes }
+            if let bytes = fileBytes(shippedDestination) { outcome.finalBytes = bytes }
         } catch {
-            if ocrDelivers {
-                releaseDelivery(for: job.id)
-                releaseAlternate(for: job.id)
+            if delivers {
+                releaseOnFailure()
                 throw error
             }
             // A variant that cannot carry the layer is labelled honestly and is never a job failure
@@ -1650,8 +1678,8 @@ final class QueueViewModel: ObservableObject {
             flags[.shipped] = false
         }
 
-        if let runnerUpFile = state.runnerUpFile, let kind = state.outcome.runnerUp?.kind {
-            if kind == .original {
+        if let runnerUpFile, let retainedKind {
+            if retainedKind == .original {
                 flags[.runnerUp] = originalIsSearchable
             } else {
                 do {
@@ -1659,14 +1687,13 @@ final class QueueViewModel: ObservableObject {
                                           reading: runnerUpFile, writing: runnerUpFile)
                     flags[.runnerUp] = true
                     // The consent sheet's two cards must be measured at the same moment.
-                    if let bytes = fileBytes(runnerUpFile) { state.outcome.runnerUp?.bytes = bytes }
+                    if let bytes = fileBytes(runnerUpFile) { outcome.runnerUp?.bytes = bytes }
                 } catch {
                     flags[.runnerUp] = false
                 }
             }
         }
-        pendingSearchable[job.id] = flags
-        return state.result
+        return flags
     }
 
     /// Append one variant's copy of the layer. The engine only ever READS `source`, so the result
@@ -1811,64 +1838,23 @@ final class QueueViewModel: ObservableObject {
         await acquireOCRSlot()
         defer { releaseOCRSlot() }
 
-        let recognised: RecognisedDocument
+        // A re-run always follows a compress leg that already delivered `winner` (the only caller,
+        // `recompress`, invokes this after `case .compressed = outcome.compress`), so this leg never
+        // delivers on its own — `delivers: false` takes the shared function's graceful-degradation
+        // path throughout (`runOCRLeg`'s own rule), and there is nothing to release on failure.
         do {
-            recognised = try await ocrEngine.recognise(original, options: ocrOptions) { raw in
-                report(start + min(1, max(0, raw)) * width)
-            }
+            return try await ocrLeg(recognising: original, ocrEngine: ocrEngine,
+                                    delivers: false,
+                                    shippedSource: winner, shippedDestination: winner,
+                                    runnerUpFile: runnerUp,
+                                    outcome: &outcome,
+                                    report: { raw in report(start + min(1, max(0, raw)) * width) },
+                                    releaseOnFailure: {}) ?? [:]
         } catch {
-            // A read that failed never costs the user the file this re-run has already
-            // regenerated: it is kept, the row carries the caveat, and no claim is written —
-            // a failed read is evidence of nothing (`runOCRLeg`'s own rule).
-            outcome.ocr = error is CancellationError
-                ? .cancelled
-                : .failed(error.localizedDescription)
+            // Unreachable: `delivers: false` never throws. Kept as a defensive fallback so this
+            // stays non-throwing if that ever changed.
             return [:]
         }
-
-        outcome.ocr = recognised.outcome
-        // Outcome-keyed, exactly as the batch leg labels it (spec §6.4, amended 2026-07-30): the
-        // engine returns `.alreadySearchable` only after every page passed `pageHasText`.
-        let originalIsSearchable = recognised.outcome == .alreadySearchable
-        var flags: [VersionCardKey: Bool] = [.originalReference: originalIsSearchable]
-        let retainedKind = outcome.runnerUp?.kind
-        // Nothing to append: every page already reads, nothing usable was found, or every
-        // recognised run would be destroyed by the WinAnsi text layer this writer emits.
-        guard case .added = recognised.outcome, !Self.layerWouldBeLost(recognised) else {
-            flags[.shipped] = false
-            if let retainedKind {
-                flags[.runnerUp] = retainedKind == .original ? originalIsSearchable : false
-            }
-            return flags
-        }
-
-        do {
-            try await appendLayer(recognised, using: ocrEngine, reading: winner, writing: winner)
-            flags[.shipped] = true
-            // Re-stat: the engine reported the COMPRESS artefact's size and the append has just
-            // grown the file this row will deliver (`RowOutcome.finalBytes`' ownership note).
-            if let bytes = fileBytes(winner) { outcome.finalBytes = bytes }
-        } catch {
-            // A variant that cannot carry the layer is labelled honestly and is never a failed
-            // re-run (spec §6.4): the fresh artefact stands exactly as the engine wrote it.
-            flags[.shipped] = false
-        }
-        if let runnerUp, let retainedKind {
-            if retainedKind == .original {
-                flags[.runnerUp] = originalIsSearchable      // the original is never appended to
-            } else {
-                do {
-                    try await appendLayer(recognised, using: ocrEngine,
-                                          reading: runnerUp, writing: runnerUp)
-                    flags[.runnerUp] = true
-                    // Both cards are measured at the same moment, as the batch leg measures them.
-                    if let bytes = fileBytes(runnerUp) { outcome.runnerUp?.bytes = bytes }
-                } catch {
-                    flags[.runnerUp] = false
-                }
-            }
-        }
-        return flags
     }
 
     private func recompress(_ plan: RecompressPlan, engine: any Compressing) async {
