@@ -526,6 +526,8 @@ init(showAbout: Binding<Bool>) {
 
 ### Task V1: Visual verification — orchestrator-owned, bounded
 
+**ORDER AMENDED (review-team R1, orchestrator disposition, 2026-07-31):** V1 runs INSIDE the review-team gate — immediately after each fix round that changes visual surfaces, before the next review round — not before the gate started (the original "then review-team" line assumed a visually-stable tree; R1's fixes themselves changed five visual surfaces, so comparing earlier would have measured a tree about to churn). The gate cannot SHIP until V1 passes; spec §13.1's criterion is unchanged.
+
 Owner: the LCW orchestrator (not a track). Protocol: build, drive with computer-use, capture all 14 screens light + dark, side-by-side against `renders/screen-*.png`; include the stray-focus-ring keyboard walk (open/close every popover and sheet via keyboard, no blue ring residue). Archive each screen's comparison pair under `$(git rev-parse --path-format=absolute --git-common-dir)/lcw/20260730-ui-redesign/visual/` (spec §11's archive requirement). Budget: up to THREE fix-and-recompare iterations per screen; a screen still divergent after three → stop-red to the human with the comparison pair. Then the private-corpus functional pass (spec §11), then review-team gate → PR.
 
 ---
