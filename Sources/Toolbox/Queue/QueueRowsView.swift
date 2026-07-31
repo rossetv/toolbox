@@ -106,9 +106,17 @@ struct QueueRowsView: View {
     /// (this method's callers, `QueueRow`'s own modifier chain) fighting over a single opaque type.
     private func trailing(for job: ToolJob, descriptor: RowDescriptor) -> AnyView {
         switch descriptor.trailing {
-        case .sizeColumn(let current, let target, let targetColor):
-            return AnyView(QueueRowSizeColumn(current: current, target: target,
-                                              targetColor: targetColor ?? Theme.Colors.textSecondary))
+        case .sizeColumn(let current, let target, let targetColor, let kind):
+            let column = QueueRowSizeColumn(current: current, target: target,
+                                              targetColor: targetColor ?? Theme.Colors.textSecondary)
+            if let kind {
+                return AnyView(HStack(spacing: 9) {
+                    column
+                    StatusIndicator(kind: kind)
+                })
+            } else {
+                return AnyView(column)
+            }
         case .status(let text, let kind):
             return AnyView(HStack(spacing: 9) {
                 if let text {
@@ -142,7 +150,7 @@ struct QueueRowsView: View {
     /// exercises directly (a SwiftUI body cannot be unit-tested; this can).
     struct RowDescriptor: Equatable {
         enum Trailing: Equatable {
-            case sizeColumn(current: String, target: String, targetColor: Color?)
+            case sizeColumn(current: String, target: String, targetColor: Color?, kind: StatusIndicator.Kind? = nil)
             case status(text: String?, kind: StatusIndicator.Kind)
             case problem(primary: RowAction?, link: RowAction)
             case problemPair(RowAction, RowAction)
@@ -150,8 +158,8 @@ struct QueueRowsView: View {
 
             static func == (lhs: Trailing, rhs: Trailing) -> Bool {
                 switch (lhs, rhs) {
-                case (.sizeColumn(let a, let b, let c), .sizeColumn(let d, let e, let f)):
-                    return a == d && b == e && c == f
+                case (.sizeColumn(let a, let b, let c, let d), .sizeColumn(let e, let f, let g, let h)):
+                    return a == e && b == f && c == g && d == h
                 case (.status(let a, let b), .status(let c, let d)):
                     return a == c && b == d
                 case (.problem(let a, let b), .problem(let c, let d)):
@@ -373,7 +381,10 @@ struct QueueRowsView: View {
         }
         return RowDescriptor(
             meta: meta, emphasis: .none,
-            trailing: .status(text: QueueByteFormat.string(sizes.after), kind: .finished),
+            trailing: .sizeColumn(current: QueueByteFormat.string(sizes.before),
+                                  target: QueueByteFormat.string(sizes.after),
+                                  targetColor: nil,
+                                  kind: .finished),
             canOpen: true, capsuleTitle: capsuleTitle(row)
         )
     }
