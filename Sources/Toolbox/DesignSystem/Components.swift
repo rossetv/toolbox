@@ -64,7 +64,8 @@ struct MotionButtonStyle: ButtonStyle {
                 .opacity(isEnabled && (isHovering || isPressed) ? hoverOpacity : 1)
                 .animation(Theme.Motion.pressCurve(reduceMotion: reduceMotion), value: isPressed)
                 .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
-                .onHover { isHovering = $0 }
+                // Continuous hover keys off mouseMoved, which always arrives for warped/teleported pointers (assistive/synthetic input); .onHover only fires entered/exited and misses those — same visual semantics, strictly more robust.
+                .onContinuousHover { phase in if case .active = phase { isHovering = true } else { isHovering = false } }
         }
 
         private var isPressed: Bool { configuration.isPressed && isEnabled }
