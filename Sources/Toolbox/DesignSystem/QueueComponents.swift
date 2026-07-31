@@ -117,6 +117,11 @@ import SwiftUI
 /// A batch-wide verb toggle (Compress/OCR) — a compound control: tapping the label toggles the
 /// verb on/off, tapping the suffix/chevron (only present once the verb is on and has options)
 /// opens that verb's options popover. Two separate VoiceOver actions/labels (spec §9).
+///
+/// The press scale lands on each half's own content rather than on the whole chip: the pill is a
+/// background shared by two `Button`s, so no single `configuration.label` covers it. Squeezing the
+/// half actually being pressed is also the more honest read of a two-target control — the handoff
+/// defines no active style for chips at all (DESIGN.md §11).
 struct VerbChip: View {
     let title: String
     var suffix: String?
@@ -139,7 +144,7 @@ struct VerbChip: View {
                 .foregroundStyle(isOn ? .white : Theme.Colors.textSecondary)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MotionButtonStyle())
             .clearsClickFocus()
             .accessibilityLabel("\(title), \(isOn ? "on" : "off")")
             .accessibilityHint(isOn ? "Double-tap to turn off" : "Double-tap to turn on")
@@ -160,9 +165,10 @@ struct VerbChip: View {
                     }
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MotionButtonStyle())
                 .clearsClickFocus()
                 .onHover { isHoveringOptions = $0 }
+                .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringOptions)
                 .accessibilityLabel("\(title) options")
                 .accessibilityHint("Opens \(title.lowercased()) settings")
             }
@@ -183,7 +189,11 @@ struct VerbChip: View {
         )
         .onHover { isHoveringToggle = $0 }
         .pointingHandCursor()
-        .animation(reduceMotion ? nil : .easeOut(duration: Theme.Motion.hover), value: isHoveringToggle)
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringToggle)
+        // Turning a verb on/off swaps the pill between accent-filled and outlined, and adds or
+        // removes the suffix — a layout change, so it settles on the standard spring rather than
+        // snapping.
+        .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: isOn)
     }
 }
 
@@ -411,20 +421,26 @@ struct OptionCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 10)
             .padding(.horizontal, 12)
+            // Fill and selection ring live inside the label so `MotionButtonStyle`'s press scale
+            // carries the whole card; `contentShape` stays after the padding.
+            .background(
+                isSelected ? Theme.Colors.accent.opacity(0.08) : (isHovering ? Theme.Colors.background : Theme.Colors.surface),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                    .strokeBorder(isSelected ? Theme.Colors.accent : Theme.Colors.stroke, lineWidth: isSelected ? 1.5 : 1)
+            )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .background(
-            isSelected ? Theme.Colors.accent.opacity(0.08) : (isHovering ? Theme.Colors.background : Theme.Colors.surface),
-            in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
-                .strokeBorder(isSelected ? Theme.Colors.accent : Theme.Colors.stroke, lineWidth: isSelected ? 1.5 : 1)
-        )
         .onHover { isHovering = $0 }
         .pointingHandCursor()
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
+        // Moving the selection ring and tint from one card to the next is the sheet's main event
+        // — it settles on the standard spring rather than cutting.
+        .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: isSelected)
         .accessibilityLabel("\(title), \(value), \(caption)")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -458,6 +474,9 @@ struct CapsuleBadge: View {
     /// use isn't forced to carry one.
     var icon: Image? = nil
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
     var body: some View {
         HStack(spacing: 5) {
             icon?.font(.system(size: 10, weight: .semibold))
@@ -466,10 +485,20 @@ struct CapsuleBadge: View {
         .foregroundStyle(tone == .accent ? .white : Theme.Colors.textSecondary)
         .padding(.vertical, 3)
         .padding(.horizontal, 9)
-        .background(
-            tone == .accent ? Theme.Colors.accent : Theme.Colors.fill,
-            in: Capsule()
-        )
+        .background(background, in: Capsule())
+        .onHover { isHovering = $0 }
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: tone)
+    }
+
+    /// The handoff deepens the closed capsule's fill to `track` on hover
+    /// (`style-hover="background:var(--track)"`); the open (accent) capsule already reads as
+    /// pressed-in and does not change.
+    private var background: Color {
+        switch tone {
+        case .accent: return Theme.Colors.accent
+        case .muted: return isHovering ? Theme.Colors.track : Theme.Colors.fill
+        }
     }
 }
 
@@ -572,6 +601,7 @@ struct QueueRow<Trailing: View>: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
+    @State private var isHoveringGear = false
     @FocusState private var isFocused: Bool
     @State private var shimmerX: CGFloat = -0.3
 
@@ -581,6 +611,9 @@ struct QueueRow<Trailing: View>: View {
             Spacer(minLength: Theme.Spacing.small)
             if onGear != nil, isHovering || isFocused {
                 gearButton
+                    // The handoff fades the gear in ahead of the sizes rather than popping it
+                    // into the row; it leaves the same way.
+                    .transition(.opacity.combined(with: .scale(scale: 0.7)))
             }
             if let versionsCapsuleTitle {
                 Button(action: { onVersionsCapsule?() }) {
@@ -589,8 +622,9 @@ struct QueueRow<Trailing: View>: View {
                         tone: isVersionsCapsuleOpen ? .accent : .muted,
                         icon: Image(systemName: "square.3.layers.3d")
                     )
+                    .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MotionButtonStyle())
                 .clearsClickFocus()
                 .pointingHandCursor()
                 .accessibilityLabel("Choose a version, \(versionsCapsuleTitle)")
@@ -613,6 +647,13 @@ struct QueueRow<Trailing: View>: View {
         .focusable(onOpen != nil)
         .focused($isFocused)
         .onHover { isHovering = $0 }
+        // The hover fill fades in (handoff `transition:background .15s`); the gear it also
+        // reveals rides the same change, so both are keyed off one animation.
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isFocused)
+        // A row changing state mid-run (queued → active → finished) re-tints its background and
+        // re-lays its trailing column; the standard spring keeps that from flickering.
+        .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: emphasis)
         .modifier(RowOpenModifier(onOpen: onOpen))
         .onKeyPress(.return) {
             guard let onOpen else { return .ignored }
@@ -658,14 +699,19 @@ struct QueueRow<Trailing: View>: View {
     private var gearButton: some View {
         Button(action: { onGear?() }) {
             Image(systemName: "gearshape")
+                // Handoff: `transition:background .15s,color .15s`, hovering to
+                // `background:var(--bg);color:var(--text)`.
+                .foregroundStyle(isHoveringGear ? Theme.Colors.text : Theme.Colors.textSecondary)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Theme.Colors.textSecondary)
                 .frame(width: 26, height: 26)
-                .background(Theme.Colors.surface, in: Circle())
+                .background(isHoveringGear ? Theme.Colors.background : Theme.Colors.surface, in: Circle())
+                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
         .pointingHandCursor()
+        .onHover { isHoveringGear = $0 }
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringGear)
         .accessibilityLabel("Settings for \(name)")
     }
 
@@ -823,6 +869,7 @@ struct BatchCard: View {
     var trailingValue: (text: String, isMuted: Bool)? = nil
     let action: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
     var body: some View {
@@ -847,13 +894,17 @@ struct BatchCard: View {
             }
             .padding(.vertical, 9)
             .padding(.horizontal, 10)
+            // Inside the label so the press scale carries the whole tile (see
+            // `MotionButtonStyle`); `contentShape` stays after the padding.
+            .background(isHovering ? Theme.Colors.background : Color.clear,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .background(isHovering ? Theme.Colors.background : Color.clear, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
         .onHover { isHovering = $0 }
         .pointingHandCursor()
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .accessibilityLabel("\(title), \(subtitle)")
     }
 
@@ -994,6 +1045,7 @@ struct SecondaryButton: View {
     var icon: Image? = nil
     let action: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
     var body: some View {
@@ -1005,21 +1057,26 @@ struct SecondaryButton: View {
             .foregroundStyle(Theme.Colors.text)
             .padding(.vertical, 9)
             .padding(.horizontal, 14)
+            // Fill, ring and shadow inside the label so the press scale carries all three (see
+            // `MotionButtonStyle`); `contentShape` stays after the padding.
+            .background(
+                isHovering ? Theme.Colors.background : Self.background,
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 1.5, x: 0, y: 0.5)
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .background(
-            isHovering ? Theme.Colors.background : Self.background,
-            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
-        )
-        .shadow(color: .black.opacity(0.18), radius: 1.5, x: 0, y: 0.5)
         .onHover { isHovering = $0 }
         .pointingHandCursor()
+        // Handoff: `transition:background .15s`, hovering to `bg`. No lift — the handoff reserves
+        // that for the filled accent CTAs.
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
     }
 }
 
@@ -1043,30 +1100,38 @@ struct SegmentedRow: View {
     @Binding var selection: Int
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Backs the selection pill's slide: one pill drawn in whichever segment is selected, moved
+    /// between them by `matchedGeometryEffect` rather than cross-fading two rectangles. This is
+    /// the shape the effect exists for — a single element genuinely travelling between slots.
+    @Namespace private var pill
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options.indices, id: \.self) { index in
                 let isSelected = index == selection
                 Button {
-                    if reduceMotion {
-                        selection = index
-                    } else {
-                        withAnimation(.easeOut(duration: Theme.Motion.hover)) { selection = index }
-                    }
+                    withAnimation(Theme.Motion.standardCurve(reduceMotion: reduceMotion)) { selection = index }
                 } label: {
                     Text(options[index])
                         .themeFont(.bodyStrong)
                         .foregroundStyle(isSelected ? Theme.Colors.text : Theme.Colors.textSecondary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)
-                        .background(
-                            isSelected ? Theme.Colors.surface : Color.clear,
-                            in: RoundedRectangle(cornerRadius: Theme.Radius.control - 2, style: .continuous)
-                        )
-                        .shadow(color: isSelected ? .black.opacity(0.12) : .clear, radius: 1, x: 0, y: 0.5)
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: Theme.Radius.control - 2, style: .continuous)
+                                    .fill(Theme.Colors.surface)
+                                    .shadow(color: .black.opacity(0.12), radius: 1, x: 0, y: 0.5)
+                                    .matchedGeometryEffect(id: "selection", in: pill)
+                            }
+                        }
+                        // Without this an unselected segment is a bare `Text` in a plain-rendering
+                        // button: only the glyphs themselves take the click, so the gaps between
+                        // letters and the padding around them are dead. Same class as the row/
+                        // check-row hit-test fixes; found while adding the press state here.
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MotionButtonStyle())
                 .clearsClickFocus()
                 .accessibilityAddTraits(isSelected ? [.isSelected] : [])
             }
@@ -1173,6 +1238,7 @@ struct RadioRow: View {
     var showsUnselectedIndicator: Bool = true
     let action: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
     /// Whether this row reserves a leading indicator slot at all — screen 04's unselected rows
@@ -1210,31 +1276,42 @@ struct RadioRow: View {
             }
             .padding(.vertical, 9)
             .padding(.horizontal, 10)
+            // Inside the label so the press scale carries the row (see `MotionButtonStyle`);
+            // `contentShape` stays after the padding.
+            .background(
+                isSelected ? Theme.Colors.accent.opacity(0.09) : (isHovering ? Theme.Colors.background : .clear),
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .background(
-            isSelected ? Theme.Colors.accent.opacity(0.09) : (isHovering ? Theme.Colors.background : .clear),
-            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-        )
         .onHover { isHovering = $0 }
         .pointingHandCursor()
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
+        // Selection moves the accent tint, the title's weight and the dot from one row to the
+        // next — one spring so the whole list settles together.
+        .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: isSelected)
         .accessibilityLabel("\(title), \(subtitle)")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
-    @ViewBuilder
+    /// Both states are drawn at once and cross-scaled, rather than swapped: the accent dot springs
+    /// out of the hollow ring instead of replacing it in one frame. Reduce Motion still gets both
+    /// end states — the animation above is simply `nil`, so the swap is instant.
     private var indicator: some View {
-        if isSelected {
+        ZStack {
+            Circle()
+                .stroke(Theme.Colors.stroke, lineWidth: 1.4)
+                .opacity(isSelected ? 0 : 1)
             ZStack {
                 Circle().fill(Theme.Colors.accent)
                 Image(systemName: "checkmark").font(.system(size: 8, weight: .bold)).foregroundStyle(.white)
             }
-            .frame(width: 14, height: 14)
-        } else {
-            Circle().stroke(Theme.Colors.stroke, lineWidth: 1.4).frame(width: 14, height: 14)
+            .scaleEffect(isSelected ? 1 : 0.1)
+            .opacity(isSelected ? 1 : 0)
         }
+        .frame(width: 14, height: 14)
     }
 }
 
@@ -1267,25 +1344,37 @@ struct RadioRow: View {
 // MARK: - CheckRow
 
 /// A plain checkbox row (screen 08's "Choose which files…" file-selection list).
+///
+/// The handoff never draws this box — screen 08 only shows the "Choose which files…" link that
+/// opens the list — so its motion is beyond-handoff polish under the 2026-08-01 mandate
+/// (DESIGN.md §11): the box springs as it fills and the tick is replaced through SF Symbols'
+/// own transition rather than cutting between two glyphs.
 struct CheckRow: View {
     let title: String
     @Binding var isChecked: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         Button {
-            isChecked.toggle()
+            withAnimation(Theme.Motion.standardCurve(reduceMotion: reduceMotion)) { isChecked.toggle() }
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: isChecked ? "checkmark.square.fill" : "square")
                     .font(.system(size: 15))
                     .foregroundStyle(isChecked ? Theme.Colors.accent : Theme.Colors.textTertiary)
+                    .contentTransition(.symbolEffect(.replace))
+                    // A tick that lands slightly over-size and settles reads as a press being
+                    // answered; the empty box sits a hair under, so ticking grows into place.
+                    .scaleEffect(isChecked ? 1 : 0.92)
                 Text(title).themeFont(.body13).foregroundStyle(Theme.Colors.text)
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
+        .pointingHandCursor()
         .accessibilityLabel(title)
         .accessibilityAddTraits(isChecked ? [.isSelected] : [])
     }
