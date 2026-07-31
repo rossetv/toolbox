@@ -354,4 +354,56 @@ final class PopoverLogicTests: XCTestCase {
         XCTAssertFalse(ScanConsentSheet.variantBadge(.plain).isAccent)
     }
 
+    // MARK: RecentBatchesSheet
+
+    private func historyBatch(fileCount: Int = 3, presetTitle: String? = "Balanced",
+                              compressOn: Bool = true, ocrOn: Bool = false,
+                              savedBytes: Int = 21_200_000, searchableCount: Int = 0,
+                              problem: Bool = false) -> HistoryBatch {
+        HistoryBatch(folderName: "Contracts", folderURL: URL(fileURLWithPath: "/tmp/Contracts"),
+                    fileCount: fileCount, presetTitle: presetTitle, compressOn: compressOn, ocrOn: ocrOn,
+                    savedBytes: savedBytes, searchableCount: searchableCount,
+                    partial: false, problem: problem, cancelled: false)
+    }
+
+    func testRecentBatchesSubtitleComposesTimePresetAndSearchable() {
+        let batch = historyBatch(fileCount: 3, searchableCount: 1)
+        let subtitle = RecentBatchesSheet.subtitle(for: batch)
+        XCTAssertTrue(subtitle.contains("Balanced"))
+        XCTAssertTrue(subtitle.contains("one made searchable"))
+    }
+
+    func testRecentBatchesSubtitleOCROnlyReadsOCROnly() {
+        let batch = historyBatch(fileCount: 12, presetTitle: nil, compressOn: false, ocrOn: true,
+                                 savedBytes: 0, searchableCount: 12)
+        let subtitle = RecentBatchesSheet.subtitle(for: batch)
+        XCTAssertTrue(subtitle.contains("OCR only"))
+        XCTAssertTrue(subtitle.contains("all searchable"))
+    }
+
+    /// A real problem/cause (e.g. password-locked) is not data `HistoryBatch` retains — the
+    /// subtitle must never fabricate a specific cause it cannot know.
+    func testRecentBatchesSubtitleProblemReadsGenericAttention() {
+        let batch = historyBatch(problem: true)
+        XCTAssertTrue(RecentBatchesSheet.subtitle(for: batch).contains("some files needed attention"))
+    }
+
+    /// Binding carry: an OCR-only/no-saving batch's trailing figure reads grey "no change",
+    /// never a bare "0 MB".
+    func testRecentBatchesSavedTextReadsNoChangeForZeroSavings() {
+        XCTAssertEqual(RecentBatchesSheet.savedText(historyBatch(savedBytes: 0)), "no change")
+        XCTAssertNotEqual(RecentBatchesSheet.savedText(historyBatch(savedBytes: 21_200_000)), "no change")
+    }
+
+    func testRecentBatchesDayLabelTodayYesterdayAndOlder() {
+        let calendar = Calendar.current
+        let now = Date()
+        XCTAssertEqual(RecentBatchesSheet.dayLabel(now, now: now, calendar: calendar), "TODAY")
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: now)!
+        XCTAssertEqual(RecentBatchesSheet.dayLabel(yesterday, now: now, calendar: calendar), "YESTERDAY")
+        let lastWeek = calendar.date(byAdding: .day, value: -8, to: now)!
+        let label = RecentBatchesSheet.dayLabel(lastWeek, now: now, calendar: calendar)
+        XCTAssertNotEqual(label, "TODAY")
+        XCTAssertNotEqual(label, "YESTERDAY")
+    }
 }
