@@ -106,9 +106,10 @@ struct RowVersions: Equatable {
 
 /// The display authority for every row's versions (R14), and the only path that discards a parked
 /// file — with one documented exception: `QueueViewModel.rerunForSwitch` clears and
-/// regenerates the runner-up FILE directly at its existing URL (never through `setSlot`, so the
-/// row's `FileVersion` record — and the URL it names — is deliberately left standing across that
-/// window, because the re-run is expected to recreate the same file the record already describes).
+/// regenerates the runner-up FILE directly at its existing URL, leaving the row's `FileVersion`
+/// record — and the URL it names — standing across that window. It re-records the slot afterwards
+/// through `setSlot`, with the same URL and the regenerated file's own bytes; because the URL is
+/// unchanged, the discard below is a no-op there and the file it just wrote survives.
 /// Everywhere else, replacing or dropping a slot discards the file it held at that moment — never
 /// at quit — so the session cache cannot grow with superseded versions (D6/R18).
 /// @MainActor: owned and driven by `QueueViewModel`.
@@ -168,7 +169,12 @@ final class VersionStore {
 
     /// Record one card's searchability from that file's own append result. Called only when the OCR
     /// leg ran: a card left unwritten carries no claim, which is what a compress-only row needs.
-    func setSearchable(_ searchable: Bool, card: VersionCardKey, for id: ToolJob.ID) {
+    ///
+    /// `nil` DROPS the claim rather than denying it — what a re-run needs when it regenerates a
+    /// file with no read behind it: the flags describe the BYTES, so the claim the replaced file
+    /// earned cannot ride onto the new ones, and "not searchable" would be as manufactured as
+    /// keeping the old answer (a born-digital input carries its own text layer through the engine).
+    func setSearchable(_ searchable: Bool?, card: VersionCardKey, for id: ToolJob.ID) {
         guard var row = rows[id] else { return }
         row.searchableByCard[card] = searchable
         rows[id] = row

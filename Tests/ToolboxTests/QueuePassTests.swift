@@ -1059,4 +1059,299 @@ final class QueuePassTests: XCTestCase {
         XCTAssertEqual(row.searchableByCard[.runnerUp], true)
         XCTAssertEqual(row.runnerUp?.variant, .mrc, "the rebuilt one stays parked as the undo")
     }
+
+    // MARK: the re-run paths (spec §6.4 "re-runs re-apply OCR", §7 per-file settings)
+
+    /// A quality re-run regenerates the delivered file, so the layer has to be re-applied to it —
+    /// asserted on the BYTES (the real `OCREngine`), never on the row's claim: a re-run that only
+    /// relabelled would satisfy an append-count assertion while handing the user a file that no
+    /// longer reads.
+    func testChangeQualityReRunReAppliesOCR() async throws {
+        let env = try HeavyEnv()                        // the real `OCREngine`
+        let model = env.model
+        model.ocrOn = true
+        model.preset = .balanced
+        let input = try Fixtures.textImagePDF()
+        let payload = try TestSupport.tinyValidPDF(matching: input)
+        env.stub.script = { _, _ in
+            .init(outcome: .compressed(before: 9_000, after: payload.count),
+                  shippedBytes: nil, runnerUpBytes: nil, shippedPayload: payload)
+        }
+        let id = try await env.addRow(input)
+
+        model.compress()
+        try await waitUntil(timeout: 120) { !model.isRunning }
+        let delivered = try XCTUnwrap(try job(model, id).resultURL)
+        XCTAssertTrue(try PDFService().pageHasText(delivered, index: 0),
+                      "sanity: the first run's layer landed")
+
+        // The re-run's fresh artefact carries no layer of its own — only this leg can put one back.
+        model.preset = .smallestSize
+        XCTAssertEqual(model.recompressState(for: try job(model, id)), .armed(.smallestSize))
+        model.compress()
+        try await waitUntil(timeout: 120) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.shipped?.preset, .smallestSize, "sanity: the re-run committed")
+        XCTAssertTrue(try PDFService().pageHasText(try XCTUnwrap(row.shipped?.url), index: 0),
+                      "the regenerated file must carry the layer, not merely the row's claim")
+        XCTAssertEqual(row.searchableByCard[.shipped], true)
+        XCTAssertEqual(row.shipped?.bytes, TestSupport.fileSize(try XCTUnwrap(row.shipped?.url)),
+                       "the commit re-stats the regenerated file AFTER the append")
+    }
+
+    /// A rebuild opt-out belongs to the ROW, not to the batch that first ran it (spec §7): both
+    /// non-batch call sites must carry it to the engine, or a row the user excluded from the
+    /// rebuild is silently rebuilt the moment they change quality or switch versions.
+    func testReRunHonoursRowRebuildOptOut() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(env.stub.rebuildScans, [nil], "sanity: the first run carried no override")
+
+        model.setOverride(RowOverride(rebuildScan: false), for: id)
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(env.stub.rebuildScans, [nil, false],
+                       "the quality re-run carries the row's own opt-out")
+
+        // The other non-batch call site: a vanished runner-up regenerates the pair.
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        try FileManager.default.removeItem(at: try XCTUnwrap(row.runnerUp?.url))
+        await model.useVersion(.runnerUp, for: try job(model, id))
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(id) }
+
+        XCTAssertEqual(env.stub.rebuildScans, [nil, false, false],
+                       "the switch re-run carries it too")
+    }
+
+    /// The switch re-run maps the regenerated pair from the DESCRIPTOR — `shippedVariant` plus the
+    /// runner-up's kind — never from "the hybrid must have won" (spec §5's R7 reversal). The
+    /// gs-shipped direction is the one the old keying dropped: it left the row silently
+    /// unswitched, with a freshly regenerated runner-up beside a stale winner.
+    func testRerunForSwitchMapsVariantsFromDescriptorKind() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.script = { _, _ in Self.gsWonPair() }
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { self.outcome(model, id) != nil }
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.shipped?.variant, .plain, "sanity: the gs output won the gate")
+        let shippedURL = try XCTUnwrap(row.shipped?.url)
+        let runnerUpURL = try XCTUnwrap(row.runnerUp?.url)
+        try FileManager.default.removeItem(at: runnerUpURL)  // the retained hybrid leaves the cache
+
+        await model.useVersion(.runnerUp, for: try job(model, id))
+        try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(id) }
+
+        let settled = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(settled.shipped?.variant, .mrc, "the requested hybrid is what they now have")
+        XCTAssertEqual(settled.shipped?.bytes, HeavyEnv.heavyBytes)
+        XCTAssertEqual(settled.runnerUp?.variant, .plain, "the gs output takes the parked slot")
+        XCTAssertEqual(try Data(contentsOf: shippedURL),
+                       Data(repeating: 0x4E, count: HeavyEnv.heavyBytes),
+                       "the shipped file holds the regenerated hybrid's BYTES, not just its label")
+        XCTAssertEqual(try Data(contentsOf: runnerUpURL),
+                       Data(repeating: 0x48, count: HeavyEnv.normalBytes))
+        XCTAssertNil(model.recompressErrors[id], "the switch landed — there is nothing to report")
+        XCTAssertEqual(model.pendingConsents, [id],
+                       "a switch re-run asks nothing new: the user has just named the variant")
+    }
+
+    /// The demoted file's claim travels with it into the `.previous` slot — never recomputed —
+    /// while the file that replaced it is labelled from THIS re-run's own append. The two differ
+    /// here on purpose: a carried-over flag and a recomputed one are indistinguishable when they
+    /// agree.
+    func testPreviousSlotCarriesSearchabilityFlag() async throws {
+        let (env, ocr) = try env(added)
+        let model = env.model
+        model.preset = .balanced
+        // No runner-up on either run, so the appends are the delivered file's alone and the
+        // failing call below is unambiguous.
+        env.stub.script = { _, _ in
+            .init(outcome: .compressed(before: 9_000, after: 700),
+                  shippedBytes: 700, runnerUpBytes: nil)
+        }
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.versions(for: try job(model, id))?.searchableByCard[.shipped], true)
+
+        ocr.throwOnAppendCall = 2       // the re-run's own append; the first run's already landed
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.searchableByCard[.previous], true,
+                       "the demoted file still reads — its own claim moves into the slot with it")
+        XCTAssertEqual(row.searchableByCard[.shipped], false,
+                       "the file that replaced it could not carry the layer, and says so")
+    }
+
+    /// Acceptance criterion 3 has no exemption on the re-run path — and the failure is PER FILE:
+    /// the runner-up regenerated beside the winner carries its own append's result, so a blanket
+    /// per-row flag would be a lie in one direction or the other.
+    func testReRunAppendFailureMarksShippedUnsearchable() async throws {
+        let (env, ocr) = try env(added)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        // Run 1 appends to the delivered file (1) then the runner-up (2); the re-run repeats that
+        // order, so its winner is call 3.
+        XCTAssertEqual(ocr.appendCallCount, 2)
+        ocr.throwOnAppendCall = 3
+
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.searchableByCard[.shipped], false)
+        XCTAssertEqual(row.searchableByCard[.runnerUp], true,
+                       "the sibling variant's append succeeded — the failure is that file's alone")
+        XCTAssertEqual(row.shipped?.bytes, TestSupport.fileSize(try XCTUnwrap(row.shipped?.url)),
+                       "a winner that carries no layer still records what it actually weighs")
+    }
+
+    /// The WinAnsi guard is the batch leg's own, shared rather than reimplemented: a document whose
+    /// every recognised run would land as `?` gets NO layer on the re-run path either. Both
+    /// regenerated files say so instead of carrying a page of question marks that would pass every
+    /// validation while misrepresenting the user's text.
+    func testReRunSkipsTheAppendWhenTheLayerWouldBeLost() async throws {
+        let (env, ocr) = try env(allLossy)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(ocr.appendCallCount, 0, "sanity: the batch leg declined the append")
+
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        XCTAssertEqual(ocr.appendCallCount, 0, "the re-run declines it on the same evidence")
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.searchableByCard[.shipped], false)
+        XCTAssertEqual(row.searchableByCard[.runnerUp], false)
+    }
+
+    /// A quality re-run builds a NEW pair of scan variants, and the preset the user picked says
+    /// nothing about which of them they want — the two axes are orthogonal, so the question is
+    /// asked again (spec §7: shown whenever both variants exist, as each delivery completes). The
+    /// two tails pin the rest of that rule: a row already waiting for its answer is queued ONCE,
+    /// and a re-run that keeps no second variant WITHDRAWS the question rather than leaving a
+    /// sheet offering a choice between two files when only one exists.
+    func testReRunOfARebuiltScanAsksTheConsentQuestionAgain() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.pendingConsents, [id])
+        await model.resolveConsent(id, keepRebuilt: true)
+        XCTAssertTrue(model.pendingConsents.isEmpty)
+
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.pendingConsents, [id],
+                       "the re-run's own pair is a fresh choice about the page, not the quality")
+
+        model.preset = .maximumQuality
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.pendingConsents, [id],
+                       "a row already waiting for its answer is not asked twice")
+
+        env.stub.script = { _, _ in
+            .init(outcome: .compressed(before: 9_000, after: 700),
+                  shippedBytes: 700, runnerUpBytes: nil)
+        }
+        model.preset = .balanced
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertTrue(model.pendingConsents.isEmpty,
+                      "this run kept no second variant — there is no longer a choice to put")
+    }
+
+    /// The armed no-gain row that was rescued by its OCR leg already holds a real file at the
+    /// `-ocr.pdf` name it reserved, so the re-run's landing step meets an OCCUPIED destination —
+    /// R11 pins the re-run to the row's existing result path (spec §6.5). Moving onto it throws,
+    /// which the generic catch would turn into "Recompress failed" while the fresh result is
+    /// discarded.
+    func testReRunOverAnOCROnlyDeliveryReplacesItInPlace() async throws {
+        let (env, _) = try env(added)
+        let model = env.model
+        model.preset = .balanced
+        env.stub.script = { call, _ in
+            call == 1
+                ? .init(outcome: .noGain(bytes: 9_000), shippedBytes: nil, runnerUpBytes: nil)
+                : .init(outcome: .compressed(before: 9_000, after: 700),
+                        shippedBytes: 700, runnerUpBytes: nil)
+        }
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        let delivered = try XCTUnwrap(try job(model, id).resultURL)
+        XCTAssertTrue(delivered.lastPathComponent.hasSuffix("-ocr.pdf"),
+                      "sanity: a delivery carrying no compression ships under the -ocr name")
+        XCTAssertNil(model.versions(for: try job(model, id))?.shipped,
+                     "sanity: a no-gain row records no shipped version")
+
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        XCTAssertNil(model.recompressErrors[id], "the re-run landed — there is nothing to report")
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.shipped?.url, delivered, "R11: the row's own existing result path")
+        XCTAssertEqual(TestSupport.fileSize(delivered), row.shipped?.bytes,
+                       "the file on disk is the one the row describes")
+        XCTAssertEqual(row.searchableByCard[.shipped], true,
+                       "the re-run re-applied the layer to what it regenerated")
+    }
+
+    /// The flags describe the BYTES. A re-run with the read verb off regenerates the delivered
+    /// file, so the claim the OLD file earned cannot ride onto it — and "not searchable" is no
+    /// better, because a born-digital input keeps its own text layer straight through the engine.
+    /// No OCR leg means no recorded outcome, so the row claims NOTHING (spec §6.4).
+    func testReRunWithOCROffDropsTheStaleSearchabilityClaim() async throws {
+        let (env, _) = try env(added)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.versions(for: try job(model, id))?.searchableByCard[.shipped], true)
+
+        model.ocrOn = false
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertNil(row.searchableByCard[.shipped],
+                     "no read ran over the new bytes, so the row makes no claim about them")
+        XCTAssertNil(row.searchableByCard[.runnerUp])
+        XCTAssertEqual(row.searchableByCard[.previous], true,
+                       "the demoted file's own claim is still true of it")
+    }
 }

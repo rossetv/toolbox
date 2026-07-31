@@ -544,7 +544,11 @@ final class QueueViewModel: ObservableObject {
             return
         }
         guard rebuildWithoutAsking else {
-            pendingConsents.append(id)
+            // One entry per row, never one per delivery: a row whose sheet is still unanswered can
+            // be re-run (the quality selector arms it, the consent queue does not block a run), and
+            // the sheet reads the row's CURRENT versions — so the waiting entry already asks about
+            // the pair this run has just replaced.
+            if !pendingConsents.contains(id) { pendingConsents.append(id) }
             return
         }
         // The toggle's promise (spec §7): keep the rebuilt one. Nothing to do when it is already
@@ -1657,6 +1661,96 @@ final class QueueViewModel: ObservableObject {
         store.discard(plan.runnerUp)
     }
 
+    /// The OCR leg of the two NON-batch call sites — the quality re-run and the switch re-run
+    /// (spec §6.4: "quality re-runs / change-quality regeneration: the regenerated file gets the
+    /// layer re-applied"). It is `runOCRLeg`'s sequence with the parts a re-run cannot reach
+    /// removed: the compress leg has already delivered, so there is no contingency name to reserve
+    /// and no reservation to release, and the row's own file is never at stake.
+    ///
+    /// Recognises ONCE from the ORIGINAL — better input than any regenerated variant, and the same
+    /// runs serve both files — then appends to the regenerated winner and to a retained runner-up,
+    /// never to the untouched original, re-stating what it wrote onto `outcome`.
+    ///
+    /// The returned map is what each regenerated card can honestly claim. An ABSENT key means this
+    /// re-run produced no evidence about that file (the verb was off, or the read failed), and the
+    /// caller drops the row's old claim rather than carrying it onto new bytes — the flags describe
+    /// the BYTES, and a claim inherited from the file this one replaced is the lie §6.4 forbids.
+    private func rerunOCRLeg(for id: ToolJob.ID, original: URL, winner: URL, runnerUp: URL?,
+                             outcome: inout RowOutcome,
+                             report: @escaping @Sendable (Double) -> Void)
+        async -> [VersionCardKey: Bool] {
+        guard effectiveVerbs(for: id).ocr, let ocrEngine else { return [:] }
+        // The trailing half of the row's composed ring — the compress leg took the leading half
+        // (`runPass`'s split, which the re-run paths mirror so the row's label and ETA describe the
+        // leg actually running rather than the one its last batch left behind).
+        let start = Self.compressLegWeight
+        let width = 1 - Self.compressLegWeight
+        legSpans[id] = LegSpan(leg: .ocr, start: start, width: width, began: Date())
+        // The same width-2 bound the batch leg takes: a re-run phase runs one engine call per
+        // performance core, and the recognised runs behind each are hundreds of megabytes.
+        await acquireOCRSlot()
+        defer { releaseOCRSlot() }
+
+        let recognised: RecognisedDocument
+        do {
+            recognised = try await ocrEngine.recognise(original, options: ocrOptions) { raw in
+                report(start + min(1, max(0, raw)) * width)
+            }
+        } catch {
+            // A read that failed never costs the user the file this re-run has already
+            // regenerated: it is kept, the row carries the caveat, and no claim is written —
+            // a failed read is evidence of nothing (`runOCRLeg`'s own rule).
+            outcome.ocr = error is CancellationError
+                ? .cancelled
+                : .failed(error.localizedDescription)
+            return [:]
+        }
+
+        outcome.ocr = recognised.outcome
+        // Outcome-keyed, exactly as the batch leg labels it (spec §6.4, amended 2026-07-30): the
+        // engine returns `.alreadySearchable` only after every page passed `pageHasText`.
+        let originalIsSearchable = recognised.outcome == .alreadySearchable
+        var flags: [VersionCardKey: Bool] = [.originalReference: originalIsSearchable]
+        let retainedKind = outcome.runnerUp?.kind
+        // Nothing to append: every page already reads, nothing usable was found, or every
+        // recognised run would be destroyed by the WinAnsi text layer this writer emits.
+        guard case .added = recognised.outcome, !Self.layerWouldBeLost(recognised) else {
+            flags[.shipped] = false
+            if let retainedKind {
+                flags[.runnerUp] = retainedKind == .original ? originalIsSearchable : false
+            }
+            return flags
+        }
+
+        do {
+            try await appendLayer(recognised, using: ocrEngine, reading: winner, writing: winner)
+            flags[.shipped] = true
+            // Re-stat: the engine reported the COMPRESS artefact's size and the append has just
+            // grown the file this row will deliver (`RowOutcome.finalBytes`' ownership note).
+            if let bytes = fileBytes(winner) { outcome.finalBytes = bytes }
+        } catch {
+            // A variant that cannot carry the layer is labelled honestly and is never a failed
+            // re-run (spec §6.4): the fresh artefact stands exactly as the engine wrote it.
+            flags[.shipped] = false
+        }
+        if let runnerUp, let retainedKind {
+            if retainedKind == .original {
+                flags[.runnerUp] = originalIsSearchable      // the original is never appended to
+            } else {
+                do {
+                    try await appendLayer(recognised, using: ocrEngine,
+                                          reading: runnerUp, writing: runnerUp)
+                    flags[.runnerUp] = true
+                    // Both cards are measured at the same moment, as the batch leg measures them.
+                    if let bytes = fileBytes(runnerUp) { outcome.runnerUp?.bytes = bytes }
+                } catch {
+                    flags[.runnerUp] = false
+                }
+            }
+        }
+        return flags
+    }
+
     private func recompress(_ plan: RecompressPlan, engine: any Compressing) async {
         let fm = FileManager.default
         // A recompress always reads the ORIGINAL input (D2 — never the compressed output), so a
@@ -1679,18 +1773,39 @@ final class QueueViewModel: ObservableObject {
             }
         }
         var capturedReport: MRCDocumentReport?
+        // The compress leg's own slice of this row's ring: the whole range when nothing follows it,
+        // else the leading half — the OCR leg takes the rest (`runPass`'s split).
+        let compressWeight = effectiveVerbs(for: plan.id).ocr ? Self.compressLegWeight : 1.0
+        legSpans[plan.id] = LegSpan(leg: .compress, start: 0, width: compressWeight, began: Date())
         do {
-            let outcome = try await engine.compress(plan.url, preset: plan.target, to: plan.temp,
+            // The ROW's rebuild decision, never a hard-coded nil: an opt-out that survives into the
+            // row's reservation but not into its re-run would rebuild the very scan the user
+            // excluded, the moment they changed quality (spec §7's per-file settings).
+            var outcome = try await engine.compress(plan.url, preset: plan.target, to: plan.temp,
                                                     alternateOutput: plan.runnerUp,
-                                                    rebuildScan: nil,
+                                                    rebuildScan: overrides[plan.id]?.rebuildScan,
                                                     mrcReport: { capturedReport = $0 },
-                                                    progress: report)
+                                                    progress: { raw in
+                report(min(1, max(0, raw)) * compressWeight)
+            })
             // The engine may return normally after its own final checkpoint (`CompressEngine`'s
             // last `Task.checkCancellation()` precedes the rename-and-return), so a cancel landing
             // in that window arrives here as a successful outcome — committing it would overwrite
             // the file the user already has, which is exactly what R9 forbids.
             try Task.checkCancellation()
-            try await commit(outcome, plan: plan, report: capturedReport)
+            // The layer goes back onto what this run just regenerated (spec §6.4). A no-gain (or
+            // skipped) verdict wrote no artefact, so there is nothing to append to and nothing to
+            // commit — `commit`'s own arms take those.
+            var searchable: [VersionCardKey: Bool] = [:]
+            if case .compressed = outcome.compress {
+                searchable = await rerunOCRLeg(for: plan.id, original: plan.url, winner: plan.temp,
+                                               runnerUp: outcome.runnerUp == nil ? nil : plan.runnerUp,
+                                               outcome: &outcome, report: report)
+                // The second leg boundary, on the same rule as the first: a cancel that landed
+                // inside the read must not reach the commit.
+                try Task.checkCancellation()
+            }
+            try await commit(outcome, plan: plan, report: capturedReport, searchable: searchable)
         } catch is CancellationError {
             // Cancelled. On the throwing path the engine's atomic-write contract left no output;
             // on the post-checkpoint path its result exists at plan.temp (and, when the engine
@@ -1743,8 +1858,13 @@ final class QueueViewModel: ObservableObject {
     /// cancellation — that guarantee does not extend to a crash or quit mid-swap, which can still
     /// strand the shipped file at `performSwap`'s dot-temp, the same accepted residual the engine's
     /// own `destTemp` carries.
+    ///
+    /// `searchable` is what THIS re-run's OCR leg observed, per card. Every card it regenerated is
+    /// relabelled from it, and a card the map has no entry for loses its claim rather than keeping
+    /// the replaced file's (`rerunOCRLeg`'s note).
     private func commit(_ outcome: RowOutcome, plan: RecompressPlan,
-                        report: MRCDocumentReport?) async throws {
+                        report: MRCDocumentReport?,
+                        searchable: [VersionCardKey: Bool]) async throws {
         let fm = FileManager.default
         // Both early returns below are unreachable by construction — a plan is only built for an
         // ARMED row, and `recompressState`'s own `guard let row = versions(for: job)` means a row
@@ -1760,8 +1880,12 @@ final class QueueViewModel: ObservableObject {
         let variant: EngineVariant
         var runnerUp: FileVersion?
         switch outcome.compress {
-        case .compressed(_, let after):
-            shippedBytes = after
+        case .compressed:
+            // `finalBytes`, never the compress leg's `after`: the OCR leg's append grows the file
+            // the user actually receives and re-stats it, and the ingest path records the shipped
+            // card from that same number (`RowOutcome.finalBytes`' ownership note). A card showing
+            // the pre-append figure is the wrong number.
+            shippedBytes = outcome.finalBytes
             // Both facts come from the outcome itself: the winner from `shippedVariant`, and
             // whether anything was parked from the DESCRIPTOR — re-deriving the parked file's kind
             // from its byte count here is how the R7 asymmetry creeps back in (spec §5).
@@ -1804,27 +1928,64 @@ final class QueueViewModel: ObservableObject {
             versionStore.setShipped(FileVersion(url: previouslyShipped.url, bytes: shippedBytes,
                                                 preset: plan.target, variant: variant),
                                     for: plan.id)
+            // The demoted file's claim travels into the slot with it — CARRIED, never recomputed:
+            // its bytes have not changed, and this re-run read nothing about them. An absent claim
+            // carries across as absent, which also clears whatever the slot's last occupant left.
+            versionStore.setSearchable(row.searchableByCard[.shipped], card: .previous, for: plan.id)
         } else {
             // Either the row shipped nothing (no version to park), or it shipped a version whose
             // file was deleted/moved outside the app — `promote`'s first step (`moveItem(at:
             // shipped, to: temp)`) would throw NSFileNoSuchFileError on that file, so there is
             // nothing to park either way. `plan.output` is the row's existing result path when one
-            // exists (R11), so the fresh result simply lands there directly — the recompress
-            // succeeded and there is no lie to tell (R12).
+            // exists (R11), so the fresh result simply lands there — the recompress succeeded and
+            // there is no lie to tell (R12).
+            //
+            // The destination can already be OCCUPIED even with no shipped version recorded: a
+            // no-gain row whose OCR leg delivered holds a real file at the `-ocr.pdf` name it
+            // reserved (spec §6.5's noGain sibling), and R11 pins this re-run to that same path —
+            // so the fresh result REPLACES it. `moveItem` throws onto an existing destination, and
+            // that throw is what turned this row's re-run into "Recompress failed" while its
+            // compressed result was discarded.
             // Inline on the main actor, deliberately unlike `promote`: `plan.temp` is allocated in
-            // `plan.output`'s own directory, so this is a same-volume rename, not a copy — a
-            // metadata-only operation, not the payload I/O `promote`'s off-actor hop exists for.
-            try FileManager.default.moveItem(at: plan.temp, to: plan.output)
+            // `plan.output`'s own directory, so both calls below are same-volume metadata
+            // operations, not the payload I/O `promote`'s off-actor hop exists for.
+            if fm.fileExists(atPath: plan.output.path) {
+                _ = try fm.replaceItemAt(plan.output, withItemAt: plan.temp)
+            } else {
+                try fm.moveItem(at: plan.temp, to: plan.output)
+            }
             versionStore.setShipped(FileVersion(url: plan.output, bytes: shippedBytes,
                                                 preset: plan.target, variant: variant),
                                     for: plan.id)
         }
         versionStore.setSlot(.runnerUp, to: runnerUp, for: plan.id)
-        if runnerUp == nil { store.discard(plan.runnerUp) }
+        if runnerUp == nil {
+            store.discard(plan.runnerUp)
+            // A question with one answer is no question: this re-run kept no second variant, so a
+            // sheet still queued from the row's earlier delivery would offer a choice between two
+            // files when only one now exists.
+            pendingConsents.removeAll { $0 == plan.id }
+        }
+        // Every card this re-run regenerated is relabelled from ITS OWN append result; a card with
+        // no entry loses its claim rather than keeping the replaced file's (spec §6.4). The
+        // Original reference is the exception in both directions: the file is untouched, so this
+        // run's reading of it is written when there is one and its earlier answer stands when
+        // there is not.
+        versionStore.setSearchable(searchable[.shipped], card: .shipped, for: plan.id)
+        versionStore.setSearchable(searchable[.runnerUp], card: .runnerUp, for: plan.id)
+        if let original = searchable[.originalReference] {
+            versionStore.setSearchable(original, card: .originalReference, for: plan.id)
+        }
         if let report { rerunReports[plan.id] = report }
         // R13: a result larger than the version they had still ships — they chose the quality —
         // with honest sizes. The engine guarantees it is smaller than the ORIGINAL; anything else
         // came back `.noGain` above.
+        //
+        // Last, and only once both descriptions are recorded: the sheet — and the preference's
+        // silent keep-rebuilt — read the row's versions, so an earlier call would find half a pair.
+        // A re-run's pair is a FRESH choice: the preset selector chooses quality, this sheet
+        // chooses how the page looks, and neither answers the other (spec §7).
+        surfaceConsent(for: plan.id, outcome: outcome)
     }
 
     // MARK: per-file estimate
@@ -2294,7 +2455,10 @@ final class QueueViewModel: ObservableObject {
             publishJobs()
             return
         }
-        handedOffToRerun = rerunForSwitch(job, wantHeavy: parked.variant == .mrc)
+        // The KIND the user asked for, never a "wants the heavy one" flag: with the R7 asymmetry
+        // removed the vanished runner-up is `.mrc`, `.plain` or `.original`, and the re-run's tail
+        // maps the regenerated pair onto that kind (spec §5).
+        handedOffToRerun = rerunForSwitch(job, wanting: parked.variant)
     }
 
     /// Record a switch that could not be honoured, so the row reports it instead of continuing to
@@ -2310,7 +2474,7 @@ final class QueueViewModel: ObservableObject {
     /// versions, then apply the switch the user asked for. Returns whether it took over the row —
     /// `useVersion` already holds `switchesInFlight` membership for the row (its re-entrancy
     /// guard), so `false` tells the caller it must be the one to clear it.
-    private func rerunForSwitch(_ job: ToolJob, wantHeavy: Bool) -> Bool {
+    private func rerunForSwitch(_ job: ToolJob, wanting kind: EngineVariant) -> Bool {
         // The STORE, never `job.resultURL`/`job.alternateURL`: the queue's record is the first
         // run's and a recompress supersedes it without touching the queue. This tail is only ever
         // reached for a vanished RUNNER-UP (`useVersion` guards `slot == .runnerUp` before
@@ -2327,103 +2491,156 @@ final class QueueViewModel: ObservableObject {
         publishJobs()
 
         Task {
-            let id = job.id
-            let report: @Sendable (Double) -> Void = { [weak self] fraction in
-                Task { @MainActor in
-                    guard let self, self.switchesInFlight.contains(id) else { return }
-                    self.rerunProgress[id] = fraction
-                    self.publishJobs()
-                }
-            }
-            // The engine's delivery contract never overwrites an existing destination (it
-            // `moveItem`s the winner into place), and `shipped` still holds the pre-rerun file at
-            // this point — targeting it directly throws `NSFileWriteFileExistsError`, which the
-            // outer catch below would silently swallow into a no-op switch. So the primary output
-            // goes to a fresh, guaranteed-absent temp file instead, landed into `shipped`
-            // afterwards.
-            let freshShipped = shipped.deletingLastPathComponent()
-                .appendingPathComponent(".toolbox-rerun-\(UUID().uuidString).pdf")
-            defer { try? FileManager.default.removeItem(at: freshShipped) }
-            // The runner-up was confirmed absent before this tail was entered, but that check and
-            // this re-run are not one atomic step — anything (a sync client, the user) may have put
-            // a file back at that path in between. The engine writes the runner-up with a
-            // best-effort `copyItem`, which throws (and is swallowed) onto an occupied destination,
-            // so a surviving file would stay STALE beside a freshly regenerated winner and the next
-            // switch would hand the user one version under the other's label. Clear the slot so the
-            // pair matches.
-            try? FileManager.default.removeItem(at: runnerUp)
-            var capturedReport: MRCDocumentReport?
-            // Whether the switch the user asked for actually landed. Set true only on the paths
-            // that reach it, so a failed leg keeps whatever failure note it just recorded rather
-            // than have it wiped by an unconditional clear (32380c4's rule, applied here too).
-            var switched = false
-            do {
-                let outcome = try await engine.compress(job.url, preset: chosen, to: freshShipped,
-                                                         alternateOutput: runnerUp,
-                                                         rebuildScan: nil,
-                                                         mrcReport: { capturedReport = $0 },
-                                                         progress: report)
-                // The switch's post-regeneration step assumes the re-run reproduces the heavy
-                // PAIR — an MRC winner with a runner-up parked beside it — with both files
-                // written; that's an assumption about engine determinism, not a guarantee the type
-                // gives us. Guard on the actual outcome: anything else (e.g. `.noGain`, or a
-                // regeneration that retained nothing) means there is no runner-up to switch to, so
-                // leave the row exactly as the engine left it. This is the one site that needs
-                // BOTH facts — elsewhere the descriptor alone decides (spec §5's R7 reversal).
-                if outcome.shippedVariant == .mrc, outcome.runnerUp != nil {
-                    do {
-                        // Land the regenerated heavy version atomically into the real shipped slot
-                        // — the winner was never routed through `shipped` directly (see above).
-                        _ = try FileManager.default.replaceItemAt(shipped, withItemAt: freshShipped)
-                        // Regenerated canonical state: heavy shipped, runner-up parked. If the row
-                        // was showing the parked version before the re-run, swap the descriptions
-                        // back — the re-run reproduces the row's own pair, it never redefines it,
-                        // so no new byte counts are invented here.
-                        if versionStore.versions(for: id)?.shipped?.variant != .mrc {
-                            versionStore.swapShipped(with: .runnerUp, for: id)
-                        }
-                        rerunReports[id] = capturedReport
-                        if wantHeavy {
-                            switched = true
-                        } else {
-                            do {
-                                try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
-                                versionStore.swapShipped(with: .runnerUp, for: id)
-                                switched = true
-                            } catch let stranded as RunnerUpStore.SwitchError {
-                                // The regenerated winner is parked under a hidden name that
-                                // nothing else looks for — the row must name it, not report a
-                                // switch that silently cost the user their file.
-                                reportSwitchFailure(id, stranded.localizedDescription)
-                            } catch {
-                                // The switch did not happen and `shipped` is unchanged (store
-                                // contract: any other throw restores it) — heavy is still shipped,
-                                // so leave the store's record canonical rather than describe a
-                                // switch that never took effect, and say so — an explicit button
-                                // press never fails silently (R12).
-                                recompressErrors[id] = "Switch failed — kept your "
-                                                     + "\(chosen.title) version. Try again."
-                            }
-                        }
-                    } catch {
-                        // Landing the regenerated heavy version failed; `shipped` is untouched
-                        // (`replaceItemAt`'s atomic guarantee) so the store's record stays exactly
-                        // as it was. The engine already wrote the runner-up straight to its slot —
-                        // orphaned now that there is nothing to switch to, so discard it.
-                        try? FileManager.default.removeItem(at: runnerUp)
-                    }
-                }
-            } catch {
-                // Re-run failed; leave the row's prior state untouched (its shipped file survives).
-            }
+            let switched = await regenerateForSwitch(job, engine: engine, shipped: shipped,
+                                                     runnerUp: runnerUp, preset: chosen,
+                                                     wanting: kind)
             // A retry that succeeds must not leave the previous attempt's failure note beside the
             // row (32380c4); a leg that failed above has just set its own message and must keep it.
-            if switched { recompressErrors[id] = nil }
-            switchesInFlight.remove(id)
-            rerunProgress[id] = nil
+            if switched { recompressErrors[job.id] = nil }
+            switchesInFlight.remove(job.id)
+            rerunProgress[job.id] = nil
             publishJobs()
         }
         return true
+    }
+
+    /// The re-run itself: regenerate the row's pair through the engine, re-apply the layer to both
+    /// (spec §6.4), record what came back, then apply the switch that was asked for. Returns
+    /// whether that switch landed — the caller's tail clears the row's stale failure note on that
+    /// answer alone.
+    ///
+    /// Split out of `rerunForSwitch` so each failure arm can return straight into ONE tail: the
+    /// bookkeeping that ends a re-run — the row's guard membership and its progress overlay — has
+    /// to run on every path, including the arms that report and stop.
+    private func regenerateForSwitch(_ job: ToolJob, engine: any Compressing,
+                                     shipped: URL, runnerUp: URL, preset: CompressPreset,
+                                     wanting kind: EngineVariant) async -> Bool {
+        let id = job.id
+        // The one message for "the version you asked for is not there and cannot be made again":
+        // the re-run itself succeeded or left the row untouched, so this rides BESIDE the row's
+        // result rather than replacing it. An explicit button press never fails silently (R12).
+        let unavailable = "That version is no longer available — kept your "
+                        + "\(preset.title) version."
+        let report: @Sendable (Double) -> Void = { [weak self] fraction in
+            Task { @MainActor in
+                guard let self, self.switchesInFlight.contains(id) else { return }
+                self.rerunProgress[id] = fraction
+                self.publishJobs()
+            }
+        }
+        // The engine's delivery contract never overwrites an existing destination (it `moveItem`s
+        // the winner into place), and `shipped` still holds the pre-rerun file at this point —
+        // targeting it directly throws `NSFileWriteFileExistsError`, which the catch below would
+        // silently swallow into a no-op switch. So the primary output goes to a fresh,
+        // guaranteed-absent temp file instead, landed into `shipped` afterwards.
+        let freshShipped = shipped.deletingLastPathComponent()
+            .appendingPathComponent(".toolbox-rerun-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: freshShipped) }
+        // The runner-up was confirmed absent before this tail was entered, but that check and this
+        // re-run are not one atomic step — anything (a sync client, the user) may have put a file
+        // back at that path in between. The engine writes the runner-up with a best-effort
+        // `copyItem`, which throws (and is swallowed) onto an occupied destination, so a surviving
+        // file would stay STALE beside a freshly regenerated winner and the next switch would hand
+        // the user one version under the other's label. Clear the slot so the pair matches.
+        try? FileManager.default.removeItem(at: runnerUp)
+        var capturedReport: MRCDocumentReport?
+        // The compress leg's slice of the row's ring, exactly as the batch and quality-re-run paths
+        // divide it — a row re-running here shows a label and an ETA for the leg actually in
+        // flight, not the one its last batch left behind.
+        let compressWeight = effectiveVerbs(for: id).ocr ? Self.compressLegWeight : 1.0
+        legSpans[id] = LegSpan(leg: .compress, start: 0, width: compressWeight, began: Date())
+        var outcome: RowOutcome
+        do {
+            // The ROW's rebuild decision, never a hard-coded nil: a row the user excluded from the
+            // rebuild must not be rebuilt by a switch it never asked to re-run (spec §7).
+            outcome = try await engine.compress(job.url, preset: preset, to: freshShipped,
+                                                alternateOutput: runnerUp,
+                                                rebuildScan: overrides[id]?.rebuildScan,
+                                                mrcReport: { capturedReport = $0 },
+                                                progress: { raw in
+                report(min(1, max(0, raw)) * compressWeight)
+            })
+        } catch {
+            // Re-run failed; leave the row's prior state untouched (its shipped file survives).
+            // The slot still names the file this method deleted, which is what it named on the way
+            // in — the row keeps offering a switch the user can retry.
+            return false
+        }
+        // The re-run has to reproduce a PAIR — a second version is the entire reason it ran. A
+        // no-gain verdict, or a regeneration that retained nothing, leaves nothing to switch to,
+        // and the slot must stop advertising the file deleted above. That the pair came back at
+        // all is an engine-determinism assumption the type cannot make for us; WHICH variant won
+        // is the descriptor's answer alone (spec §5's R7 reversal), never "the hybrid must have".
+        guard case .compressed = outcome.compress, let retained = outcome.runnerUp else {
+            versionStore.setSlot(.runnerUp, to: nil, for: id)
+            recompressErrors[id] = unavailable
+            return false
+        }
+        let searchable = await rerunOCRLeg(for: id, original: job.url, winner: freshShipped,
+                                           runnerUp: runnerUp, outcome: &outcome, report: report)
+        do {
+            // Land the regenerated winner atomically into the real shipped slot — it was never
+            // routed through `shipped` directly (see above) — and only AFTER the append, so the
+            // file the user holds is never a half-finished version of itself.
+            _ = try FileManager.default.replaceItemAt(shipped, withItemAt: freshShipped)
+        } catch {
+            // Landing failed; `shipped` is untouched (`replaceItemAt`'s atomic guarantee) so the
+            // store's record stays exactly as it was. The engine already wrote the runner-up
+            // straight to its slot — orphaned now that there is nothing to switch to, so discard
+            // the file and drop the record naming it.
+            try? FileManager.default.removeItem(at: runnerUp)
+            versionStore.setSlot(.runnerUp, to: nil, for: id)
+            recompressErrors[id] = unavailable
+            return false
+        }
+        // The regenerated pair, described from the DESCRIPTOR on both sides: which variant won is
+        // `shippedVariant`'s answer, what was parked is the runner-up kind's. The re-run reproduces
+        // the row's pair without redefining it, but the BYTES are this run's own — the OCR append
+        // has just grown both files. The runner-up keeps its URL, so re-recording the slot
+        // discards nothing (`VersionStore`'s documented exception).
+        let shippedVariant = outcome.shippedVariant ?? .plain
+        versionStore.setShipped(FileVersion(url: shipped, bytes: outcome.finalBytes,
+                                            preset: preset, variant: shippedVariant), for: id)
+        versionStore.setSlot(.runnerUp,
+                             to: FileVersion(url: runnerUp, bytes: retained.bytes,
+                                             preset: preset, variant: retained.kind),
+                             for: id)
+        // Each regenerated file is labelled from its own append; a file this run read nothing about
+        // makes no claim at all (spec §6.4, `rerunOCRLeg`'s note).
+        versionStore.setSearchable(searchable[.shipped], card: .shipped, for: id)
+        versionStore.setSearchable(searchable[.runnerUp], card: .runnerUp, for: id)
+        if let original = searchable[.originalReference] {
+            versionStore.setSearchable(original, card: .originalReference, for: id)
+        }
+        rerunReports[id] = capturedReport
+
+        // The switch, mapped onto what actually came back rather than onto what the row used to
+        // hold. No consent sheet is queued here, deliberately: the user has just named the variant
+        // they want, so there is no choice left to put to them (spec §7's question is which of the
+        // two to keep).
+        if shippedVariant == kind { return true }   // the winner IS the version they asked for
+        guard retained.kind == kind else {
+            // A regenerated pair that holds neither: the engine's classification moved under the
+            // row (an opt-out, a different preset path), so the requested version genuinely cannot
+            // be produced any more. The pair on disk is canonical and stays.
+            recompressErrors[id] = unavailable
+            return false
+        }
+        do {
+            try await store.switchVersions(shipped: shipped, runnerUp: runnerUp)
+            versionStore.swapShipped(with: .runnerUp, for: id)
+            return true
+        } catch let stranded as RunnerUpStore.SwitchError {
+            // The regenerated winner is parked under a hidden name that nothing else looks for —
+            // the row must name it, not report a switch that silently cost the user their file.
+            reportSwitchFailure(id, stranded.localizedDescription)
+        } catch {
+            // The switch did not happen and `shipped` is unchanged (store contract: any other
+            // throw restores it), so the store's record stays canonical rather than describing a
+            // switch that never took effect — and says so (R12).
+            recompressErrors[id] = "Switch failed — kept your \(preset.title) version. Try again."
+        }
+        return false
     }
 }
 
