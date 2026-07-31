@@ -21,7 +21,7 @@ enum OpenGuardError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .fileNotFound: return "The file could not be found."
+        case .fileNotFound: return RowProblem.missingMessage
         case .noPages: return "The PDF contains no pages."
         }
     }

@@ -34,6 +34,15 @@ enum RowProblem: Equatable {
         }
     }
 
+    /// The canonical run-time failure strings, defined once here so `OpenGuardError`,
+    /// `CompressError` and `OCRError` (which may not live in `Models/` — §2.3) reference these
+    /// constants for their matching `errorDescription` cases instead of hand-copying the text.
+    /// `fromRunTimeFailure` switches on the very same constants, so producer and consumer cannot
+    /// drift apart: renaming one renames both.
+    static let lockedMessage = "The PDF is password-protected."
+    static let missingMessage = "The file could not be found."
+    static let unreadableMessage = "The PDF is damaged and cannot be read."
+
     /// Maps `OpenGuard`'s run-time "second net" (spec §6.6) back onto the same problem add-time
     /// inspection would have raised for the identical condition — the run-time catch only ever
     /// sees `OpenGuardError`/`CompressError`/`OCRError`'s fixed, known strings, so this is a closed
@@ -41,9 +50,9 @@ enum RowProblem: Equatable {
     /// validation) that has no add-time equivalent and keeps its own message.
     static func fromRunTimeFailure(_ message: String) -> RowProblem? {
         switch message {
-        case "The PDF is password-protected.": return .locked
-        case "The file could not be found.": return .missing
-        case "The PDF is damaged and cannot be read.": return .unreadable
+        case lockedMessage: return .locked
+        case missingMessage: return .missing
+        case unreadableMessage: return .unreadable
         default: return nil
         }
     }

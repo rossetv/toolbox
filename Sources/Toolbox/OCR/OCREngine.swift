@@ -20,8 +20,8 @@ enum OCRError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .encrypted: return "The PDF is password-protected."
-        case .corrupt: return "The PDF is damaged and cannot be read."
+        case .encrypted: return RowProblem.lockedMessage
+        case .corrupt: return RowProblem.unreadableMessage
         case .sameInputOutput: return "The output path must differ from the input."
         case .validationFailed: return "The OCR'd PDF failed validation."
         case .unrenderablePage(let index):

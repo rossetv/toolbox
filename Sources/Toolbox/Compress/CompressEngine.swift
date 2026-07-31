@@ -17,8 +17,8 @@ enum CompressError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .encrypted: return "The PDF is password-protected."
-        case .corrupt: return "The PDF is damaged and cannot be read."
+        case .encrypted: return RowProblem.lockedMessage
+        case .corrupt: return RowProblem.unreadableMessage
         case .sameInputOutput: return "The output path must differ from the input."
         case .ghostscriptFailed(let message): return "Compression failed: \(message)"
         case .validationFailed: return "The compressed PDF failed validation."

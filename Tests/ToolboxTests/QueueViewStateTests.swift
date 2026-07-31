@@ -482,7 +482,7 @@ final class QueueViewStateTests: XCTestCase {
     func testRunTimeMissingFailureGetsMovedCopyAndFindItAffordance() {
         let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
         var job = ToolJob(url: URL(fileURLWithPath: "/tmp/moved.pdf"))
-        job.state = .failed("The file could not be found.")
+        job.state = .failed(OpenGuardError.fileNotFound.localizedDescription)
         let descriptor = QueueRowsView.describe(job: job, model: model, state: .problems)
         XCTAssertEqual(descriptor.meta, "Moved or renamed since you added it")
         XCTAssertEqual(descriptor.emphasis, .problemWarn)
@@ -505,7 +505,7 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertTrue(env.model.isRunning)
 
         var job = ToolJob(url: URL(fileURLWithPath: "/tmp/moved.pdf"))
-        job.state = .failed("The file could not be found.")
+        job.state = .failed(OpenGuardError.fileNotFound.localizedDescription)
         let runningDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .working)
         guard case .problem(let runningPrimary, let runningLink) = runningDescriptor.trailing else {
             return XCTFail("expected .problem trailing, got \(runningDescriptor.trailing)")
@@ -528,7 +528,7 @@ final class QueueViewStateTests: XCTestCase {
     func testRunTimeLockedFailureGetsPasswordCopyAndDangerTint() {
         let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
         var job = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
-        job.state = .failed("The PDF is password-protected.")
+        job.state = .failed(CompressError.encrypted.localizedDescription)
         let descriptor = QueueRowsView.describe(job: job, model: model, state: .problems)
         XCTAssertEqual(descriptor.meta, "Needs a password to open")
         XCTAssertEqual(descriptor.emphasis, .problemDanger)
