@@ -211,7 +211,7 @@ final class SelfUpdaterTests: XCTestCase {
         return server
     }
 
-    private func testConfiguration() -> URLSessionConfiguration {
+    private func fixtureSessionConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
         // Prepended, never replacing: http fixtures still go through the system stack, so the
         // redirect under test is a real 302 off a real socket.
@@ -223,7 +223,7 @@ final class SelfUpdaterTests: XCTestCase {
     private func makeUpdater(bundle: URL, isBusy: @escaping () -> Bool = { false },
                              relaunches: RelaunchLog) -> SelfUpdater {
         SelfUpdater(isBusy: isBusy,
-                    sessionConfiguration: testConfiguration(),
+                    sessionConfiguration: fixtureSessionConfiguration(),
                     bundleURL: bundle,
                     relaunch: { relaunches.record($0) })
     }
