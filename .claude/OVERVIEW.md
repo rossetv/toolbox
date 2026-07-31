@@ -36,11 +36,15 @@ actually built (`Tool`), not placeholders for ones that aren't.
 | Bundled Ghostscript binary | invoke (subprocess) | `Sources/Toolbox/Services/GhostscriptRunner.swift`, confined by `SeatbeltProfile.swift` |
 | Apple Vision (on-device OCR) | read | `Sources/Toolbox/OCR/VisionOCR.swift` (`VNRecognizeTextRequest`) — no network |
 | Local filesystem (user-selected PDFs) | read/write | `Sources/Toolbox/Compress/CompressEngine.swift`, `Sources/Toolbox/OCR/OCREngine.swift` |
-| GitHub Releases API (`api.github.com`) | read (on launch) | `Sources/Toolbox/App/UpdateChecker.swift` — notify-only version check; never downloads or self-replaces |
+| GitHub Releases API (`api.github.com`) + release DMG download | read (on launch) + user-initiated download/self-replace | `Sources/Toolbox/App/UpdateChecker.swift` (on-launch version check, notify-only) / `Sources/Toolbox/App/SelfUpdater.swift` (user-clicked "Update" button: downloads + checksum-verifies the release DMG, then self-replaces the running bundle — mirrors `scripts/install.sh`) |
 
 The seatbelt profile explicitly denies gs network access, and no PDF content ever leaves
-the Mac; the single exception is `UpdateChecker`'s on-launch GET to GitHub Releases (the
-app's only network request), which sends nothing about the user or their files.
+the Mac; the only UNPROMPTED network request is `UpdateChecker`'s on-launch GET to GitHub
+Releases, which sends nothing about the user or their files. Clicking the update banner's
+button is a separate, user-initiated action: `SelfUpdater` downloads the release DMG + its
+published checksum from GitHub, verifies it, and swaps the running app for it — the DMG is
+self-signed (no code-signature verification is possible), so HTTPS to GitHub is the whole
+trust anchor (posture reversal recorded in `DECISIONS.md`).
 
 ## Process model
 

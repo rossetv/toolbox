@@ -663,3 +663,70 @@ the human's explicit instruction 2026-07-30.
 **Affects:** Sources/Toolbox/Compress/VersionStore.swift, Sources/Toolbox/Queue/ (QueueViewModel
 job body), Sources/Toolbox/Models/JobOutcome.swift, Sources/Toolbox/Shared/FileNaming.swift
 consumers
+
+## 2026-07-31 — Self-update posture reversal: full in-app self-update, hand-rolled to mirror `install.sh`
+
+**Decision:** The update banner's button now performs a full self-update — download the release
+DMG, verify its published `.sha256`, mount, validate the payload, aside-swap the running bundle,
+and relaunch via a detached helper — instead of only opening the release page. Trust model,
+stated plainly: the DMG is self-signed, so no code signature can be verified; the anchor is
+HTTPS to GitHub alone (`UpdateChecker.parseRelease` pins the initial hosts to `https` +
+`github.com`; every redirect hop is forced HTTPS; the redirected host itself is deliberately
+unconstrained, since GitHub serves release assets from `release-assets.githubusercontent.com`
+today and has changed that host before).
+
+**Why:** User: the DMG is self-signed "and will stay that way for a while"; the updater must do
+everything the one-line `install.sh` installer does, in-app. A compromised GitHub account or
+release channel now means arbitrary code execution — accepted by the human. Rejected: open the
+release page only (too weak for the designed button); Sparkle (dependency + appcast/key
+infrastructure for a channel that stays unsigned while the DMG is self-signed). Revisit when
+code signing lands.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (D1, §6.10)
+**Affects:** `Sources/Toolbox/App/SelfUpdater.swift`, `Sources/Toolbox/App/UpdateChecker.swift`
+**Supersedes:** 2026-07-23 — Notify-only update check is a deliberate exception to "no network"
+(that entry's "the app never downloads or installs the update" is exactly the posture this
+reverses).
+
+## 2026-07-31 — MRC R7 asymmetry removed: both scan variants retained regardless of which wins the D7 gate
+
+**Decision:** The MRC spec's R7 rule — retain the losing version only when the hybrid (MRC)
+variant WON the D7 byte-size gate, discard it silently when the hybrid lost — is reversed: both
+variants are now retained whenever a valid hybrid AND a valid gs output exist for a rebuilt
+scan. The D7 gate now only decides which variant ships **provisionally**; a per-file consent
+sheet (Scan choice screen) lets the user keep either, with an instant version switch, and a
+"Rebuild scans from now on without asking" preference to suppress future sheets (keeping the
+rebuilt variant whenever it exists and validates).
+
+**Why:** Consent is about the *look* of the rebuilt page (whether photograph pages read better
+hybrid-rebuilt or as the gs pass renders them), not only about which file is smaller —
+discarding the loser silently answered a question only the user should. Approved in the
+pre-spec summary for the UI redesign.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§5, human decision D7); reverses
+`.claude/specs/20260723-mrc-rung3.md` R7 ("When any page was MRC-encoded in the shipped output,
+retain the losing version and offer the switch... When none was, behave exactly as today" — i.e.
+no runner-up retained when gs won the gate).
+**Affects:** `Sources/Toolbox/Compress/CompressEngine.swift`,
+`Tests/ToolboxTests/CompressEngineMRCTests.swift`
+
+## 2026-07-31 — Deferral fulfilments: combined pass, per-file overrides, drag-during-run and history all ship in the redesign
+
+**Decision:** Four deferrals recorded against earlier specs are fulfilled by this redesign, not
+carried forward as debt: (1) the combined compress+OCR pass in one run, listed as v2+ in the v1
+spec (§2's "Out (v2+, noted, not built)": "combined compress+OCR pass"); (2) per-file
+preset/rebuild-scan/OCR overrides, deferred by the Recompress spec's D5 ("Batch-level control
+only... per-row is deferred until it actually annoys... expected first follow-up"); (3)
+drag-and-drop accepted everywhere including mid-run, reversing the Recompress spec's R9 pairing
+of batch-width concurrency with add/drop disabled while running; (4) a persistent history of
+recent batches with defined storage/retention/clear semantics, cut from v1 for lack of those
+semantics (v1 spec §7 deviation 2: "'Saved this month' widget: cut from v1... needs cross-session
+storage + reset semantics... Reconsidered for v2").
+
+**Why:** The unified-queue redesign's core shape (one queue, verbs you tick, one pass) makes all
+four the natural, no-longer-deferred behaviour rather than new speculative scope.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§5 reversal table)
+**Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift`,
+`Sources/Toolbox/Queue/PerFileSettingsPopover.swift`, `Sources/Toolbox/Queue/HistoryStore.swift`,
+`Sources/Toolbox/DesignSystem/QueueComponents.swift`
