@@ -97,7 +97,7 @@ struct QueueFooterView: View {
         return "\(QueueByteFormat.string(before)) \u{2192} about \(QueueByteFormat.string(predicted))"
     }
 
-    /// Screen 03's subline: the divergence note (DESIGN.md §9 04c/§15) whenever any row has its
+    /// Screen 03's subline: the divergence note (DESIGN.md §9 04c) whenever any row has its
     /// own per-file settings, else the plain originals-are-safe reassurance. Only the singular
     /// wording is pinned by the handoff; a truthful plural is a recorded divergence.
     static func readySubline(model: QueueViewModel) -> String {

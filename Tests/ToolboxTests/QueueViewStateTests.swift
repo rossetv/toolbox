@@ -309,7 +309,7 @@ final class QueueViewStateTests: XCTestCase {
     }
 
     /// The ready footer's subline notes the divergence iff any row has its own settings — singular
-    /// wording is the handoff's pinned string (DESIGN.md §9 04c/§15); several overrides get a
+    /// wording is the handoff's pinned string (DESIGN.md §9 04c); several overrides get a
     /// truthful plural, recorded as a divergence (no plural form is pinned).
     func testReadyFooterNotesDivergenceOnlyWhenOverridesExist() throws {
         let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
