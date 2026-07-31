@@ -434,9 +434,10 @@ private struct ClearsClickFocusModifier: ViewModifier {
 /// rest of the session. `set()` has no stack to unbalance, and the `@State` flag plus
 /// `onDisappear` make sure a torn-down view still restores the arrow.
 ///
-/// Deliberately stays on `.onHover`, not `.continuousHover`: it drives the cursor, not on-screen
-/// chrome, so it is outside this finding's "visible hover chrome" scope — converting it is a
-/// separate concern (assistive-input cursor feedback) left unaddressed here.
+/// Deliberately stays on `.onHover`, not `.continuousHover`: `onContinuousHover`'s `.active`
+/// fires per mouse-move, so converting would call `NSCursor.set()` on every pointer motion
+/// inside the control; the hand cursor is therefore still dead for a warped/synthetic pointer,
+/// unaddressed here.
 private struct PointingHandCursorModifier: ViewModifier {
     @State private var isShowingHandCursor = false
 
