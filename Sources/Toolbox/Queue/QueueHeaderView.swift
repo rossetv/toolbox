@@ -34,13 +34,11 @@ struct QueueHeaderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            switch state {
-            case .empty: EmptyView()
-            case .ready: readyTitleRow
-            case .working: workingTitleRow
-            case .finished: bigHeadline(kind: .finished, headline: finishedHeadline, subtitle: finishedSubtitle)
-            case .problems: bigHeadline(kind: .warn, headline: problemsHeadline, subtitle: problemsSubtitle)
-            }
+            // "3 files" → "Working on 3 files" → "32.6 MB lighter" is a different title row each
+            // time, not edited copy: each settles down from a little above as the last fades, the
+            // handoff's own `landHead`. The animation is `QueueView`'s, scoped to `screenState`.
+            titleRow
+                .transition(.opacity.combined(with: .offset(y: -8)))
             if state == .ready {
                 HStack(spacing: 8) {
                     VerbChip(title: "Compress", suffix: model.compressOn ? model.preset.title : nil,
@@ -54,9 +52,13 @@ struct QueueHeaderView: View {
                     Spacer(minLength: Theme.Spacing.small)
                     saveDestinationMenu
                 }
+                .transition(.opacity.combined(with: .offset(y: -6)))
             }
             if state == .working, let progress = model.batchProgress {
                 CapsuleProgressBar(fraction: progress.fraction)
+                    // The bar takes the chips' place as Start is pressed: it grows out of the
+                    // hairline rather than appearing at full height.
+                    .transition(.opacity.combined(with: .scale(scale: 0.4, anchor: .leading)))
             }
         }
         .padding(.horizontal, Theme.Spacing.large)
@@ -64,6 +66,17 @@ struct QueueHeaderView: View {
         .padding(.bottom, state == .ready ? 14 : 16)
         .popover(isPresented: $qualityPresented) { QualityPopover(model: model) }
         .popover(isPresented: $ocrPresented) { OCRPopover(model: model) }
+    }
+
+    @ViewBuilder
+    private var titleRow: some View {
+        switch state {
+        case .empty: EmptyView()
+        case .ready: readyTitleRow
+        case .working: workingTitleRow
+        case .finished: bigHeadline(kind: .finished, headline: finishedHeadline, subtitle: finishedSubtitle)
+        case .problems: bigHeadline(kind: .warn, headline: problemsHeadline, subtitle: problemsSubtitle)
+        }
     }
 
     // MARK: Ready (screen 03)

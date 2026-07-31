@@ -968,6 +968,8 @@ struct VariantCard: View {
     let previewURL: URL?
     let isSelected: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -1006,6 +1008,10 @@ struct VariantCard: View {
             RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                 .strokeBorder(isSelected ? Theme.Colors.accent : .clear, lineWidth: 1.5)
         )
+        // The card takes no hover or press — the handoff gives it neither (see the doc comment).
+        // What it does do is show which choice is currently leading, and the ring/tint moving
+        // between the two cards is the only feedback the consent sheet's buttons give.
+        .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: isSelected)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(sizeText), \(percentText). \(explanation)")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])

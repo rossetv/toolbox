@@ -46,6 +46,7 @@ struct QueueView: View {
         self.showAbout = showAbout
     }
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isTargeted = false
     @State private var draggedCount = 1
     @State private var activeSheet: QueueSheet?
@@ -65,32 +66,21 @@ struct QueueView: View {
                 EmptyStateView(history: history) {
                     model.add(FilePicker.choosePDFs())
                 }
+                // The window becoming (or ceasing to be) a queue is the biggest change it makes:
+                // the two sides cross-fade and settle a few points rather than cutting.
+                .transition(.opacity.combined(with: .offset(y: 10)))
             } else {
-                QueueHeaderView(
-                    model: model, state: screenState,
-                    onAdd: { model.add(FilePicker.choosePDFs()) },
-                    onClear: { model.clearFinished() },
-                    onChooseFolder: { if let folder = FilePicker.chooseFolder() { model.outputFolder = folder } },
-                    onRecentBatches: { activeSheet = .recentBatches },
-                    onAbout: { showAbout.wrappedValue = true },
-                    onCancel: { model.cancel() },
-                    qualityPresented: $qualityPresented, ocrPresented: $ocrPresented
-                )
-                Divider()
-                QueueRowsView(model: model, state: screenState)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .opacity(Self.rowsDimOpacity(qualityOpen: qualityPresented, ocrOpen: ocrPresented))
-                Divider()
-                QueueFooterView(
-                    model: model, state: screenState,
-                    onStart: { model.compress() },
-                    onCancel: { model.cancel() },
-                    onShowInFinder: { revealShipped() },
-                    onChangeQuality: { activeSheet = .changeQuality },
-                    onAddMore: { model.add(FilePicker.choosePDFs()) }
-                )
+                queueScreen
+                    .transition(.opacity.combined(with: .offset(y: -10)))
             }
         }
+        // Scopes one spring to everything the screen change touches — the empty↔queue swap above,
+        // and the header/footer swapping their own copy and controls underneath. Deliberately NOT
+        // `.id(screenState)`: that would give the same cross-fade by tearing the subtree down and
+        // rebuilding it, throwing away every `@State` behind it — each row's rendered thumbnail,
+        // the chrome views' entrance flags, the sweep offsets — and re-parsing every PDF on the
+        // way from ready to working.
+        .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: screenState)
         .background(Theme.Colors.surface)
         .overlay {
             if isTargeted { DragOverlayView(fileCount: draggedCount) }
@@ -142,6 +132,36 @@ struct QueueView: View {
             } else if showAbout.wrappedValue {
                 showAbout.wrappedValue = false
             }
+        }
+    }
+
+    /// Screens 03/05/06/10 — header, rows, footer. One property rather than an inline `else`
+    /// branch so the branch can carry a transition without burying it in the body.
+    private var queueScreen: some View {
+        Group {
+            QueueHeaderView(
+                model: model, state: screenState,
+                onAdd: { model.add(FilePicker.choosePDFs()) },
+                onClear: { model.clearFinished() },
+                onChooseFolder: { if let folder = FilePicker.chooseFolder() { model.outputFolder = folder } },
+                onRecentBatches: { activeSheet = .recentBatches },
+                onAbout: { showAbout.wrappedValue = true },
+                onCancel: { model.cancel() },
+                qualityPresented: $qualityPresented, ocrPresented: $ocrPresented
+            )
+            Divider()
+            QueueRowsView(model: model, state: screenState)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .opacity(Self.rowsDimOpacity(qualityOpen: qualityPresented, ocrOpen: ocrPresented))
+            Divider()
+            QueueFooterView(
+                model: model, state: screenState,
+                onStart: { model.compress() },
+                onCancel: { model.cancel() },
+                onShowInFinder: { revealShipped() },
+                onChangeQuality: { activeSheet = .changeQuality },
+                onAddMore: { model.add(FilePicker.choosePDFs()) }
+            )
         }
     }
 

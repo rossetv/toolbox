@@ -22,9 +22,12 @@ struct QueueFooterView: View {
 
     var body: some View {
         HStack(spacing: Theme.Spacing.medium) {
-            leading
+            // Both halves swap wholesale between states (estimate → saved-so-far → save
+            // location; Start → Cancel → the finished trio), so each crosses over rather than
+            // cutting. The animation itself is `QueueView`'s, scoped to `screenState`.
+            leading.transition(.opacity)
             Spacer(minLength: Theme.Spacing.small)
-            trailing
+            trailing.transition(.opacity)
         }
         .padding(.horizontal, Theme.Spacing.large)
         .padding(.vertical, Theme.Spacing.medium)

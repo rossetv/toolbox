@@ -29,6 +29,7 @@ struct QueueRowsView: View {
     @ObservedObject var model: QueueViewModel
     let state: QueueScreenState
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var perFileJobID: ToolJob.ID?
     @State private var versionsJobID: ToolJob.ID?
 
@@ -37,13 +38,26 @@ struct QueueRowsView: View {
             VStack(spacing: 2) {
                 ForEach(model.jobs) { job in
                     row(for: job)
+                        // The handoff lands dropped rows rising into place; a removed row leaves
+                        // by shrinking out rather than the list snapping shut under the pointer.
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 26)),
+                            removal: .opacity.combined(with: .scale(scale: 0.96))
+                        ))
                 }
                 if state == .ready {
                     dropHint
+                        .transition(.opacity)
                 }
             }
             .padding(.horizontal, Theme.Spacing.large)
             .padding(.vertical, Theme.Spacing.medium)
+            // Keyed on the row identities rather than on `model.jobs` itself: the queue mutates
+            // from a dozen places across the view model (add, remove, skip, clearFinished, the
+            // run's own state writes), and animating in the view layer keeps every one of them
+            // from having to remember a `withAnimation`. Progress writes don't change the id
+            // list, so a running batch doesn't re-trigger this.
+            .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: model.jobs.map(\.id))
         }
     }
 
