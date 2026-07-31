@@ -210,6 +210,72 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(descriptor.emphasis, .degraded, "noGain+tooFaint must be marked degraded")
     }
 
+    // MARK: describeDone reads the STORE, never a stale first-run outcome (binding carry #1)
+
+    /// A change-quality re-run never touches `job.state` (`QueueViewModel.commit()`) — only the
+    /// STORE's `shipped.variant` is fresh. A Balanced-MRC row re-run at Maximum quality (a plain
+    /// gs file) must render "Compressed", not the stale first run's "Rebuilt".
+    func testChangeQualityRerunFromMRCToPlainRendersCompressedNotRebuilt() async throws {
+        let pageText: [Int: [PositionedText]] = [0: [PositionedText(
+            text: "HELLO", boundingBox: CGRect(x: 0.1, y: 0.8, width: 0.5, height: 0.04))]]
+        let added = RecognisedDocument(pageText: pageText,
+                                       geometry: [0: PageGeometry(mediaBox: Fixtures.letter, rotation: 0)],
+                                       pagesRecognised: 1, pagesSkipped: 0, pageCount: 1)
+        let env = try HeavyEnv(ocrEngine: StubOCREngine(document: added))
+        env.model.ocrOn = true
+        let staleJob = try await env.runToDone()
+        let firstPass = QueueRowsView.describe(job: staleJob, model: env.model, state: .finished)
+        XCTAssertTrue(firstPass.meta.contains("Rebuilt"),
+                      "sanity: the first run really did ship the MRC variant: \(firstPass.meta)")
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        env.model.preset = .maximumQuality
+        env.model.compress()
+        try await waitUntil(timeout: 5) { !env.model.isRunning }
+        XCTAssertEqual(env.model.versions(for: staleJob)?.shipped?.variant, .plain,
+                       "sanity: the store's shipped card really is the fresh plain gs file")
+
+        // `staleJob` is the frozen struct from before the re-run — its `.state` still carries the
+        // first pass's MRC outcome, exactly as `job.state` stays in the real queue.
+        let descriptor = QueueRowsView.describe(job: staleJob, model: env.model, state: .finished)
+        XCTAssertTrue(descriptor.meta.contains("Compressed"),
+                      "the store's fresh plain variant must win over the stale MRC outcome: \(descriptor.meta)")
+        XCTAssertFalse(descriptor.meta.contains("Rebuilt"),
+                       "must not still read the stale first run's verb: \(descriptor.meta)")
+    }
+
+    /// A row cancelled between the legs on its first pass (`ocr == .cancelled`, `isDegraded ==
+    /// true`) that is later re-run successfully must stop rendering the permanent "cancelled
+    /// before reading" string — the store's confirmed-searchable shipped card is fresher than the
+    /// stale first-run outcome baked into `job.state`.
+    func testStaleCancelledOutcomeRendersFromStoreAfterASuccessfulRerun() async throws {
+        let pageText: [Int: [PositionedText]] = [0: [PositionedText(
+            text: "HELLO", boundingBox: CGRect(x: 0.1, y: 0.8, width: 0.5, height: 0.04))]]
+        let added = RecognisedDocument(pageText: pageText,
+                                       geometry: [0: PageGeometry(mediaBox: Fixtures.letter, rotation: 0)],
+                                       pagesRecognised: 1, pagesSkipped: 0, pageCount: 1)
+        let env = try HeavyEnv(ocrEngine: StubOCREngine(document: added))
+        env.model.ocrOn = true
+        var staleJob = try await env.runToDone()
+        XCTAssertEqual(env.model.versions(for: staleJob)?.searchableByCard[.shipped], true,
+                       "sanity: the re-run really did land a confirmed-searchable shipped card")
+
+        // Simulate the stale outcome a re-run leaves behind: the FIRST pass was cancelled before
+        // its OCR leg ever read the file (`commit()` never overwrites `job.state`).
+        staleJob.state = .done(RowOutcome(
+            originalBytes: 9000, finalBytes: HeavyEnv.heavyBytes,
+            compress: .compressed(before: 9000, after: HeavyEnv.heavyBytes),
+            ocr: .cancelled, shippedVariant: .mrc,
+            runnerUp: RetainedVariant(kind: .plain, bytes: HeavyEnv.normalBytes, searchable: false)))
+
+        let descriptor = QueueRowsView.describe(job: staleJob, model: env.model, state: .finished)
+        XCTAssertFalse(descriptor.meta.localizedCaseInsensitiveContains("cancelled"),
+                       "the store's fresh searchable card must win over the stale cancelled outcome: \(descriptor.meta)")
+        XCTAssertNotEqual(descriptor.emphasis, .degraded,
+                          "a store-confirmed searchable row must not render permanently degraded")
+    }
+
     /// A running row must be marked `.active` (DESIGN.md §9 05, spec §7): accent-tinted
     /// background, slow shimmer, accent meta — none of which fire without this emphasis wired.
     func testRunningRowIsMarkedActive() {

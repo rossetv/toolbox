@@ -307,10 +307,19 @@ struct QueueRowsView: View {
 
     private static func describeDone(job: ToolJob, model: QueueViewModel, state: QueueScreenState) -> RowDescriptor {
         guard case .done(let outcome) = job.state else { fatalError("describeDone requires a .done job") }
-        if outcome.isDegraded {
+        let row = model.versions(for: job)
+        // Binding carry #1's other edge: a change-quality re-run (`commit()`) never touches
+        // `job.state`, so `outcome` can be arbitrarily stale once the STORE has moved on — a row
+        // whose first pass cancelled before reading stays `outcome.isDegraded == true` forever,
+        // even after a later re-run's OCR leg lands a confirmed-searchable shipped file. Only a
+        // row that shipped a compressed file on its first pass gets a store entry at all (a
+        // `.skipped` compress leg never arms one — VersionStore's own note — so it can never
+        // re-run and never contradicts `isDegraded` here); wherever the store DOES hold a
+        // confirmed-searchable shipped card, that fact is fresher than any `.cancelled`/
+        // `.tooFaint`/`.failed` OCR reading baked into `outcome`, so it wins.
+        if outcome.isDegraded && row?.searchableByCard[.shipped] != true {
             return describeDegraded(job: job, model: model, outcome: outcome)
         }
-        let row = model.versions(for: job)
         guard let sizes = model.displayedSizes(for: job) else {
             // No shipped version: a compress-only no-gain row (truly nothing changed), or the
             // noGain+OCR-added sibling (`row` recorded, `shipped` nil — spec §6.5's grey sizes).
@@ -328,7 +337,11 @@ struct QueueRowsView: View {
         } else {
             let percent = percentSmaller(before: sizes.before, after: sizes.after)
             if isSearchable {
-                let verb = outcome.shippedVariant == .mrc ? "Rebuilt" : "Compressed"
+                // The STORE's shipped variant, never `outcome.shippedVariant` (binding carry #1):
+                // a change-quality re-run overwrites the store's card but leaves `outcome` as the
+                // FIRST run left it, so a Balanced-MRC row re-run at Maximum quality (a plain gs
+                // file) would otherwise still read "Rebuilt".
+                let verb = row?.shipped?.variant == .mrc ? "Rebuilt" : "Compressed"
                 meta = "\(verb) and searchable · \(percent)"
             } else if state == .working, let duration = model.rowDuration(for: job.id) {
                 meta = "\(percent) · finished in \(Int(duration.rounded())) second\(Int(duration.rounded()) == 1 ? "" : "s")"
