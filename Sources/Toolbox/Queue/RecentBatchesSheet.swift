@@ -21,7 +21,7 @@ struct RecentBatchesSheet: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text("Recent batches").themeFont(.sheetTitle).foregroundStyle(Theme.Colors.text)
                     Spacer(minLength: Theme.Spacing.small)
-                    Text("\(Self.byteString(history.lifetimeSavedBytes)) saved in total")
+                    Text("\(QueueByteFormat.string(history.lifetimeSavedBytes)) saved in total")
                         .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
                 }
                 if history.groupedByDay.isEmpty {
@@ -96,7 +96,7 @@ struct RecentBatchesSheet: View {
     /// The trailing figure: green savings, or grey "no change" for an OCR-only/no-saving batch
     /// (binding carry: OCR-only reads grey, never a bare "0 MB").
     static func savedText(_ batch: HistoryBatch) -> String {
-        batch.savedBytes <= 0 ? "no change" : byteString(batch.savedBytes)
+        batch.savedBytes <= 0 ? "no change" : QueueByteFormat.string(batch.savedBytes)
     }
 
     static func dayLabel(_ day: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
@@ -120,9 +120,6 @@ struct RecentBatchesSheet: View {
         return formatter
     }()
 
-    static func byteString(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
 }
 
 #Preview("RecentBatchesSheet") {

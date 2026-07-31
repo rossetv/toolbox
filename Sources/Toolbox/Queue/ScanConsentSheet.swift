@@ -81,7 +81,7 @@ struct ScanConsentSheet: View {
             title: Self.variantTitle(version.variant),
             badgeText: badge.text,
             badgeIsAccent: badge.isAccent,
-            sizeText: Self.byteString(version.bytes),
+            sizeText: QueueByteFormat.string(version.bytes),
             percentText: Self.percentText(bytes: version.bytes, originalBytes: originalSize),
             explanation: Self.variantExplanation(version.variant),
             previewURL: version.url,
@@ -146,9 +146,6 @@ struct ScanConsentSheet: View {
         }
     }
 
-    static func byteString(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
 }
 
 #Preview("ScanConsentSheet") {

@@ -84,7 +84,7 @@ struct ChangeQualitySheet: View {
                                        presetIsMaximumQuality: preset == .maximumQuality)
                 OptionCard(
                     title: preset.title,
-                    value: Self.byteString(value),
+                    value: QueueByteFormat.string(value),
                     caption: delta.text,
                     captionTone: delta.tone.optionCardTone,
                     isSelected: model.preset == preset,
@@ -107,8 +107,8 @@ struct ChangeQualitySheet: View {
                                 measuredRate: model.measuredPageRate(for: job.id),
                                 pageCount: model.inspections[job.id]?.pageCount)) {
                         QueueRowSizeColumn(
-                            current: Self.byteString(row.shipped?.bytes ?? row.originalBytes),
-                            target: Self.byteString(model.recompressPrediction(for: job, at: model.preset)
+                            current: QueueByteFormat.string(row.shipped?.bytes ?? row.originalBytes),
+                            target: QueueByteFormat.string(model.recompressPrediction(for: job, at: model.preset)
                                                     ?? (row.shipped?.bytes ?? row.originalBytes)))
                     }
                 }
@@ -124,7 +124,7 @@ struct ChangeQualitySheet: View {
         let predicted = Self.total(summaries, at: model.preset)
         return HStack {
             VStack(alignment: .leading, spacing: 1) {
-                Text("\(Self.byteString(current)) → about \(Self.byteString(predicted))")
+                Text("\(QueueByteFormat.string(current)) → about \(QueueByteFormat.string(predicted))")
                     .themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
                 Text("Rebuilt from your originals — the files you have now stay until the new ones land.")
                     .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
@@ -197,8 +197,8 @@ struct ChangeQualitySheet: View {
     static func delta(current: Int, candidate: Int, presetIsMaximumQuality: Bool) -> (text: String, tone: DeltaTone) {
         let diff = candidate - current
         if diff == 0 { return ("what you have", .muted) }
-        if diff < 0 { return ("\(byteString(-diff)) less", .success) }
-        return (presetIsMaximumQuality ? "for printing" : "\(byteString(diff)) more", .plain)
+        if diff < 0 { return ("\(QueueByteFormat.string(-diff)) less", .success) }
+        return (presetIsMaximumQuality ? "for printing" : "\(QueueByteFormat.string(diff)) more", .plain)
     }
 
     /// The row's own mechanism line (spec §6.7's honest-progress rule): armed rows show the
@@ -219,9 +219,6 @@ struct ChangeQualitySheet: View {
         }
     }
 
-    static func byteString(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
 }
 
 #Preview("ChangeQualitySheet") {

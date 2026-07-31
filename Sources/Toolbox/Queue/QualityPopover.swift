@@ -22,7 +22,7 @@ struct QualityPopover: View {
                         title: preset.title,
                         subtitle: Self.subtitle(for: preset),
                         isSelected: model.preset == preset,
-                        trailingValue: Self.byteString(Self.batchTotal(rows: rows, candidate: preset)),
+                        trailingValue: QueueByteFormat.string(Self.batchTotal(rows: rows, candidate: preset)),
                         badge: preset == .balanced ? "RECOMMENDED" : nil,
                         showsUnselectedIndicator: false,
                         action: { model.preset = preset }
@@ -66,9 +66,6 @@ struct QualityPopover: View {
         }
     }
 
-    static func byteString(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
 }
 
 #Preview("QualityPopover") {
