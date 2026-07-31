@@ -236,13 +236,19 @@ struct QueueHeaderView: View {
         return "\(totals). \(searchable == 1 ? "One is" : "\(searchable) are") now searchable."
     }
 
-    private var problemsHeadline: String { Self.problemsHeadline(jobs: model.jobs) }
+    private var problemsHeadline: String {
+        Self.problemsHeadline(jobs: model.jobs, inspections: model.inspections, skipped: model.skippedRows)
+    }
 
     /// Delivered-of-total (spec §7): the numerator counts only rows that actually delivered
     /// (terminal `.done`) — a `.failed` row never ran to completion and an unresolved problem row
     /// never joined the run at all, so neither counts as "done" even though the batch is over.
-    static func problemsHeadline(jobs: [ToolJob]) -> String {
-        let done = jobs.filter { QueueRowPartition.classify(job: $0, inspections: [:], skipped: []) == .delivered }.count
+    /// Threads the real `inspections`/`skipped` through `QueueRowPartition.classify` — the shared
+    /// predicate, not synthesised empty state — even though `.delivered` ignores both today: a
+    /// future change to what "delivered" means only has this one call site to get right.
+    static func problemsHeadline(jobs: [ToolJob], inspections: [ToolJob.ID: RowInspection] = [:],
+                                 skipped: Set<ToolJob.ID> = []) -> String {
+        let done = jobs.filter { QueueRowPartition.classify(job: $0, inspections: inspections, skipped: skipped) == .delivered }.count
         return "\(done) of \(jobs.count) files done"
     }
 
