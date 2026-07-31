@@ -189,11 +189,30 @@ struct QueueHeaderView: View {
     private func headlineGlyph(_ kind: HeadlineKind) -> some View {
         let (tint, symbol): (Color, String) = kind == .finished
             ? (Theme.Colors.success, "checkmark") : (Theme.Colors.warn, "exclamationmark")
-        return ZStack {
-            Circle().fill(tint)
-            Image(systemName: symbol).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+        return HeadlineGlyphPop(tint: tint, symbol: symbol)
+    }
+
+    /// DESIGN.md §8's `checkPop` (scale 0.4→1.16→1, 0.45s) — the header disc, undelayed; the row
+    /// checks (`StatusIndicator.filledCheck`) carry the pinned 0.25s delay behind this one.
+    private struct HeadlineGlyphPop: View {
+        let tint: Color
+        let symbol: String
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var hasAppeared = false
+
+        var body: some View {
+            ZStack {
+                Circle().fill(tint)
+                Image(systemName: symbol).font(.system(size: 13, weight: .bold)).foregroundStyle(.white)
+            }
+            .frame(width: 30, height: 30)
+            .scaleEffect(hasAppeared || reduceMotion ? 1 : 0.4)
+            .onAppear {
+                guard !reduceMotion else { hasAppeared = true; return }
+                withAnimation(.spring(response: Theme.Motion.checkPop, dampingFraction: 0.58)) { hasAppeared = true }
+            }
         }
-        .frame(width: 30, height: 30)
     }
 
     private var finishedHeadline: String {
