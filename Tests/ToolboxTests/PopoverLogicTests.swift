@@ -433,6 +433,30 @@ final class PopoverLogicTests: XCTestCase {
         XCTAssertTrue(EmptyStateView.subtitle(for: batch).contains("needs attention"))
     }
 
+    /// Screen 01's icon parallax is driven by the pointer's offset from the centre of the whole
+    /// content area, normalised to ±1 — the handoff's own normalisation, which is what bounds the
+    /// tilt to ±11°/±13° and the drift to ±7pt. A shipped build once fed this the 76pt icon frame
+    /// instead of the stage, which put the input near ±5 and sheared the icon off its stack.
+    func testEmptyStateParallaxNormalisesAgainstTheStageAndClamps() {
+        let stage = CGSize(width: 900, height: 508)
+        let centre = EmptyStateView.normalise(CGPoint(x: 450, y: 254), in: stage)
+        XCTAssertEqual(centre.x, 0, accuracy: 0.0001)
+        XCTAssertEqual(centre.y, 0, accuracy: 0.0001)
+
+        let corner = EmptyStateView.normalise(CGPoint(x: 900, y: 0), in: stage)
+        XCTAssertEqual(corner.x, 1, accuracy: 0.0001)
+        XCTAssertEqual(corner.y, -1, accuracy: 0.0001)
+
+        // `onContinuousHover` can report a location just outside the bounds; it must not push the
+        // tilt past the handoff's envelope.
+        let outside = EmptyStateView.normalise(CGPoint(x: 4000, y: -900), in: stage)
+        XCTAssertEqual(outside.x, 1, accuracy: 0.0001)
+        XCTAssertEqual(outside.y, -1, accuracy: 0.0001)
+
+        // A zero-sized stage (first layout pass) must rest, not divide by zero.
+        XCTAssertEqual(EmptyStateView.normalise(CGPoint(x: 10, y: 10), in: .zero), .zero)
+    }
+
     func testRecentBatchesDayLabelTodayYesterdayAndOlder() {
         let calendar = Calendar.current
         let now = Date()
