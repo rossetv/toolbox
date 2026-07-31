@@ -151,7 +151,9 @@ final class HistoryStoreTests: XCTestCase {
         let root = try tempRoot()
         let store = HistoryStore(directory: root)
         let calendar = Calendar.current
-        let today = Date()
+        // Anchored at noon (never Date()) so the -2h "earlier" batch below can never cross a
+        // calendar-day boundary regardless of the wall-clock time the suite runs at.
+        let today = calendar.date(bySettingHour: 12, minute: 0, second: 0, of: Date())!
         let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
 
         let todayEarlier = batch(date: calendar.date(byAdding: .hour, value: -2, to: today)!)
