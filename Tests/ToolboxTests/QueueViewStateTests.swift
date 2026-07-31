@@ -133,6 +133,25 @@ final class QueueViewStateTests: XCTestCase {
         try await waitUntil(timeout: 15) { !env.model.isRunning }
     }
 
+    // MARK: drop refused while the Choose Files/Choose Folder panel is up (the one modal exception)
+
+    func testShouldAcceptDropRefusesWhileModalWindowPresented() {
+        XCTAssertFalse(QueueView.shouldAcceptDrop(modalWindowPresented: true))
+    }
+
+    func testShouldAcceptDropAllowsWhenNoModalWindowPresented() {
+        XCTAssertTrue(QueueView.shouldAcceptDrop(modalWindowPresented: false))
+    }
+
+    func testAcceptDropRefusesAndDoesNotMutateQueueWhileModalWindowPresented() {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        let view = makeView(model: model)
+        let url = try! Fixtures.imagePDF()
+        XCTAssertFalse(view.acceptDrop([url], modalWindowPresented: true),
+                       "a drop underneath the Choose Files panel must be refused")
+        XCTAssertEqual(model.jobs.count, 0, "the queue must not mutate underneath the modal panel")
+    }
+
     // MARK: row-open target ("Return on a focused row invokes onOpen")
 
     func testUrlToOpenFallsBackToOriginalWhenNothingHasRunYet() {

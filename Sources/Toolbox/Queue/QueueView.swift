@@ -157,10 +157,25 @@ struct QueueView: View {
     /// Drop is accepted in EVERY screen state, including mid-run (spec §6.5) — a thin, directly
     /// testable seam: `.onDrop`'s closures cannot be invoked from a unit test, but a plain method
     /// can. `model.add` itself carries no state guard, so this never gates on `screenState`.
+    ///
+    /// The one deliberate exception to "drop works everywhere": while `FilePicker`'s Choose
+    /// Files/Choose Folder panel is up. That panel is a synchronous, blocking `NSOpenPanel.runModal()`
+    /// call (`FilePicker.swift`) — a drop accepted underneath it mutates the queue while the modal
+    /// session is still live and left the panel (and any consent sheet it triggers) unable to
+    /// dismiss, Escape/Cancel dead, reproduced live. `NSApp.modalWindow` is non-nil for exactly the
+    /// duration of that `runModal()` call, so it's read as the default here — overridable so the
+    /// gate itself (`shouldAcceptDrop`) is testable without a real panel on screen.
     @discardableResult
-    func acceptDrop(_ urls: [URL]) -> Bool {
+    func acceptDrop(_ urls: [URL], modalWindowPresented: Bool = NSApp.modalWindow != nil) -> Bool {
+        guard Self.shouldAcceptDrop(modalWindowPresented: modalWindowPresented) else { return false }
         model.add(urls)
         return true
+    }
+
+    /// Pure gate backing `acceptDrop`: refuse while a modal panel (`FilePicker`) is presented, since
+    /// it — not the drop target underneath — is the active affordance.
+    static func shouldAcceptDrop(modalWindowPresented: Bool) -> Bool {
+        !modalWindowPresented
     }
 
     /// Pure state-selection (`QueueViewStateTests`): empty until the first file lands; ready until
