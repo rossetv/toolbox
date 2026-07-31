@@ -46,7 +46,12 @@ final class QueueViewModelTests: XCTestCase {
     }
 
     func testThreeFileSyntheticBatchCompressesEndToEnd() async throws {
-        let model = QueueViewModel()
+        // A temp-rooted history store: this test drives a real `compress()` through the
+        // production entry point, and a history entry must never land in the developer's own
+        // `~/Library/Application Support/Toolbox/history.json`.
+        let historyRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("history-\(UUID().uuidString)", isDirectory: true)
+        let model = QueueViewModel(history: HistoryStore(directory: historyRoot))
         XCTAssertNil(model.loadError, "Ghostscript should resolve from the test host bundle")
 
         // Three distinct basenames: a shared output folder collision-avoidance race between

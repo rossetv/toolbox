@@ -119,6 +119,11 @@ final class QueueViewModel: ObservableObject {
     private let ocrEngine: (any OCRing)?
     private let estimator: CompressEstimator
     private let store: RunnerUpStore
+    /// The recent-batches history (spec §6.9). Exposed (not `private`) — `QueueView` holds it as
+    /// an `@ObservedObject` of its own (a nested `ObservableObject`'s changes do not propagate
+    /// through this view model's own `objectWillChange`), and `RecentBatchesSheet` reads it the
+    /// same way. Constructed once, here, and never a second instance.
+    let history: HistoryStore
     /// The display authority for every row's versions (R14). Owns the preset each version was
     /// produced at, so a later batch can never rewrite a finished row's preset, and it is the only
     /// path that discards a parked file.
@@ -396,7 +401,7 @@ final class QueueViewModel: ObservableObject {
 
     /// Production entry point: resolves the real Ghostscript-backed engine.
     convenience init(estimator: CompressEstimator = CompressEstimator(),
-                     store: RunnerUpStore? = nil) {
+                     store: RunnerUpStore? = nil, history: HistoryStore? = nil) {
         let engine: (any Compressing)?
         let error: String?
         if let runner = try? GhostscriptRunner() {
@@ -406,7 +411,8 @@ final class QueueViewModel: ObservableObject {
             engine = nil
             error = "Ghostscript is missing from the app bundle — the app cannot compress."
         }
-        self.init(engine: engine, ocrEngine: OCREngine(), estimator: estimator, store: store)
+        self.init(engine: engine, ocrEngine: OCREngine(), estimator: estimator, store: store,
+                 history: history)
         self.loadError = error
     }
 
@@ -417,6 +423,7 @@ final class QueueViewModel: ObservableObject {
          ocrEngine: (any OCRing)? = OCREngine(),
          estimator: CompressEstimator = CompressEstimator(),
          store: RunnerUpStore? = nil,
+         history: HistoryStore? = nil,
          defaults: UserDefaults = .standard) {
         self.engine = engine
         self.ocrEngine = ocrEngine
@@ -424,9 +431,10 @@ final class QueueViewModel: ObservableObject {
         self.defaults = defaults
         self.rebuildWithoutAsking = defaults.bool(forKey: Self.rebuildWithoutAskingKey)
         // Built here (not as a default argument) because a default value expression is evaluated in
-        // a nonisolated context, and `RunnerUpStore.init` is `@MainActor`.
+        // a nonisolated context, and `RunnerUpStore.init`/`HistoryStore.init` are `@MainActor`.
         let store = store ?? RunnerUpStore()
         self.store = store
+        self.history = history ?? HistoryStore()
         // Sweep anything a previous run left in the cache before this session reserves into it (R15).
         store.sweepStale()
         self.versionStore = VersionStore(cache: store)
@@ -665,6 +673,76 @@ final class QueueViewModel: ObservableObject {
             }
             return total + (row.originalBytes - shipped.bytes)
         }
+    }
+
+    // MARK: recent-batches history (spec §6.9)
+
+    /// Record this pass into `history`, reading `lockedRun`/`runQueuedIDs` before `compress()`'s
+    /// own tail clears them.
+    ///
+    /// Scoped ENTIRELY to `runQueuedIDs` — this run's freshly-queued rows — never `batchRowIDs`,
+    /// which also holds any armed (recompress) rows: an armed row's `originalBytes - shipped.bytes`
+    /// delta is the row's LIFETIME saving, already folded into `lifetimeSavedBytes` by the batch
+    /// that first delivered it, so counting it again here on every Change-Quality re-run would
+    /// double it. A pass with no freshly-queued rows at all — a pure recompress — is therefore not
+    /// a "new batch" in the history sense and records nothing: its own savings are 0 by this same
+    /// rule, and spec §6.3 already forbids a "0 MB saved" line.
+    private func recordBatchHistory() {
+        guard !runQueuedIDs.isEmpty, let settings = lockedRun else { return }
+        let jobsByID = Dictionary(uniqueKeysWithValues: queue.jobs.map { ($0.id, $0) })
+        var savedBytes = 0
+        var searchableCount = 0
+        var banked = false
+        var problem = false
+        var partial = false
+        for id in runQueuedIDs {
+            guard let job = jobsByID[id] else { continue }
+            if let sizes = displayedSizes(for: job) {
+                // Floored at zero, never subtracted: a row whose OCR append grew the delivered
+                // file past the original (`RowOutcome.grew`, spec §6.3) is a real, legitimate row
+                // state — but `lifetimeSavedBytes` is a persisted, monotonic "saved since you
+                // installed Toolbox" counter, and one grown row must never make it go DOWN by
+                // dragging the rest of the batch's genuine savings negative.
+                savedBytes += max(0, sizes.before - sizes.after)
+            }
+            if job.resultURL != nil { banked = true }
+            switch job.state {
+            case .failed:
+                problem = true
+            case .done(let outcome):
+                if outcome.isDegraded { partial = true }
+                if let row = versionStore.versions(for: id) {
+                    if row.searchableByCard[.shipped] == true { searchableCount += 1 }
+                } else if case .added = outcome.ocr {
+                    // No `RowVersions` entry means the compress leg never recorded one at all — a
+                    // rescue or a verb-off OCR-only delivery (`ingestCompletedJobs`'s
+                    // `case .skipped, nil: continue`). Such a row can NEVER re-arm
+                    // (`recompressState`'s `case nil, .skipped: return .none`), so unlike a
+                    // compressed row's, `job.state`'s outcome can never go stale for it — the store
+                    // has nothing to say, so the outcome IS the truth here.
+                    searchableCount += 1
+                }
+            case .queued, .analysing, .running:
+                break
+            }
+        }
+        // A cancelled run with nothing banked leaves no trace (spec §6.9) — the strip and sheet
+        // must not show an entry for work that never delivered anything.
+        guard !runCancelled || banked else { return }
+        // `runIDs` lists this run's queued rows before its armed ones, and `runQueuedIDs` is
+        // non-empty (guarded above), so its first member here is always a genuinely queued row.
+        guard let firstID = runIDs.first(where: { runQueuedIDs.contains($0) }),
+              let representative = jobsByID[firstID] else { return }
+        // `settings.folder` is the locked save destination; nil resolves the same way
+        // `FileNaming.output` resolves a nil folder — beside the first file's own input.
+        let folderURL = settings.folder ?? representative.url.deletingLastPathComponent()
+        history.record(HistoryBatch(
+            folderName: folderURL.lastPathComponent, folderURL: folderURL,
+            fileCount: batchRowIDs.count,
+            presetTitle: settings.compressOn ? settings.preset.title : nil,
+            compressOn: settings.compressOn, ocrOn: settings.ocrOn,
+            savedBytes: savedBytes, searchableCount: searchableCount,
+            partial: partial, problem: problem, cancelled: runCancelled))
     }
 
     /// Recompute the published `batchProgress`. Called at the end of every `publishJobs()`; the
@@ -1264,6 +1342,10 @@ final class QueueViewModel: ObservableObject {
             // `runRecompressPhase` opens with the `runCancelled` guard, which is what makes a
             // cancel landing during phase 1 stop the run here instead of starting phase 2.
             await runRecompressPhase(plans, engine: engine)
+            // Read `lockedRun`/`runQueuedIDs` for the history entry BEFORE the resets below clear
+            // them (spec §6.9) — this is the batch's one true "end", reached whether it ran to
+            // completion or was cut short by `cancel()`.
+            recordBatchHistory()
             // The batch is over: its in-flight runner-up FILES are settled (every committed one is
             // now owned by `versionStore`), so nothing here is `cancel`'s to discard any more. The
             // ledger itself is untouched — reservations are queue-lifetime and outlive the run

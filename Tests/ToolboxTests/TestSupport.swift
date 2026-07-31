@@ -351,6 +351,8 @@ struct HeavyEnv {
     let stub: StubCompressEngine
     let input: URL
     let storeRoot: URL
+    let historyRoot: URL
+    let history: HistoryStore
 
     /// `defaults` is passed by the tests that touch a persisted preference, which MUST drive their
     /// own suite: a bundle that ever wrote one of these keys into `.standard` would leak the state
@@ -366,6 +368,10 @@ struct HeavyEnv {
         let outputFolder = tmp.appendingPathComponent("out", isDirectory: true)
         try FileManager.default.createDirectory(at: outputFolder,
                                                 withIntermediateDirectories: true)
+        // Hermetic, like `storeRoot` beside it: every test gets its own `history.json`, never the
+        // developer's real one.
+        historyRoot = tmp.appendingPathComponent("history", isDirectory: true)
+        history = HistoryStore(directory: historyRoot)
 
         input = try Fixtures.imagePDF()
         stub = StubCompressEngine(outcome: .compressedHeavy(before: before,
@@ -384,6 +390,7 @@ struct HeavyEnv {
         model = QueueViewModel(engine: stub, ocrEngine: ocrEngine ?? OCREngine(),
                                estimator: estimator,
                                store: RunnerUpStore(rootOverride: storeRoot),
+                               history: history,
                                defaults: defaults)
         model.outputFolder = outputFolder
     }

@@ -385,6 +385,15 @@ final class QueuePassTests: XCTestCase {
             return XCTFail("a compress failure with no OCR leg fails the row")
         }
         XCTAssertEqual(message, "Couldn't be compressed")
+
+        // A problem batch still records — spec §6.9's "history/problem rows remain the frequency
+        // signal for systemic gs failures" — with `problem` true and no savings claim, distinct
+        // from a recompress-only pass's zero-savings silence (that one has no `problem`/`partial`
+        // fact to report at all, which is what makes it uninteresting; this one does).
+        let recorded = try XCTUnwrap(env.history.batches.first)
+        XCTAssertTrue(recorded.problem)
+        XCTAssertFalse(recorded.partial, "a failed row is not degraded — it is a problem")
+        XCTAssertEqual(recorded.savedBytes, 0)
     }
 
     // MARK: the noGain + OCR sibling (spec §6.5)
@@ -1396,5 +1405,164 @@ final class QueuePassTests: XCTestCase {
         XCTAssertNil(row.searchableByCard[.runnerUp])
         XCTAssertEqual(row.searchableByCard[.previous], true,
                        "the demoted file's own claim is still true of it")
+    }
+
+    // MARK: recent-batches history (spec §6.9, F6)
+
+    /// A plain single-row batch records one history entry with the batch's own facts.
+    func testBatchEndRecordsHistory() async throws {
+        let env = try HeavyEnv()                        // compress only, no OCR verb
+        let model = env.model
+        _ = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertEqual(env.history.batches.count, 1)
+        let recorded = try XCTUnwrap(env.history.batches.first)
+        XCTAssertEqual(recorded.fileCount, 1)
+        XCTAssertTrue(recorded.compressOn)
+        XCTAssertFalse(recorded.ocrOn)
+        XCTAssertEqual(recorded.presetTitle, CompressPreset.balanced.title)
+        XCTAssertEqual(recorded.savedBytes, 9_000 - HeavyEnv.heavyBytes)
+        XCTAssertEqual(recorded.searchableCount, 0, "no OCR leg ran")
+        XCTAssertFalse(recorded.partial)
+        XCTAssertFalse(recorded.problem)
+        XCTAssertFalse(recorded.cancelled)
+        XCTAssertEqual(env.history.lifetimeSavedBytes, recorded.savedBytes)
+    }
+
+    /// A row whose OCR append grows the delivered file past the original (`RowOutcome.grew`,
+    /// spec §6.3) contributes ZERO to the batch's `savedBytes` — never a negative number, which
+    /// would drag `lifetimeSavedBytes` — a persisted, monotonic "saved since you installed
+    /// Toolbox" counter — DOWN.
+    func testGrownRowContributesZeroNeverNegativeToSavedBytes() async throws {
+        let (env, ocr) = try env(added)
+        ocr.growthBytes = 500
+        env.stub.script = { _, _ in
+            .init(outcome: .compressed(before: 9_000, after: 8_990), shippedBytes: 8_990,
+                 runnerUpBytes: nil)
+        }
+        let model = env.model
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertTrue(try XCTUnwrap(outcome(model, id)).grew, "the append pushed it past the original")
+        let recorded = try XCTUnwrap(env.history.batches.first)
+        XCTAssertEqual(recorded.savedBytes, 0, "a grown row must never contribute a negative saving")
+        XCTAssertEqual(env.history.lifetimeSavedBytes, 0, "the lifetime counter must never go negative")
+    }
+
+    /// Cancelled between the legs (as `testCancelBetweenLegsBanksCompressed`): the compress
+    /// delivery is atomic and complete, so it is kept and banked — the batch must still be
+    /// recorded, `cancelled` and degraded-so-`partial` both true.
+    func testCancelledBatchWithBankedFileRecordsEntry() async throws {
+        let (env, ocr) = try env(added)
+        let gate = Gate()
+        env.stub.gate = gate
+        let model = env.model
+        _ = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
+        model.cancel()
+        await gate.open()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+        XCTAssertEqual(ocr.recogniseCallCount, 0)
+
+        XCTAssertEqual(env.history.batches.count, 1)
+        let recorded = try XCTUnwrap(env.history.batches.first)
+        XCTAssertTrue(recorded.cancelled)
+        XCTAssertTrue(recorded.partial, "the banked row is degraded — cancelled before reading")
+        XCTAssertFalse(recorded.problem)
+        XCTAssertEqual(recorded.savedBytes, 9_000 - HeavyEnv.heavyBytes,
+                       "the compress delivery completed before the cancel landed")
+    }
+
+    /// The same boundary on a row that delivered NOTHING (as
+    /// `testCancelBetweenLegsRequeuesARowThatDeliveredNothing`): the row goes back to `.queued`,
+    /// nothing was ever banked, and a cancelled batch with nothing banked records no entry at all.
+    func testCancelledEmptyBatchRecordsNothing() async throws {
+        let (env, _) = try env(added)
+        let gate = Gate()
+        env.stub.gate = gate
+        env.stub.script = { _, _ in
+            .init(outcome: .noGain(bytes: 9_000), shippedBytes: nil, runnerUpBytes: nil)
+        }
+        let model = env.model
+        _ = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
+        model.cancel()
+        await gate.open()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertTrue(env.history.batches.isEmpty)
+        XCTAssertEqual(env.history.lifetimeSavedBytes, 0)
+    }
+
+    /// A rescued row and a noGain+OCR sibling row both deliver `<name>-ocr.pdf` with no
+    /// compression artefact behind it — neither contributes to `savedBytes`, and both count
+    /// through `searchableCount` (spec §6.5's exclusions, §6.9's "one made searchable"). Run as
+    /// two sequential single-row batches on the same env — a rescued row never re-arms
+    /// (`recompressState`'s `case nil, .skipped: return .none`), so it cannot interfere with the
+    /// second batch's own `runQueuedIDs`.
+    func testOCROnlyAndRescuedRowsExcludedFromSavedBytes() async throws {
+        let (env, _) = try env(added)
+        let model = env.model
+
+        // Batch 1 — the compress-failure rescue.
+        env.stub.throwOnCall = 1
+        env.stub.errorToThrow = CompressError.ghostscriptFailed("gs died")
+        _ = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        // Batch 2 — the noGain + OCR sibling.
+        env.stub.throwOnCall = nil
+        env.stub.script = { _, _ in
+            .init(outcome: .noGain(bytes: 9_000), shippedBytes: nil, runnerUpBytes: nil)
+        }
+        _ = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertEqual(env.history.batches.count, 2)
+        for recorded in env.history.batches {
+            XCTAssertEqual(recorded.savedBytes, 0, "an OCR-only delivery makes no savings claim")
+            XCTAssertEqual(recorded.searchableCount, 1, "made searchable, whatever else happened")
+        }
+        XCTAssertEqual(env.history.lifetimeSavedBytes, 0)
+    }
+
+    /// A Change-Quality re-run (all rows armed, none freshly queued) must not record a second
+    /// history entry for bytes the first batch already counted — `runQueuedIDs` being empty is
+    /// what excludes it (`recordBatchHistory`'s own guard), never a special case here.
+    func testRecompressOnlyBatchDoesNotDoubleCountIntoHistory() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+        XCTAssertEqual(env.history.batches.count, 1)
+        let firstSaving = try XCTUnwrap(env.history.batches.first).savedBytes
+        XCTAssertEqual(env.history.lifetimeSavedBytes, firstSaving)
+
+        // Recompress the same row at a different preset — an armed-only pass.
+        model.preset = .smallestSize
+        try await waitUntil(timeout: 5) {
+            guard let row = model.jobs.first(where: { $0.id == id }) else { return false }
+            return model.recompressState(for: row) != .none
+        }
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertEqual(env.history.batches.count, 1, "a pure recompress records no new entry")
+        XCTAssertEqual(env.history.lifetimeSavedBytes, firstSaving,
+                       "the recompress's saving must not be added on top of the first batch's")
     }
 }
