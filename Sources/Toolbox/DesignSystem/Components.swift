@@ -16,6 +16,61 @@ import SwiftUI
 /// `Queue/*`) and the app chrome (`App/*`) — the per-tool `CompressView`/`OCRView`/`SidebarView`
 /// this comment once named were retired at I1b in favour of the single-window queue (`QueueView`).
 
+// MARK: - MotionButtonStyle
+
+/// The app's one press/hover motion, used in place of `.buttonStyle(.plain)` on every button in
+/// the design system (DESIGN.md §8, DECISIONS 2026-08-01): press scales to `Theme.Motion.pressScale`
+/// and, on the controls that ask for it, hover lifts 1pt and fades to `hoverOpacity`. Rendering is
+/// otherwise `.plain`'s — the style draws no chrome of its own, so each component keeps its own
+/// fill, ring and shadow.
+///
+/// **A component styled with this must draw its chrome INSIDE its `Button` label**, not on the
+/// `Button` from outside: a `ButtonStyle` can only reach `configuration.label`, so background
+/// applied outside would stay stubbornly still while the text alone shrank.
+///
+/// Hover/enabled state and the Reduce Motion gate live in a nested `View`, deliberately: a
+/// `ButtonStyle` is not a `View`, so `@Environment` read directly in `makeBody` is not reliably
+/// populated or updated — and the one thing that must never silently fail here is Reduce Motion.
+struct MotionButtonStyle: ButtonStyle {
+    /// Filled call-to-action behaviour — the handoff's `translateY(-1px)` hover rise. Off for
+    /// every other control: rows, cards and secondary buttons hover by changing fill, not by
+    /// moving.
+    var lifts: Bool = false
+    /// Opacity while hovered or pressed. `1` (no fade) for controls whose hover is a fill change;
+    /// `Theme.Motion.hoverOpacity` for filled CTAs, `Theme.Motion.linkHoverOpacity` for links.
+    var hoverOpacity: Double = 1
+
+    func makeBody(configuration: Configuration) -> some View {
+        PressBody(configuration: configuration, lifts: lifts, hoverOpacity: hoverOpacity)
+    }
+
+    private struct PressBody: View {
+        let configuration: ButtonStyleConfiguration
+        let lifts: Bool
+        let hoverOpacity: Double
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        /// A disabled control must not react to the pointer at all — its own component draws the
+        /// disabled treatment.
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .scaleEffect(Theme.Motion.scale(isPressed: isPressed, reduceMotion: reduceMotion))
+                .offset(y: lifts ? Theme.Motion.lift(isHovering: isHovering && isEnabled,
+                                                     isPressed: isPressed,
+                                                     reduceMotion: reduceMotion) : 0)
+                .opacity(isEnabled && (isHovering || isPressed) ? hoverOpacity : 1)
+                .animation(Theme.Motion.pressCurve(reduceMotion: reduceMotion), value: isPressed)
+                .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
+                .onHover { isHovering = $0 }
+        }
+
+        private var isPressed: Bool { configuration.isPressed && isEnabled }
+    }
+}
+
 // MARK: - PrimaryButton
 
 /// The primary call-to-action. Filled with `Theme.Colors.accent`, white label, disabled/hover
@@ -31,8 +86,6 @@ struct PrimaryButton: View {
     var isEnabled: Bool = true
     let action: () -> Void
 
-    @State private var isHovering = false
-
     var body: some View {
         Button(action: action) {
             // 14/600 (F7 retoken): the handoff's "Choose Files…"/"Start" buttons — `.button`
@@ -42,30 +95,30 @@ struct PrimaryButton: View {
                 .foregroundStyle(.white)
                 .padding(.vertical, 10)
                 .padding(.horizontal, 22)
-                // `.plain` hit-tests only opaque content, so without an explicit shape the
-                // padding (and the background applied outside the Button) is dead to clicks.
+                // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §2's
+                // `accent` token is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) —
+                // the one system shadow is the card's. The gradient (with its raw #0A84FF
+                // literal) and the accent-tinted glow this replaces were an unrecorded
+                // divergence: DECISIONS.md holds no entry for either. Drawn inside the label so
+                // `MotionButtonStyle`'s press scale carries the pill, not just the text.
+                .background(
+                    Theme.Colors.accent,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                )
+                // A plain-rendering style hit-tests only opaque content, so without an explicit
+                // shape the padding is dead to clicks. Stays AFTER the padding.
                 .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
-        .buttonStyle(.plain)
+        // Hover: fade to `hoverOpacity` and rise 1pt; press: back to rest, scaled to .97
+        // (handoff `style-hover="opacity:.9;transform:translateY(-1px)"`,
+        // `style-active="transform:translateY(0) scale(.97)"`).
+        .buttonStyle(MotionButtonStyle(lifts: true, hoverOpacity: Theme.Motion.hoverOpacity))
         .clearsClickFocus()
-        // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §2's `accent`
-        // token is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) — the one
-        // system shadow is the card's. The gradient (with its raw #0A84FF literal) and the
-        // accent-tinted glow this replaces were an unrecorded divergence: DECISIONS.md holds no
-        // entry for either.
-        .background(
-            Theme.Colors.accent,
-            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-        )
-        .opacity(isEnabled ? (isHovering ? 0.9 : 1) : 0.4)
-        .onHover { isHovering = $0 }
+        .opacity(isEnabled ? 1 : 0.4)
         .disabled(!isEnabled)
         // Only offer the "clickable" cursor when the button can actually be pressed — a hand
         // over a disabled control promises something that will not happen.
         .modifier(HandCursorWhen(isEnabled: isEnabled))
-        // F7 retoken: the handoff's hover duration (`Theme.Motion.hover`), replacing the
-        // pre-redesign 0.1s literal.
-        .animation(.easeOut(duration: Theme.Motion.hover), value: isHovering)
     }
 }
 
@@ -101,7 +154,10 @@ struct LinkButton: View {
                 .foregroundStyle(Theme.Colors.link)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        // A link has no fill to hover, so it fades instead — the handoff's own treatment for
+        // these spans (`transition:opacity .15s`, `style-hover="opacity:.6"`). No lift: they sit
+        // in text runs, and a line of type that jumps on hover reads as a glitch.
+        .buttonStyle(MotionButtonStyle(hoverOpacity: Theme.Motion.linkHoverOpacity))
         .clearsClickFocus()
         .pointingHandCursor()
     }
