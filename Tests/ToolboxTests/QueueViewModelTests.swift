@@ -1235,6 +1235,55 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertTrue(model.isOriginalMissing(for: job))
     }
 
+    /// The third term of R16's path test. The calibration gate is the engine's own `wantsMRC`
+    /// conjunction — the row's `rebuildScan`, `.scanColour`, and a preset other than Maximum
+    /// quality — and the redesign ADDED the first of those (spec §7's per-file settings). The two
+    /// path tests above predate it and both move the PRESET term, so an implementation that read
+    /// the batch's rebuild decision, or none at all, would pass every one of them while quoting a
+    /// scan-rebuild's ratio to a row that has just been told not to rebuild — the over-promise the
+    /// calibration exists to remove.
+    func testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut() async throws {
+        // A large original for the reason `testPredictionUsesTheRawEstimateWhenTheEnginePathChanges`
+        // needs one: the "must beat the original" guard is checked LAST and would return nil for
+        // both legs, testing nothing. `timeBudget` is raised because this asserts on a real
+        // analysis — a fallback estimate arrives once and no waiting recovers it.
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour, timeBudget: 5)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.runToDone().id
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        // Positive control: rebuild on, `.scanColour`, Smallest Size, shipped MRC — all three terms
+        // agree, so the observed ratio is applied and the answer is NOT the raw estimate.
+        var job = try XCTUnwrap(model.jobs.first)
+        let rawBefore = try XCTUnwrap(model.analysis(for: job)?
+            .estimates[.smallestSize]?.predictedBytes)
+        let calibrated = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        XCTAssertNotEqual(calibrated, rawBefore,
+                          "precondition: with the rebuild on, this row calibrates")
+
+        // The row opts out. That re-prices the analysis onto the gs-only path (spec §6.7), so the
+        // raw figure the prediction must now equal is a NEW number — read it after the re-price
+        // lands, or this compares against the rebuild's own estimate.
+        let displayed = try XCTUnwrap(model.jobs.first?.estimate?.predictedBytes)
+        model.setOverride(RowOverride(rebuildScan: false), for: id)
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate?.predictedBytes != displayed }
+
+        job = try XCTUnwrap(model.jobs.first)
+        let raw = try XCTUnwrap(model.analysis(for: job)?.estimates[.smallestSize]?.predictedBytes)
+        XCTAssertEqual(model.recompressPrediction(for: job, at: .smallestSize), raw,
+                       "an MRC-shipped row whose rebuild is off changes path — the ratio learned "
+                       + "on the rebuild does not transfer, so the raw estimate stands")
+
+        // Named negative control: the figure an implementation blind to the override would give.
+        // Associated exactly as the implementation associates it, and three orders of magnitude
+        // away from the right answer, so this test can never pass by accident.
+        let baseline = try XCTUnwrap(model.analysis(for: job)?.estimates[.balanced]?.predictedBytes)
+        XCTAssertNotEqual(model.recompressPrediction(for: job, at: .smallestSize),
+                          Int((Double(HeavyEnv.heavyBytes) / Double(baseline)) * Double(raw)),
+                          "quoting the rebuild's own ratio here is the defect this pins")
+    }
+
     // MARK: recompress commit protocol (R10–R13)
 
     /// The happy path: the fresh result takes the row's existing output path, the version it
