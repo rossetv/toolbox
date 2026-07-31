@@ -48,8 +48,11 @@ struct EmptyStateView: View {
             .onContinuousHover { phase in
                 guard !reduceMotion else { return }
                 switch phase {
-                case .active(let location): hoverLocation = location
-                case .ended: hoverLocation = nil
+                case .active(let location):
+                    // ~90ms follow (spec §8) — near-immediate, not the exit-only settle spring.
+                    withAnimation(.easeOut(duration: 0.09)) { hoverLocation = location }
+                case .ended:
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { hoverLocation = nil }
                 }
             }
 
@@ -76,7 +79,6 @@ struct EmptyStateView: View {
                 .scaleEffect(hoverLocation != nil && !reduceMotion ? 1.05 : 1)
                 .offset(x: tilt.x * 0.6, y: tilt.y * 0.6)
                 .shadow(color: .black.opacity(0.18), radius: 14, x: 0, y: 8)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.5), value: hoverLocation == nil)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
         .frame(width: 76, height: 76)
