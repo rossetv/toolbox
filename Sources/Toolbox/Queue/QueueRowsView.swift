@@ -395,7 +395,7 @@ struct QueueRowsView: View {
             // Spec §6.3's specified divergence: the design has no "grew" state.
             meta = "Searchable now · grew slightly"
         } else {
-            let percent = percentSmaller(before: sizes.before, after: sizes.after)
+            let percent = ScanConsentSheet.percentText(bytes: sizes.after, originalBytes: sizes.before)
             if isSearchable {
                 // The STORE's shipped variant, never `outcome.shippedVariant`:
                 // a change-quality re-run overwrites the store's card but leaves `outcome` as the
@@ -476,12 +476,6 @@ struct QueueRowsView: View {
         return RowDescriptor(meta: meta, emphasis: .degraded,
                              trailing: .status(text: sizeText, kind: .warn),
                              canOpen: true, capsuleTitle: capsuleTitle(model.versions(for: job)))
-    }
-
-    private static func percentSmaller(before: Int, after: Int) -> String {
-        guard before > 0 else { return "0% smaller" }
-        let percent = Int(((Double(before - after) / Double(before)) * 100).rounded())
-        return "\(percent)% smaller"
     }
 
     /// The versions capsule renders only when a parked version exists (component doc comment).
