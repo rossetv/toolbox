@@ -34,9 +34,10 @@ struct PrimaryButton: View {
 
     var body: some View {
         Button(action: action) {
+            // 14/600 (F7 retoken): the handoff's "Choose Files…"/"Start" buttons — `.button`
+            // (17/regular) predates the redesign and is a different, larger role.
             Text(title)
-                .themeFont(.button)
-                .fontWeight(.medium)
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
                 .padding(.vertical, 10)
                 .padding(.horizontal, 22)
@@ -61,7 +62,9 @@ struct PrimaryButton: View {
         // Only offer the "clickable" cursor when the button can actually be pressed — a hand
         // over a disabled control promises something that will not happen.
         .modifier(HandCursorWhen(isEnabled: isEnabled))
-        .animation(.easeOut(duration: 0.1), value: isHovering)
+        // F7 retoken: the handoff's hover duration (`Theme.Motion.hover`), replacing the
+        // pre-redesign 0.1s literal.
+        .animation(.easeOut(duration: Theme.Motion.hover), value: isHovering)
     }
 }
 
