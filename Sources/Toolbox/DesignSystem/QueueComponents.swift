@@ -233,10 +233,6 @@ struct CapsuleProgressBar: View {
     let fraction: Double
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var sweepX: CGFloat = -0.3
-    @State private var capGlowOpacity: Double = 0.35
-
-    private static let capWidth: CGFloat = 30
 
     var body: some View {
         GeometryReader { geo in
@@ -250,29 +246,12 @@ struct CapsuleProgressBar: View {
                     ))
                     .frame(width: width)
                 if !reduceMotion {
-                    Capsule()
-                        .fill(LinearGradient(
-                            colors: [.clear, Color.white.opacity(0.85)],
-                            startPoint: .leading, endPoint: .trailing
-                        ))
-                        .opacity(capGlowOpacity)
-                        .frame(width: min(width, Self.capWidth))
-                        .offset(x: width - min(width, Self.capWidth))
-                        .onAppear {
-                            // Autoreverse doubles the duration, so use half for a 1.6s full cycle.
-                            withAnimation(.easeInOut(duration: Theme.Motion.capGlow / 2).repeatForever(autoreverses: true)) {
-                                capGlowOpacity = 0.95
-                            }
-                        }
-                    Capsule()
-                        .fill(Color.white.opacity(0.4))
-                        .frame(width: geo.size.width * 0.26)
-                        .offset(x: sweepX * geo.size.width)
-                        .frame(width: width, alignment: .leading)
-                        .clipShape(Capsule())
-                        .onAppear {
-                            withAnimation(.linear(duration: 1.9).repeatForever(autoreverses: false)) { sweepX = 1.3 }
-                        }
+                    // A separate view, not inline state on the parent: the glow/sweep only exist
+                    // in the tree while motion is on, so this child's own `onAppear` fires exactly
+                    // when Reduce Motion toggles off (mirrors `QueueRowShimmer`) — inline `@State`
+                    // here would survive a Reduce Motion round-trip already at its end value, so
+                    // the re-inserted `onAppear` would set the SAME value and animate nothing.
+                    CapsuleGlowAndSweep(width: width, totalWidth: geo.size.width)
                 }
             }
         }
@@ -281,6 +260,44 @@ struct CapsuleProgressBar: View {
         .accessibilityElement()
         .accessibilityLabel("Progress")
         .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
+    }
+}
+
+/// The leading-cap glow pulse and the light sweep crossing the filled portion — see
+/// `CapsuleProgressBar`'s own comment for why these own their `@State` rather than the parent.
+private struct CapsuleGlowAndSweep: View {
+    let width: CGFloat
+    let totalWidth: CGFloat
+
+    @State private var sweepX: CGFloat = -0.3
+    @State private var capGlowOpacity: Double = 0.35
+
+    private static let capWidth: CGFloat = 30
+
+    var body: some View {
+        Group {
+            Capsule()
+                .fill(LinearGradient(
+                    colors: [.clear, Color.white.opacity(0.85)],
+                    startPoint: .leading, endPoint: .trailing
+                ))
+                .opacity(capGlowOpacity)
+                .frame(width: min(width, Self.capWidth))
+                .offset(x: width - min(width, Self.capWidth))
+            Capsule()
+                .fill(Color.white.opacity(0.4))
+                .frame(width: totalWidth * 0.26)
+                .offset(x: sweepX * totalWidth)
+                .frame(width: width, alignment: .leading)
+                .clipShape(Capsule())
+        }
+        .onAppear {
+            // Autoreverse doubles the duration, so use half for a 1.6s full cycle.
+            withAnimation(.easeInOut(duration: Theme.Motion.capGlow / 2).repeatForever(autoreverses: true)) {
+                capGlowOpacity = 0.95
+            }
+            withAnimation(.linear(duration: 1.9).repeatForever(autoreverses: false)) { sweepX = 1.3 }
+        }
     }
 }
 
