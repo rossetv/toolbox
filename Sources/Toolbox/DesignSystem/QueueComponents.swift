@@ -360,7 +360,7 @@ struct CapsuleProgressBar: View {
             }
         }
         .frame(height: 6)
-        .animation(reduceMotion ? nil : .linear(duration: 0.2), value: fraction)
+        .animation(.linear(duration: 0.2), value: fraction)
         .accessibilityElement()
         .accessibilityLabel("Progress")
         .accessibilityValue("\(Int((fraction * 100).rounded())) percent")
