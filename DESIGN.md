@@ -587,6 +587,14 @@ A divergence is recorded here or it does not exist (`CODE_GUIDELINES.md` §8.4).
     same Skip/Remove affordances as any other problem row);
   - the switch re-run's no-such-version line: "That version is no longer available —
     kept your {preset} version." (composed from strings already in this register).
+- **Problems footer (§9 screen 10) gains a secondary Start** when `canStart` is true —
+  the handoff depicts only "Files that failed were not touched at all." + `PrimaryButton`
+  "Add More". Authority: review-team r4 adjudication, ladder key
+  `QueueView.screenState` tier-3, commit 5cfb1f4. Rationale: spec §7's "the batch keeps
+  going" — a clean pending row added from the Problems screen (via Add More) must stay
+  startable without first resolving the unrelated failure; Add More stays the one filled
+  `PrimaryButton`, Start joins as a `SecondaryButton` so screen 10 keeps its single accent
+  CTA. With nothing runnable the footer renders exactly as the handoff depicts.
 
 **Reported, not resolved** (found while writing this document; for whoever owns the
 named surface next):

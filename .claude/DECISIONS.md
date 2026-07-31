@@ -748,3 +748,23 @@ four the natural, no-longer-deferred behaviour rather than new speculative scope
 
 **Spec:** .claude/specs/20260730-ui-redesign.md (§7 Drag-over, with pinned exception recorded)
 **Affects:** Sources/Toolbox/Queue/QueueView.swift (`shouldAcceptDrop`)
+
+## 2026-07-31 — Problems footer offers a secondary Start when clean work remains
+
+**Decision:** Commit 5cfb1f4 adds a `SecondaryButton` Start to the Problems screen's
+footer (`QueueFooterView.showsStart(state:canStart:)`), rendered only when
+`model.canStart` is true, alongside the existing `PrimaryButton` "Add More". DESIGN.md
+§9 screen 10 depicts only "Files that failed were not touched at all." + "Add More";
+this is a recorded divergence from that depiction (DESIGN.md §11), not a silent one.
+
+**Why:** Spec §7's "the batch keeps going": a clean pending row added to a batch that
+still carries an unresolved failure (`QueueView.screenState` keeps the screen on
+`.problems` by design, test-pinned) must stay startable without first resolving the
+unrelated failure. Adjudicated at ladder key `QueueView.screenState` tier-3 (review-team
+r4) after the sonnet-tier fixes left the composite state — problems and runnable rows
+together — with no control on screen that calls `compress()`. Add More remains the
+screen's one filled `PrimaryButton`; Start joins as a `SecondaryButton` so the screen
+keeps its single accent CTA.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 "the batch keeps going")
+**Affects:** Sources/Toolbox/Queue/QueueFooterView.swift (`showsStart`), DESIGN.md (§11)

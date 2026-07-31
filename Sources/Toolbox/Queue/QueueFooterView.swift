@@ -95,8 +95,9 @@ struct QueueFooterView: View {
     /// Additive, never a re-styling: with nothing runnable this renders exactly DESIGN.md §10's
     /// footer ("Files that failed were not touched at all." + `PrimaryButton` "Add More"). The
     /// composite state — problems AND runnable rows — only exists because §7's Add More creates
-    /// it, and the design depicts the pure screen; Start joins as the SecondaryButton so screen
-    /// 10 keeps its one filled CTA where the design put it.
+    /// it; the handoff has no depiction of it, so this is a recorded divergence (DESIGN.md §11,
+    /// "Problems footer... gains a secondary Start"; DECISIONS 2026-07-31), not a design-sanctioned
+    /// one — Start joins as the SecondaryButton so screen 10 keeps its one filled CTA.
     static func showsStart(state: QueueScreenState, canStart: Bool) -> Bool {
         switch state {
         case .ready: return true
