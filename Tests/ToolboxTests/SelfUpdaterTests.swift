@@ -414,6 +414,28 @@ final class SelfUpdaterTests: XCTestCase {
     }
 
     @MainActor
+    func testOversizedDMGResponseFailsWithoutMaterialisingIt() async throws {
+        // Sibling of the checksum-fetch cap above: the DMG fetch's redirect host is equally
+        // unconstrained (spec §6.10), so a declared length past the bound must be rejected
+        // before the body is spooled to disk. `declaredContentLength` lets the fixture claim an
+        // oversized body without actually sending 200MB+ of bytes.
+        let bundle = try makeInstalledApp()
+        let server = try startDMGServer()
+        server.route("/Toolbox.dmg", .init(status: 200, body: Data(repeating: 0x61, count: 1024),
+                                            declaredContentLength: 200_000_001))
+        let updater = makeUpdater(bundle: bundle, relaunches: RelaunchLog())
+
+        await updater.update(release: release(dmgURL: server.url("/Toolbox.dmg")))
+
+        guard case .failed(_, let asidePath) = updater.phase else {
+            return XCTFail("expected a failure, got \(updater.phase)")
+        }
+        XCTAssertNil(asidePath)
+        XCTAssertEqual(SelfUpdater.bundleVersion(of: bundle), Self.installedVersion)
+        XCTAssertEqual(try contents(of: bundle.deletingLastPathComponent()), ["Toolbox.app"])
+    }
+
+    @MainActor
     func testMissingChecksumFileFails() async throws {
         let bundle = try makeInstalledApp()
         let server = try startDMGServer()
@@ -815,6 +837,10 @@ final class FixtureHTTPServer {
         var status: Int
         var headers: [String: String] = [:]
         var body: Data = Data()
+        /// Overrides the `Content-Length` header sent to the client without changing how many
+        /// bytes are actually written — lets a test declare an oversized body cheaply, without
+        /// materialising it, to exercise a length-based rejection.
+        var declaredContentLength: Int?
     }
 
     private let listener: NWListener
@@ -886,7 +912,7 @@ final class FixtureHTTPServer {
 
         let response = route ?? Route(status: 404)
         var header = "HTTP/1.1 \(response.status) \(response.status == 200 ? "OK" : "Found")\r\n"
-        header += "Content-Length: \(response.body.count)\r\n"
+        header += "Content-Length: \(response.declaredContentLength ?? response.body.count)\r\n"
         header += "Connection: close\r\n"
         for (name, value) in response.headers { header += "\(name): \(value)\r\n" }
         header += "\r\n"

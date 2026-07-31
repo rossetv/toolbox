@@ -199,15 +199,46 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         return request
     }
 
+    /// The real DMG is ~15 MB (bundled Ghostscript + app). This is a generous multiple of that,
+    /// never a real body size — the redirected host is deliberately unconstrained (see the type
+    /// doc), so nothing about the response is trusted before this bound is enforced, exactly as
+    /// `maxChecksumResponseBytes` does for the sibling fetch below.
+    private static let maxDMGBytes = 200_000_000
+
     private func download(_ url: URL, to destination: URL, session: URLSession) async throws {
         var request = URLRequest(url: url)
         request.timeoutInterval = 120
-        let (temporary, response) = try await session.download(for: request)
+        let (stream, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            try? FileManager.default.removeItem(at: temporary)
             throw URLError(.badServerResponse)
         }
-        try FileManager.default.moveItem(at: temporary, to: destination)
+        if http.expectedContentLength > Int64(Self.maxDMGBytes) {
+            throw URLError(.dataLengthExceedsMaximum)
+        }
+
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw URLError(.cannotCreateFile)
+        }
+        let handle = try FileHandle(forWritingTo: destination)
+        defer { try? handle.close() }
+
+        var received = 0
+        var buffer = Data()
+        buffer.reserveCapacity(1 << 16)
+        for try await byte in stream {
+            buffer.append(byte)
+            received += 1
+            if received > Self.maxDMGBytes {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+            if buffer.count >= (1 << 16) {
+                try handle.write(contentsOf: buffer)
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+        if !buffer.isEmpty {
+            try handle.write(contentsOf: buffer)
+        }
     }
 
     /// A `shasum -a 256` line is ~70 bytes (64 hex chars + separator + filename). This is a
