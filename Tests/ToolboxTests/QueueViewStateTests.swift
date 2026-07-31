@@ -377,6 +377,81 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(descriptor.emphasis, .degraded, "noGain+tooFaint must be marked degraded")
     }
 
+    // MARK: RowDescriptor.Trailing.sizeColumn coverage (25f29c9's own enum + hand-written ==)
+
+    /// A delivered (compressed) row's before/after pair: distinct `current`/`target` figures,
+    /// `kind: .finished`, `sameSize: false` — the arm every other `.sizeColumn` test in this file
+    /// deliberately avoids (they all key on the arrowless same-size treatment instead).
+    func testDeliveredRowRendersBeforeAfterPairWithFinishedKind() async throws {
+        let env = try HeavyEnv()
+        let job = try await env.runToDone()
+        let descriptor = QueueRowsView.describe(job: job, model: env.model, state: .finished)
+        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+            return XCTFail("expected .sizeColumn trailing for a delivered row, got \(descriptor.trailing)")
+        }
+        XCTAssertNotEqual(current, target, "a delivered row must show a before/after pair, not the same figure twice")
+        XCTAssertEqual(kind, .finished)
+        XCTAssertFalse(sameSize)
+        XCTAssertNil(targetColor)
+    }
+
+    /// A queued row on the Ready screen (nothing has run yet — spec §7, screen 03) renders its
+    /// input-size/estimate pair with `kind: nil` (no `StatusIndicator` glyph) — the "Next" queued
+    /// row on screen 05 is a different branch (`kind: .queued`, tested by
+    /// `testRunningRowIsMarkedActive`'s siblings) and must not be confused with this one.
+    func testQueuedReadyRowRendersEstimatePairWithNoKind() async throws {
+        let env = try HeavyEnv()
+        let jobID = try await env.addRow()
+        try await waitUntil(timeout: 5) {
+            env.model.jobs.first { $0.id == jobID }?.estimate != nil
+        }
+        let job = try XCTUnwrap(env.model.jobs.first { $0.id == jobID })
+        let descriptor = QueueRowsView.describe(job: job, model: env.model, state: .ready)
+        guard case .sizeColumn(let current, let target, let targetColor, let kind, let sameSize) = descriptor.trailing else {
+            return XCTFail("expected .sizeColumn trailing for a queued Ready row, got \(descriptor.trailing)")
+        }
+        XCTAssertFalse(current.isEmpty)
+        XCTAssertFalse(target.isEmpty)
+        XCTAssertNil(kind, "a queued Ready row shows no StatusIndicator glyph")
+        XCTAssertFalse(sameSize)
+        XCTAssertNil(targetColor)
+    }
+
+    /// The hand-written `Trailing.==` must distinguish every associated value — a mutation in
+    /// any single one (current, target, targetColor, kind, sameSize) must fail equality, never
+    /// pass by comparing only a subset.
+    func testSizeColumnEqualityDistinguishesEveryAssociatedValue() {
+        let base = QueueRowsView.RowDescriptor.Trailing.sizeColumn(
+            current: "1 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: false)
+
+        XCTAssertEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
+            current: "1 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: false),
+            "identical values must compare equal")
+
+        XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
+            current: "2 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: false),
+            "current alone must break equality")
+
+        XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
+            current: "1 MB", target: "600 KB", targetColor: nil, kind: .finished, sameSize: false),
+            "target alone must break equality")
+
+        XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
+            current: "1 MB", target: "500 KB", targetColor: Theme.Colors.danger, kind: .finished, sameSize: false),
+            "targetColor alone must break equality")
+
+        XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
+            current: "1 MB", target: "500 KB", targetColor: nil, kind: .unchanged, sameSize: false),
+            "kind alone must break equality")
+
+        XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.sizeColumn(
+            current: "1 MB", target: "500 KB", targetColor: nil, kind: .finished, sameSize: true),
+            "sameSize alone must break equality")
+
+        XCTAssertNotEqual(base, QueueRowsView.RowDescriptor.Trailing.status(text: "1 MB", kind: .finished),
+                          "a different case entirely must never compare equal")
+    }
+
     /// OCR-only row (Compress chip OFF, so compress=nil) with OCR outcome .tooFaint must render
     /// the honest sibling copy "Too faint to read — not searchable" (spec §6.5), never the lie
     /// "compressed, but not searchable" that applies only when compression actually ran.
