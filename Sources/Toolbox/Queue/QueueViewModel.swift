@@ -1110,7 +1110,11 @@ final class QueueViewModel: ObservableObject {
     /// Queued rows this batch could actually work on. A row whose inspection has not landed yet
     /// counts as healthy — the run-time `OpenGuard` pass is the second net, and refusing Start
     /// while a background inspection settles would make the button flicker.
-    private var healthyQueuedCount: Int {
+    ///
+    /// Internal, not private (mirrors `isUpdatingNow`): `startTitle`'s "Compress N" figure must
+    /// count the same rows `canStart`/`compress()` actually run, never `pendingCount` — which
+    /// includes an unresolved problem row (locked/missing/unreadable) that never joins the run.
+    var healthyQueuedCount: Int {
         jobs.filter { QueueRowPartition.classify(job: $0, inspections: inspections, skipped: skippedRows) == .cleanPending }.count
     }
 

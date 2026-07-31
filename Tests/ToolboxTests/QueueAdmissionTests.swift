@@ -607,4 +607,29 @@ final class QueueAdmissionTests: XCTestCase {
         model.releaseDelivery(for: id)
         XCTAssertNil(model.reservedDelivery(for: id))
     }
+
+    // MARK: startTitle's queued figure (the run's own partition, not pendingCount)
+
+    /// `startTitle`'s "Compress N · Recompress M" branch only shows its queued figure once
+    /// something is also armed — reached here via Add More onto a finished, re-selected-preset
+    /// batch. A locked row sits `.queued` (spec §6.6) alongside a clean one but never joins a run,
+    /// so the "Compress N" figure must count `healthyQueuedCount`, not `pendingCount` (which
+    /// counts the locked row too).
+    func testStartTitleCountsOnlyHealthyQueuedRowsNotEveryPendingRow() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        _ = try await env.runToDone()
+        model.preset = .smallestSize
+        XCTAssertEqual(model.armedCount, 1, "re-selecting the preset arms the finished row")
+
+        _ = try await addOne(env, try Fixtures.encryptedPDF())
+        try await waitUntil(timeout: 5) { model.inspections.values.contains { $0.problem == .locked } }
+        _ = try await addOne(env, try Fixtures.textImagePDF())
+
+        XCTAssertEqual(model.pendingCount, 2, "both new rows are still queued/analysing")
+        XCTAssertEqual(model.healthyQueuedCount, 1, "only the clean row can actually run")
+        XCTAssertEqual(QueueFooterView.startTitle(model: model), "Compress 1 · Recompress 1",
+                       "the caption must not promise the locked row will run")
+    }
 }

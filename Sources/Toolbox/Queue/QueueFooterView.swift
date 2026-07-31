@@ -154,7 +154,10 @@ struct QueueFooterView: View {
     /// short copy — a recorded divergence, since the handoff has no line for this state.
     static func startTitle(model: QueueViewModel) -> String {
         if model.isUpdatingNow { return "Updating\u{2026}" }
-        let queued = model.pendingCount, armed = model.armedCount
+        // `healthyQueuedCount`, never `pendingCount`: the latter counts every queued/analysing row,
+        // including an unresolved problem row (locked/missing/unreadable) that `compress()` never
+        // actually runs — this caption must count the same rows the run does.
+        let queued = model.healthyQueuedCount, armed = model.armedCount
         if queued > 0, armed > 0 { return "Compress \(queued) \u{00B7} Recompress \(armed)" }
         if armed > 0 { return "Recompress \(QueueByteFormat.count(armed, "PDF"))" }
         return "Start"
