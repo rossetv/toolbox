@@ -7,9 +7,15 @@
 
 import SwiftUI
 
-/// The About sheet, opened from the sidebar's info button: app icon, name, version,
-/// repository/licence links, maintainer and copyright. Reads its facts from the bundle
-/// (icon, version) so it can never drift from what actually shipped.
+/// The About sheet (handoff screen 11): app icon, name, version, links, copyright. Reads its
+/// version from the bundle so it can never drift from what actually shipped; the "macOS 14 or
+/// later" clause is static — it names this project's actual `project.yml` deployment target,
+/// not a fact the running bundle can report about itself.
+///
+/// `init()` stays no-arg: `SidebarView` still presents this exact construction via `.sheet(…)`
+/// until I1b deletes it, so the double chrome that produces (this view's own `SheetChrome` INSIDE
+/// the system sheet) is a known, temporary artefact of that legacy call site — the eventual
+/// unified-queue shell (I1a) presents it directly, without the system sheet wrapper.
 struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -18,79 +24,72 @@ struct AboutView: View {
     static let maintainerURL = URL(string: "mailto:toolbox@rosset.ie")!
 
     private var version: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
-        let build = info?["CFBundleVersion"] as? String ?? "?"
-        return "Version \(short) (\(build))"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        return "Version \(short) · macOS 14 or later"
     }
 
     var body: some View {
-        // Centre alignment throughout is a deliberate DESIGN.md §7 exception: this is the
-        // macOS About-panel idiom (the system's own About windows centre icon, name,
-        // version and copyright), not body copy.
-        VStack(spacing: Theme.Spacing.small) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 96, height: 96)
+        SheetChrome(width: 330, topOffset: 130) {
+            // Centre alignment throughout is a deliberate DESIGN.md §7 exception: this is the
+            // macOS About-panel idiom (the system's own About windows centre icon, name,
+            // version and copyright), not body copy.
+            VStack(spacing: Theme.Spacing.small) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 84, height: 84)
 
-            Text("Toolbox")
-                .themeFont(.cardTitle)
-                .foregroundStyle(Theme.Colors.text)
+                Text("Toolbox")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(Theme.Colors.text)
 
-            Text(version)
-                .themeFont(.caption)
-                .foregroundStyle(Theme.Colors.textSecondary)
-
-            Text("Free, private PDF tools for your Mac.")
-                .themeFont(.caption)
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.top, 2)
-
-            HStack(spacing: Theme.Spacing.medium) {
-                LinkButton(title: "GitHub") { NSWorkspace.shared.open(Self.repositoryURL) }
-                LinkButton(title: "Licence (AGPL-3.0)") { NSWorkspace.shared.open(Self.licenceURL) }
-            }
-            // The sheet hands keyboard focus to its first control, which drew a permanent
-            // focus ring around "GitHub". Links stay tabbable; only the ring is suppressed.
-            .focusEffectDisabled()
-            .padding(.top, Theme.Spacing.small)
-
-            VStack(spacing: 2) {
-                Text("Copyright © 2026 Vilmar Rosset")
-                    .themeFont(.micro)
+                Text(version)
+                    .font(.system(size: 12.5, weight: .regular))
                     .foregroundStyle(Theme.Colors.textTertiary)
-                Button {
-                    NSWorkspace.shared.open(Self.maintainerURL)
-                } label: {
-                    Text("toolbox@rosset.ie")
-                        .themeFont(.micro)
-                        .foregroundStyle(Theme.Colors.link)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .focusEffectDisabled()
-                .pointingHandCursor()
-            }
-            .multilineTextAlignment(.center)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, Theme.Spacing.small)
 
+                Text("Free PDF tools that never phone home.\nNo account, no subscription, no watermark.")
+                    .themeFont(.body13)
+                    .foregroundStyle(Theme.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 2)
+
+                HStack(spacing: Theme.Spacing.medium) {
+                    // Two link groups, each with its own `.focusEffectDisabled()` — preserved
+                    // from the incumbent shape (which split GitHub+Licence from the standalone
+                    // email link) rather than folded into one call: this off-net sheet gets no
+                    // `WindowSetup` clearing (memory: stray-focus-ring invariant), so every
+                    // focusable control here must independently refuse the ring AppKit would
+                    // otherwise auto-assign on open, in case a future edit ever separates them.
+                    HStack(spacing: Theme.Spacing.medium) {
+                        LinkButton(title: "Source Code") { NSWorkspace.shared.open(Self.repositoryURL) }
+                        LinkButton(title: "Licence") { NSWorkspace.shared.open(Self.licenceURL) }
+                    }
+                    .focusEffectDisabled()
+                    LinkButton(title: "Contact me") { NSWorkspace.shared.open(Self.maintainerURL) }
+                        .focusEffectDisabled()
+                }
+                .padding(.top, Theme.Spacing.small)
+
+                Text("© 2026 Vilmar Rosset · AGPL-3.0")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(Theme.Colors.textTertiary)
+                    .padding(.top, Theme.Spacing.small)
+            }
+            .padding(Theme.Spacing.large)
+            .padding(.top, Theme.Spacing.small)
         }
-        .padding(Theme.Spacing.large)
-        .padding(.top, Theme.Spacing.small)
-        .frame(width: 340)
-        .background(Theme.Colors.surface)
         .overlay(alignment: .topTrailing) {
             CloseButton { dismiss() }
-                .padding(10)
+                .padding(20)
         }
     }
 }
 
 /// The modal close affordance: a quiet circular ✕ that brightens on hover, per DESIGN.md's
-/// dark-modal close-button hover token. Esc closes too (`cancelAction`).
+/// dark-modal close-button hover token. Esc closes too (`cancelAction`). Its own
+/// `.focusEffectDisabled()` is the THIRD of this file's three (with the two link groups above)
+/// — this sheet gets no `WindowSetup` stray-focus clearing (memory: stray-focus-ring invariant),
+/// so every focusable control here independently refuses the ring AppKit auto-assigns on open.
 private struct CloseButton: View {
     let action: () -> Void
     @State private var isHovering = false
