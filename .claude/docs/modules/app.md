@@ -13,8 +13,8 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 ## Purpose
 
 The shell: app entry point, the single-pane `RootView` that mounts `QueueView`
-(`Sources/Toolbox/Queue/QueueView.swift` — undocumented in the KB; no module doc
-covers the Queue module yet), the window-minimum-size and stray-focus fix-ups,
+(`Sources/Toolbox/Queue/QueueView.swift` — see [Queue](queue.md)), the
+window-minimum-size and stray-focus fix-ups,
 the self-update pipeline (check → user-initiated download/verify/install/relaunch),
 and two headless self-test hooks (compress, update).
 
@@ -102,5 +102,5 @@ and two headless self-test hooks (compress, update).
 
 ## Related
 
-- Modules: [Compress](compress.md), [OCR](ocr.md), [Services](services.md)
+- Modules: [Queue](queue.md), [Compress](compress.md), [OCR](ocr.md), [Services](services.md)
 - Specs: `.claude/specs/20260722-pdf-toolbox-v1.md`
