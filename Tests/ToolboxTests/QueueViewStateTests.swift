@@ -565,7 +565,7 @@ final class QueueViewStateTests: XCTestCase {
             return XCTFail("expected .problem trailing with a Find it… affordance, got \(descriptor.trailing)")
         }
         XCTAssertEqual(primary?.title, "Find it…")
-        XCTAssertEqual(link.title, "Remove")
+        XCTAssertEqual(link?.title, "Remove")
     }
 
     /// Mid-run, `rebind` refuses (spec §7) so "Find it…" would be a silent no-op — the affordance
@@ -586,16 +586,87 @@ final class QueueViewStateTests: XCTestCase {
             return XCTFail("expected .problem trailing, got \(runningDescriptor.trailing)")
         }
         XCTAssertNil(runningPrimary, "Find it… must not appear mid-run since rebind refuses while isRunning")
-        XCTAssertEqual(runningLink.title, "Remove")
+        XCTAssertNil(runningLink, "Remove must not appear mid-run since remove(_:) refuses while isRunning")
 
         await gate.open()
         try await waitUntil(timeout: 15) { !env.model.isRunning }
 
         let doneDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .problems)
-        guard case .problem(let donePrimary, _) = doneDescriptor.trailing else {
+        guard case .problem(let donePrimary, let doneLink) = doneDescriptor.trailing else {
             return XCTFail("expected .problem trailing, got \(doneDescriptor.trailing)")
         }
         XCTAssertEqual(donePrimary?.title, "Find it…", "the affordance must return once the run ends")
+        XCTAssertEqual(doneLink?.title, "Remove", "Remove must return once the run ends")
+    }
+
+    /// Same rule as "Find it…" above, applied to Skip/Remove on a locked/unreadable problem row:
+    /// `setSkipped`/`remove(_:)` both refuse mid-run, so the buttons are absent for the run's
+    /// duration and reappear once it ends.
+    func testLockedFailureHidesSkipAndRemoveWhileRunningThenShowsThemAfter() async throws {
+        let env = try HeavyEnv()
+        let gate = Gate()
+        env.stub.gate = gate
+        _ = try await env.addRow()
+        env.model.compress()
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
+        XCTAssertTrue(env.model.isRunning)
+
+        var job = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        job.state = .failed(CompressError.encrypted.localizedDescription)
+        let runningDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .working)
+        guard case .problemPair(let runningSkip, let runningRemove) = runningDescriptor.trailing else {
+            return XCTFail("expected .problemPair trailing, got \(runningDescriptor.trailing)")
+        }
+        XCTAssertNil(runningSkip, "Skip must not appear mid-run since setSkipped refuses while isRunning")
+        XCTAssertNil(runningRemove, "Remove must not appear mid-run since remove(_:) refuses while isRunning")
+
+        await gate.open()
+        try await waitUntil(timeout: 15) { !env.model.isRunning }
+
+        let doneDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .problems)
+        guard case .problemPair(let doneSkip, let doneRemove) = doneDescriptor.trailing else {
+            return XCTFail("expected .problemPair trailing, got \(doneDescriptor.trailing)")
+        }
+        XCTAssertEqual(doneSkip?.title, "Skip", "Skip must return once the run ends")
+        XCTAssertEqual(doneRemove?.title, "Remove", "Remove must return once the run ends")
+    }
+
+    /// Same rule again, applied to Undo on an already-skipped problem row: `setSkipped(false, …)`
+    /// refuses mid-run, so the row is absent its Undo button for the run's duration.
+    func testSkippedRowHidesUndoWhileRunningThenShowsItAfter() async throws {
+        let env = try HeavyEnv()
+        let gate = Gate()
+        env.stub.gate = gate
+        // `skippedRows` is pruned to live job IDs (`publishJobs`'s own filter), so the marked row
+        // must be a real queued job, not a synthetic one — mark it BEFORE the run starts, since
+        // `setSkipped` refuses mid-run. A second, non-skipped row drives the actual run (a
+        // skipped row is excluded from arming, so it alone would never make `isRunning` true).
+        let jobID = try await env.addRow()
+        env.model.setSkipped(true, for: jobID)
+        _ = try await env.addRow()
+
+        env.model.compress()
+        try await waitUntil(timeout: 15) { env.stub.callCount == 1 }
+        XCTAssertTrue(env.model.isRunning)
+
+        guard var job = env.model.jobs.first(where: { $0.id == jobID }) else {
+            return XCTFail("expected the added row to still be present")
+        }
+        job.state = .failed(CompressError.encrypted.localizedDescription)
+        let runningDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .working)
+        guard case .skipped(let runningUndo) = runningDescriptor.trailing else {
+            return XCTFail("expected .skipped trailing, got \(runningDescriptor.trailing)")
+        }
+        XCTAssertNil(runningUndo, "Undo must not appear mid-run since setSkipped refuses while isRunning")
+
+        await gate.open()
+        try await waitUntil(timeout: 15) { !env.model.isRunning }
+
+        let doneDescriptor = QueueRowsView.describe(job: job, model: env.model, state: .problems)
+        guard case .skipped(let doneUndo) = doneDescriptor.trailing else {
+            return XCTFail("expected .skipped trailing, got \(doneDescriptor.trailing)")
+        }
+        XCTAssertEqual(doneUndo?.title, "Undo", "Undo must return once the run ends")
     }
 
     /// A run-time locked failure gets the same "Needs a password to open" copy and danger tint as
@@ -610,8 +681,8 @@ final class QueueViewStateTests: XCTestCase {
         guard case .problemPair(let first, let second) = descriptor.trailing else {
             return XCTFail("expected .problemPair (Skip/Remove), got \(descriptor.trailing)")
         }
-        XCTAssertEqual(first.title, "Skip")
-        XCTAssertEqual(second.title, "Remove")
+        XCTAssertEqual(first?.title, "Skip")
+        XCTAssertEqual(second?.title, "Remove")
     }
 
     /// A genuine run-time-only failure (no add-time equivalent) keeps its own engine message and

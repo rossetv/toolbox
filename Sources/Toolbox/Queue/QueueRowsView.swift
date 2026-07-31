@@ -130,17 +130,25 @@ struct QueueRowsView: View {
                 if let primary {
                     SecondaryButton(title: primary.title, action: primary.action)
                 }
-                LinkButton(title: link.title, action: link.action)
+                if let link {
+                    LinkButton(title: link.title, action: link.action)
+                }
             })
         case .problemPair(let first, let second):
             return AnyView(HStack(spacing: 10) {
-                LinkButton(title: first.title, action: first.action)
-                LinkButton(title: second.title, action: second.action)
+                if let first {
+                    LinkButton(title: first.title, action: first.action)
+                }
+                if let second {
+                    LinkButton(title: second.title, action: second.action)
+                }
             })
         case .skipped(let onUndo):
             return AnyView(HStack(spacing: 10) {
                 Text("Skipped").themeFont(.meta).foregroundStyle(Theme.Colors.textTertiary)
-                LinkButton(title: onUndo.title, action: onUndo.action)
+                if let onUndo {
+                    LinkButton(title: onUndo.title, action: onUndo.action)
+                }
             })
         }
     }
@@ -153,9 +161,9 @@ struct QueueRowsView: View {
         enum Trailing: Equatable {
             case sizeColumn(current: String, target: String, targetColor: Color?, kind: StatusIndicator.Kind? = nil, sameSize: Bool = false)
             case status(text: String?, kind: StatusIndicator.Kind)
-            case problem(primary: RowAction?, link: RowAction)
-            case problemPair(RowAction, RowAction)
-            case skipped(onUndo: RowAction)
+            case problem(primary: RowAction?, link: RowAction?)
+            case problemPair(RowAction?, RowAction?)
+            case skipped(onUndo: RowAction?)
 
             static func == (lhs: Trailing, rhs: Trailing) -> Bool {
                 switch (lhs, rhs) {
@@ -164,11 +172,11 @@ struct QueueRowsView: View {
                 case (.status(let a, let b), .status(let c, let d)):
                     return a == c && b == d
                 case (.problem(let a, let b), .problem(let c, let d)):
-                    return a?.title == c?.title && b.title == d.title
+                    return a?.title == c?.title && b?.title == d?.title
                 case (.problemPair(let a, let b), .problemPair(let c, let d)):
-                    return a.title == c.title && b.title == d.title
+                    return a?.title == c?.title && b?.title == d?.title
                 case (.skipped(let a), .skipped(let b)):
-                    return a.title == b.title
+                    return a?.title == b?.title
                 default:
                     return false
                 }
@@ -281,10 +289,16 @@ struct QueueRowsView: View {
     /// alone gets `.problemWarn` + "Find it…".
     private static func describeProblem(job: ToolJob, model: QueueViewModel,
                                         problem: RowProblem, meta: String) -> RowDescriptor {
-        let skip = RowDescriptor.RowAction(title: "Skip", action: { model.setSkipped(true, for: job.id) })
-        let remove = RowDescriptor.RowAction(title: "Remove", action: { model.remove(job) })
+        // Skip/Remove/Undo all refuse mid-run (`setSkipped`/`remove`'s own `!isRunning` guards) —
+        // same rule as "Find it…" below: the affordance is absent for the run's duration and
+        // reappears once it ends, never a silently-refused no-op button.
+        let skip = model.isRunning ? nil :
+            RowDescriptor.RowAction(title: "Skip", action: { model.setSkipped(true, for: job.id) })
+        let remove = model.isRunning ? nil :
+            RowDescriptor.RowAction(title: "Remove", action: { model.remove(job) })
         if model.skippedRows.contains(job.id) {
-            let undo = RowDescriptor.RowAction(title: "Undo", action: { model.setSkipped(false, for: job.id) })
+            let undo = model.isRunning ? nil :
+                RowDescriptor.RowAction(title: "Undo", action: { model.setSkipped(false, for: job.id) })
             return RowDescriptor(meta: meta, emphasis: .degraded, trailing: .skipped(onUndo: undo))
         }
         switch problem {
@@ -483,12 +497,17 @@ struct QueueRowsView: View {
         if let problem = RowProblem.fromRunTimeFailure(message) {
             return describeProblem(job: job, model: model, problem: problem, meta: problem.problemCopy)
         }
+        // Skip/Remove/Undo all refuse mid-run (`setSkipped`/`remove`'s own `!isRunning` guards) —
+        // absent for the run's duration rather than a silently-refused no-op button.
         if model.skippedRows.contains(job.id) {
-            let undo = RowDescriptor.RowAction(title: "Undo", action: { model.setSkipped(false, for: job.id) })
+            let undo = model.isRunning ? nil :
+                RowDescriptor.RowAction(title: "Undo", action: { model.setSkipped(false, for: job.id) })
             return RowDescriptor(meta: message, emphasis: .degraded, trailing: .skipped(onUndo: undo))
         }
-        let skip = RowDescriptor.RowAction(title: "Skip", action: { model.setSkipped(true, for: job.id) })
-        let remove = RowDescriptor.RowAction(title: "Remove", action: { model.remove(job) })
+        let skip = model.isRunning ? nil :
+            RowDescriptor.RowAction(title: "Skip", action: { model.setSkipped(true, for: job.id) })
+        let remove = model.isRunning ? nil :
+            RowDescriptor.RowAction(title: "Remove", action: { model.remove(job) })
         return RowDescriptor(meta: message, emphasis: .problemDanger, trailing: .problemPair(skip, remove))
     }
 }
