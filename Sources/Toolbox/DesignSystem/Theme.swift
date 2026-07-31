@@ -288,12 +288,16 @@ enum Theme {
 }
 
 extension Text {
-    /// Applies a DESIGN.md type role's font + tracking together. `Text`-only: SwiftUI's
-    /// `tracking(_:)`/`kerning(_:)` modifiers exist on `Text`, not on `View` in general — for
-    /// non-`Text` views (e.g. an SF Symbol `Label`'s icon), use `Theme.Typography.role.font`
-    /// directly with `.font(_:)`.
+    /// Applies a DESIGN.md type role's font + tracking + numeric styling together. `Text`-only:
+    /// SwiftUI's `tracking(_:)`/`kerning(_:)` modifiers exist on `Text`, not on `View` in
+    /// general — for non-`Text` views (e.g. an SF Symbol `Label`'s icon), use
+    /// `Theme.Typography.role.font` directly with `.font(_:)`. Every text rendered via this
+    /// method gets `.monospacedDigit()` applied universally — DESIGN.md §1 & §7 require all
+    /// numeric values to use tabular-number spacing (§1: "Every number on screen — sizes,
+    /// percentages, counts, timings — is `.monospacedDigit()`"), matching the HTML handoff's
+    /// universal `font-variant-numeric:tabular-nums` scope.
     func themeFont(_ style: Theme.Typography) -> Text {
-        self.font(style.font).tracking(style.tracking)
+        self.font(style.font).tracking(style.tracking).monospacedDigit()
     }
 }
 

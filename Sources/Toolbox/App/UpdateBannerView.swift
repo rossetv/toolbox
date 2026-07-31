@@ -57,7 +57,6 @@ struct UpdateBannerView: View {
                     Text("A newer version v\(release.version) is available")
                         .themeFont(.body13)
                         .foregroundStyle(Theme.Colors.text)
-                        .monospacedDigit()
                         .fixedSize()
                     if let status {
                         Text(status.text)
