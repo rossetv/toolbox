@@ -1245,7 +1245,7 @@ final class QueueViewModel: ObservableObject {
         // mid-commit; a mid-switch row (ec61602) similarly still displays and queues as `.done`,
         // so clearing would discard the parked file `useVersion`/`rerunForSwitch` is mid-copy
         // into. One coarse guard beats threading an excluded-ids filter through
-        // `ToolQueue.removeCompleted()`, which OCR also calls and has no notion of switches (R19).
+        // `ToolQueue.removeCompleted()`, a generic queue primitive with no notion of switches.
         guard canClearFinished else { return }
         // No explicit discard loop here either — see `remove(_:)`'s comment: the same
         // `pruneStaleEstimateState()` sweep is the row's one discard path, reached the instant
