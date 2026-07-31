@@ -194,4 +194,100 @@ final class PopoverLogicTests: XCTestCase {
         XCTAssertEqual(env.model.versions(for: job), before)
     }
 
+    // MARK: ChangeQualitySheet
+
+    private func rowSummary(currentBytes: Int, ownPreset: CompressPreset,
+                            predictions: [CompressPreset: Int] = [:],
+                            isExcluded: Bool = false) -> ChangeQualitySheet.RowSummary {
+        ChangeQualitySheet.RowSummary(currentBytes: currentBytes, ownPreset: ownPreset,
+                                      prediction: { predictions[$0] }, isExcluded: isExcluded)
+    }
+
+    /// The render's own numbers (screen 08): current total 10.4 MB (Balanced), Smallest predicts
+    /// 6.2 MB, High quality predicts 23.0 MB.
+    func testChangeQualityTotalsMatchRenderFigures() {
+        let mb = 1_000_000
+        let rows = [
+            rowSummary(currentBytes: Int(4.1 * Double(mb)), ownPreset: .balanced,
+                      predictions: [.smallestSize: Int(2.4 * Double(mb)), .maximumQuality: Int(8.9 * Double(mb))]),
+            rowSummary(currentBytes: Int(6.1 * Double(mb)), ownPreset: .balanced,
+                      predictions: [.smallestSize: Int(3.6 * Double(mb)), .maximumQuality: Int(13.9 * Double(mb))]),
+            rowSummary(currentBytes: 184_000, ownPreset: .balanced,
+                      predictions: [.smallestSize: 184_000, .maximumQuality: 184_000]),
+        ]
+        XCTAssertEqual(ChangeQualitySheet.total(rows, at: nil), rows.reduce(0) { $0 + $1.currentBytes })
+        XCTAssertEqual(ChangeQualitySheet.total(rows, at: .balanced), rows.reduce(0) { $0 + $1.currentBytes })
+    }
+
+    /// A row already at the candidate preset contributes its EXACT current bytes, never a
+    /// recomputed (and potentially drifted) estimate.
+    func testChangeQualityTotalUsesActualBytesWhenAlreadyAtCandidate() {
+        let rows = [rowSummary(currentBytes: 1000, ownPreset: .balanced, predictions: [.balanced: 999])]
+        XCTAssertEqual(ChangeQualitySheet.total(rows, at: .balanced), 1000)
+    }
+
+    /// An excluded row ("Choose which files…") never moves, regardless of candidate.
+    func testChangeQualityTotalSkipsExcludedRows() {
+        let rows = [rowSummary(currentBytes: 1000, ownPreset: .balanced,
+                              predictions: [.smallestSize: 400], isExcluded: true)]
+        XCTAssertEqual(ChangeQualitySheet.total(rows, at: .smallestSize), 1000)
+    }
+
+    func testChangeQualityDeltaCurrentPresetReadsWhatYouHave() {
+        let delta = ChangeQualitySheet.delta(current: 1000, candidate: 1000, presetIsMaximumQuality: false)
+        XCTAssertEqual(delta.text, "what you have")
+        XCTAssertEqual(delta.tone, .muted)
+    }
+
+    func testChangeQualityDeltaSmallerReadsGreenLess() {
+        let delta = ChangeQualitySheet.delta(current: 1000, candidate: 600, presetIsMaximumQuality: false)
+        XCTAssertTrue(delta.text.hasSuffix("less"))
+        XCTAssertEqual(delta.tone, .success)
+    }
+
+    /// Maximum quality's larger total always reads its aspirational tagline, never a raw delta —
+    /// it is the one preset in this trio nobody picks to save space.
+    func testChangeQualityDeltaMaximumQualityReadsForPrinting() {
+        let delta = ChangeQualitySheet.delta(current: 1000, candidate: 2300, presetIsMaximumQuality: true)
+        XCTAssertEqual(delta.text, "for printing")
+        XCTAssertEqual(delta.tone, .plain)
+    }
+
+    func testChangeQualityDeltaLargerNonMaximumReadsMore() {
+        let delta = ChangeQualitySheet.delta(current: 1000, candidate: 1300, presetIsMaximumQuality: false)
+        XCTAssertTrue(delta.text.hasSuffix("more"))
+        XCTAssertEqual(delta.tone, .plain)
+    }
+
+    // MARK: ChangeQualitySheet mechanism lines
+
+    func testMechanismLineArmedWithMeasuredDuration() {
+        let line = ChangeQualitySheet.mechanismLine(state: .armed(.maximumQuality), preset: .maximumQuality,
+                                                    measuredRate: 0.5, pageCount: 50)
+        XCTAssertEqual(line, "Redone from the original at 300 DPI · about 25 seconds")
+    }
+
+    /// Duration source, pinned (spec §6.7 honest-progress rule): no measured rate → the
+    /// mechanism line, never a fabricated duration.
+    func testMechanismLineArmedWithoutMeasuredRateOmitsDuration() {
+        let line = ChangeQualitySheet.mechanismLine(state: .armed(.balanced), preset: .balanced,
+                                                    measuredRate: nil, pageCount: 50)
+        XCTAssertEqual(line, "Redone from the original at 150 DPI")
+    }
+
+    func testMechanismLineInstantSwitch() {
+        let line = ChangeQualitySheet.mechanismLine(state: .instantSwitch(.balanced), preset: .balanced,
+                                                    measuredRate: nil, pageCount: nil)
+        XCTAssertEqual(line, "Already on disk — swapped in immediately")
+    }
+
+    func testMechanismLineNoneAndFutileReadAlreadyOptimised() {
+        XCTAssertEqual(ChangeQualitySheet.mechanismLine(state: .none, preset: .balanced,
+                                                        measuredRate: nil, pageCount: nil),
+                      "Already optimised — nothing to change")
+        XCTAssertEqual(ChangeQualitySheet.mechanismLine(state: .futile(.balanced), preset: .balanced,
+                                                        measuredRate: nil, pageCount: nil),
+                      "Already optimised — nothing to change")
+    }
+
 }
