@@ -603,7 +603,6 @@ struct QueueRow<Trailing: View>: View {
     @State private var isHovering = false
     @State private var isHoveringGear = false
     @FocusState private var isFocused: Bool
-    @State private var shimmerX: CGFloat = -0.3
 
     var body: some View {
         HStack(spacing: 14) {
@@ -636,7 +635,7 @@ struct QueueRow<Trailing: View>: View {
         .background(backgroundColor, in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
         .overlay {
             if isActive, !reduceMotion {
-                shimmer
+                QueueRowShimmer()
             }
         }
         .overlay(
@@ -659,10 +658,6 @@ struct QueueRow<Trailing: View>: View {
             guard let onOpen else { return .ignored }
             onOpen()
             return .handled
-        }
-        .onAppear {
-            guard isActive, !reduceMotion else { return }
-            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { shimmerX = 1.3 }
         }
         .contextMenu {
             if let onGear {
@@ -739,11 +734,29 @@ struct QueueRow<Trailing: View>: View {
         isActive ? Theme.Colors.accent : Theme.Colors.textTertiary
     }
 
-    /// The active row's ~2.4s sweep (DESIGN.md §8), a soft light band travelling across the row
-    /// — same shape as `CapsuleProgressBar`'s sweep, clipped to the row so it never bleeds past
-    /// the rounded corners. Reduce Motion suppresses this entirely (§9); the accent tint and
-    /// meta colour alone still convey "active".
-    private var shimmer: some View {
+    private var accessibilityLabel: String {
+        var label = "\(name), \(meta)"
+        if let metaAccent { label += ", \(metaAccent)" }
+        switch emphasis {
+        case .problemDanger, .problemWarn: label += ", needs attention"
+        case .degraded: label += ", needs attention"
+        case .none, .active: break
+        }
+        return label
+    }
+}
+
+/// The active row's ~2.4s sweep (DESIGN.md §8), a soft light band travelling across the row —
+/// same shape as `CapsuleProgressBar`'s sweep, clipped to the row so it never bleeds past the
+/// rounded corners. This only exists in the view tree while the row is active (`QueueRow`'s
+/// overlay is conditional on `isActive`), so its own `onAppear` fires exactly when the sweep
+/// should (re)start — fixing the row that goes active only after its first appearance, whose
+/// shimmer would otherwise never start. Reduce Motion is gated by the caller, which only
+/// instantiates this view when motion is allowed.
+private struct QueueRowShimmer: View {
+    @State private var shimmerX: CGFloat = -0.3
+
+    var body: some View {
         GeometryReader { geo in
             Rectangle()
                 .fill(LinearGradient(
@@ -755,17 +768,9 @@ struct QueueRow<Trailing: View>: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
         .allowsHitTesting(false)
-    }
-
-    private var accessibilityLabel: String {
-        var label = "\(name), \(meta)"
-        if let metaAccent { label += ", \(metaAccent)" }
-        switch emphasis {
-        case .problemDanger, .problemWarn: label += ", needs attention"
-        case .degraded: label += ", needs attention"
-        case .none, .active: break
+        .onAppear {
+            withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { shimmerX = 1.3 }
         }
-        return label
     }
 }
 
