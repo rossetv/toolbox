@@ -268,7 +268,7 @@ struct QueueHeaderView: View {
                 // Handoff: `transition:background .15s`, the fill deepening on hover. A `Menu`
                 // has no `configuration.isPressed` to read, so this control is hover-only — the
                 // one interactive surface in the app without a press state (DESIGN.md §11).
-                .background(isHoveringEllipsis ? Theme.Colors.track : Theme.Colors.fill,
+                .background(isHoveringEllipsis ? Theme.Colors.fill : Theme.Colors.background,
                             in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .menuStyle(.borderlessButton)
