@@ -66,6 +66,7 @@ struct QueueRowsView: View {
             name: job.url.lastPathComponent,
             meta: descriptor.meta,
             metaAccent: descriptor.metaAccent,
+            metaAccentColor: descriptor.metaAccentColor,
             fileURL: job.url,
             emphasis: descriptor.emphasis,
             onOpen: descriptor.canOpen ? { NSWorkspace.shared.open(Self.urlToOpen(for: job, model: model)) } : nil,
@@ -174,6 +175,9 @@ struct QueueRowsView: View {
 
         let meta: String
         var metaAccent: String? = nil
+        /// `Theme.Colors.danger` for a `recompressErrors` note (R12); `Theme.Colors.accent`
+        /// (the `QueueRow` default) for every other `metaAccent` use — e.g. "Its own settings".
+        var metaAccentColor: Color = Theme.Colors.accent
         var emphasis: QueueRow<AnyView>.Emphasis = .none
         var trailing: Trailing
         var canOpen = false
@@ -183,6 +187,7 @@ struct QueueRowsView: View {
 
         static func == (lhs: RowDescriptor, rhs: RowDescriptor) -> Bool {
             lhs.meta == rhs.meta && lhs.metaAccent == rhs.metaAccent
+                && lhs.metaAccentColor == rhs.metaAccentColor
                 && emphasisEqual(lhs.emphasis, rhs.emphasis)
                 && lhs.trailing == rhs.trailing && lhs.canOpen == rhs.canOpen
                 && lhs.canConfigure == rhs.canConfigure && lhs.canRemove == rhs.canRemove
@@ -303,7 +308,21 @@ struct QueueRowsView: View {
 
     // MARK: done
 
+    /// `recompressErrors` (`QueueViewModel`) rides beside a `.done` row's own meta rather than
+    /// replacing it (R12: an explicit button press — recompress, change-quality re-run, or a
+    /// versions-popover switch — never fails silently, and the row's result stays displayed and
+    /// openable throughout). `metaAccent` is otherwise unused for a `.done` row, so this is the one
+    /// site that needs to know about the dictionary at all.
     private static func describeDone(job: ToolJob, model: QueueViewModel, state: QueueScreenState) -> RowDescriptor {
+        var descriptor = describeDoneCore(job: job, model: model, state: state)
+        if let message = model.recompressErrors[job.id] {
+            descriptor.metaAccent = message
+            descriptor.metaAccentColor = Theme.Colors.danger
+        }
+        return descriptor
+    }
+
+    private static func describeDoneCore(job: ToolJob, model: QueueViewModel, state: QueueScreenState) -> RowDescriptor {
         guard case .done(let outcome) = job.state else { fatalError("describeDone requires a .done job") }
         let row = model.versions(for: job)
         // Binding carry #1's other edge: a change-quality re-run (`commit()`) never touches

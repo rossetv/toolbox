@@ -6,6 +6,7 @@
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
 import CoreGraphics
+import SwiftUI
 import XCTest
 @testable import Toolbox
 
@@ -908,6 +909,13 @@ final class QueuePassTests: XCTestCase {
             .contentsOfDirectory(atPath: shipped.deletingLastPathComponent().path)
             .filter { $0.hasPrefix(".toolbox-original-") }
         XCTAssertTrue(leftovers.isEmpty, "the abandoned copy is cleaned up")
+
+        // R12 requires the note to actually reach the row (the versions popover was its only
+        // reader before this fix, and it is gone) — the row's own meta line is the surface.
+        let message = try XCTUnwrap(model.recompressErrors[id])
+        let descriptor = QueueRowsView.describe(job: try job(model, id), model: model, state: .finished)
+        XCTAssertEqual(descriptor.metaAccent, message, "the row must show the failure, not swallow it")
+        XCTAssertEqual(descriptor.metaAccentColor, Theme.Colors.danger)
     }
 
     // MARK: the scan-rebuild consent queue (spec §7 Scan choice)
