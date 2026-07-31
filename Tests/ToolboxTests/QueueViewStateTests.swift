@@ -73,6 +73,17 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(QueueView.screenState(jobs: [done, stuck], isRunning: false, inspections: inspections), .problems)
     }
 
+    /// A skipped problem row is resolved-by-skip (screenState's own doc comment) — it must NOT
+    /// pin the screen on `.problems` forever alongside otherwise-finished rows.
+    func testScreenStateFinishedWhenOnlyUnresolvedRowWasSkipped() {
+        var done = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        done.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        let skipped = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        let inspections = [skipped.id: RowInspection(problem: .locked)]
+        XCTAssertEqual(QueueView.screenState(jobs: [done, skipped], isRunning: false,
+                                             inspections: inspections, skipped: [skipped.id]), .finished)
+    }
+
     // MARK: rows dim while Quality/OCR popover is open (spec §7, DESIGN.md §9 04/04b)
 
     func testRowsDimOpacityFullWhenNeitherPopoverIsOpen() {

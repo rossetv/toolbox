@@ -54,7 +54,8 @@ struct QueueView: View {
     @State private var ocrPresented = false
 
     var screenState: QueueScreenState {
-        Self.screenState(jobs: model.jobs, isRunning: model.isRunning, inspections: model.inspections)
+        Self.screenState(jobs: model.jobs, isRunning: model.isRunning, inspections: model.inspections,
+                         skipped: model.skippedRows)
     }
 
     var body: some View {
@@ -171,13 +172,15 @@ struct QueueView: View {
     /// anything has reached a terminal state; working while a batch runs; otherwise finished when
     /// every terminal row succeeded cleanly, problems when at least one failed or a still-queued
     /// row carries an unresolved add-time problem (a locked/missing/unreadable file the user has
-    /// neither fixed nor skipped past — left behind once the rest of the batch has finished).
+    /// neither fixed nor skipped past — left behind once the rest of the batch has finished). A
+    /// skipped problem row is resolved-by-skip, so `skipped` excludes it from that tally.
     ///
     /// `allFinished` is NOT this function: a skipped problem row stays `.queued` forever (it is
     /// never included in a run), which would make `allFinished` permanently false in exactly the
     /// state screen 10 depicts — so this is derived independently, from the jobs themselves.
     static func screenState(jobs: [ToolJob], isRunning: Bool,
-                            inspections: [ToolJob.ID: RowInspection]) -> QueueScreenState {
+                            inspections: [ToolJob.ID: RowInspection],
+                            skipped: Set<ToolJob.ID> = []) -> QueueScreenState {
         guard !jobs.isEmpty else { return .empty }
         if isRunning { return .working }
         var hasFailed = false
@@ -191,7 +194,9 @@ struct QueueView: View {
                 hasTerminal = true
                 hasFailed = true
             case .queued, .analysing:
-                if inspections[job.id]?.problem != nil { hasUnresolvedProblem = true }
+                if inspections[job.id]?.problem != nil && !skipped.contains(job.id) {
+                    hasUnresolvedProblem = true
+                }
             case .running:
                 break   // unreachable once `isRunning` is false, kept for exhaustiveness
             }
