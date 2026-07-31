@@ -790,30 +790,39 @@ final class SelfUpdaterTests: XCTestCase {
         let banner = UpdateBannerView(release: release(dmgURL: nil, version: "9.9.9"),
                                       updater: updater, isRunning: false, store: store)
 
-        XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.9", in: store))
+        XCTAssertFalse(banner.isDismissed)
 
         banner.dismiss()
 
-        XCTAssertTrue(UpdateBannerView.isDismissed(version: "9.9.9", in: store),
-                      "the × writes through the same key the banner's own reader uses")
+        XCTAssertTrue(banner.isDismissed,
+                      "the × writes through the same @AppStorage key body itself reads")
     }
 
     @MainActor
     func testNewerVersionReShowsBanner() throws {
+        // Each check below constructs its OWN banner instance right before reading `isDismissed`:
+        // `@AppStorage`'s live-refresh is driven by SwiftUI's render cycle, which a manually
+        // constructed, never-rendered struct never gets — a stale instance would read its
+        // own init-time snapshot rather than the store's current value. A fresh instance's
+        // `@AppStorage(wrappedValue:)` only supplies its default when the key is absent, so it
+        // always reflects whatever is in `store` at construction time — exactly what `body`
+        // sees on the next real render.
         let store = try makeStore()
         let updater = SelfUpdater(isBusy: { false })
-        UpdateBannerView(release: release(dmgURL: nil, version: "9.9.9"),
-                         updater: updater, isRunning: false, store: store).dismiss()
+        func banner(version: String) -> UpdateBannerView {
+            UpdateBannerView(release: release(dmgURL: nil, version: version),
+                             updater: updater, isRunning: false, store: store)
+        }
 
-        XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.10", in: store),
+        banner(version: "9.9.9").dismiss()
+
+        XCTAssertFalse(banner(version: "9.9.10").isDismissed,
                        "dismissal is per version — a newer release raises the banner again")
 
-        UpdateBannerView(release: release(dmgURL: nil, version: "9.9.10"),
-                         updater: updater, isRunning: false, store: store).dismiss()
+        banner(version: "9.9.10").dismiss()
 
-        XCTAssertTrue(UpdateBannerView.isDismissed(version: "9.9.10", in: store))
-        XCTAssertFalse(UpdateBannerView.isDismissed(version: "9.9.9", in: store),
-                       "one key, newest dismissal wins")
+        XCTAssertTrue(banner(version: "9.9.10").isDismissed)
+        XCTAssertFalse(banner(version: "9.9.9").isDismissed, "one key, newest dismissal wins")
     }
 
     // MARK: - Banner button state

@@ -13,10 +13,9 @@ import SwiftUI
 /// (`SelfUpdater`, spec §6.10) — and a × that dismisses this version for good.
 ///
 /// Dismissal is PER VERSION: `bannerDismissed` holds the version the user waved away, so the
-/// next release raises the banner again. Both readers — the wrapper here and the
-/// `isDismissed(version:in:)` seam — are pinned to the same key and the same store: a static
-/// `UserDefaults` read registers no SwiftUI dependency, so the wrapper is what invalidates the
-/// view the moment × writes.
+/// next release raises the banner again. `dismissedVersion`'s `@AppStorage` wrapper is what
+/// invalidates the view the moment × writes — a static `UserDefaults` read would register no
+/// SwiftUI dependency.
 struct UpdateBannerView: View {
     private static let dismissKey = "bannerDismissed"
 
@@ -41,16 +40,16 @@ struct UpdateBannerView: View {
         _dismissedVersion = AppStorage(wrappedValue: "", Self.dismissKey, store: store)
     }
 
-    /// Whether the banner for `version` has been dismissed. Same key and store as the wrapper.
-    static func isDismissed(version: String, in store: UserDefaults) -> Bool {
-        store.string(forKey: dismissKey) == version
-    }
+    /// Whether THIS release's banner has been dismissed — the exact comparison `body` uses to
+    /// decide whether to render at all, exposed so tests can drive the real path instead of a
+    /// separate re-implementation of the rule.
+    var isDismissed: Bool { dismissedVersion == release.version }
 
     /// Dismiss this version's banner. (`@AppStorage`'s setter is nonmutating.)
     func dismiss() { dismissedVersion = release.version }
 
     var body: some View {
-        if dismissedVersion != release.version {
+        if !isDismissed {
             UpdateBannerChrome {
                 HStack(spacing: Theme.Spacing.small) {
                     Image(systemName: "arrow.down.circle.fill")
@@ -110,7 +109,7 @@ struct UpdateBannerView: View {
     }
 
     /// Internal, not private, so the disabled-while-running state can be asserted directly
-    /// (spec §11) — as `isDismissed(version:in:)` is, for the same reason.
+    /// (spec §11) — as `isDismissed` is, for the same reason.
     var isButtonEnabled: Bool {
         // A swap mid-batch would pull the bundled gs out from under the running jobs, so the
         // button is dead for the whole run, not merely refused on the click (the caption says
