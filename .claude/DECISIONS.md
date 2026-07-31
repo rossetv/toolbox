@@ -739,3 +739,12 @@ four the natural, no-longer-deferred behaviour rather than new speculative scope
 
 **Spec:** .claude/specs/20260730-ui-redesign.md (§7 Empty)
 **Affects:** Sources/Toolbox/Queue/EmptyStateView.swift (PointerTilt)
+
+## 2026-07-31 — UI-redesign drag-drop: modal-panel exception gates drops during FilePicker
+
+**Decision:** `QueueView.shouldAcceptDrop()` returns false (refuses drops) when `NSApp.modalWindow != nil`, which is true for the duration of `NSOpenPanel.runModal()` calls in `FilePicker.choosePDFs()` and `FilePicker.chooseFolder()`.
+
+**Why:** A drop accepted while the synchronous modal panel is presented mutates the queue beneath the modal session. This orphans the panel and any consent sheets it triggers, leaving Escape/Cancel non-functional — a live-reproduced wedge on the original design. The panel is the active affordance at that moment, not the queue beneath, so drops must gate on modal presence. `NSApp.modalWindow` is the native signal for exactly this interval.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 Drag-over, with pinned exception recorded)
+**Affects:** Sources/Toolbox/Queue/QueueView.swift (`shouldAcceptDrop`)
