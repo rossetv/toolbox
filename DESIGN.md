@@ -240,8 +240,9 @@ the pattern every focusable control follows. This is the standing invariant behi
 
 - **Keyboard-assigned focus always shows the ring.** Tab/arrow navigation assigns focus
   on a `.keyDown` event and the ring stands — this is never hidden.
-- **Click-assigned focus is cleared.** A mouse click on any focusable `.buttonStyle(.plain)`
-  control makes it first responder and AppKit draws a ring the user never asked for.
+- **Click-assigned focus is cleared.** A mouse click on any focusable plain-rendering
+  button (every control styled with `MotionButtonStyle`, which renders plain) makes it
+  first responder and AppKit draws a ring the user never asked for.
   Every such control carries `.clearsClickFocus()` (`DesignSystem/Components.swift`)
   unless it deliberately keeps click focus. Never re-implement this with a local
   `@FocusState` clear — that per-control approach is how the defect kept recurring.
@@ -302,12 +303,14 @@ Standard curve: the handoff's `cubic-bezier(.2,.8,.25,1)`, reproduced as
 | `linkHoverOpacity` | 0.6 | Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel" spans; the handoff's `opacity:.65` on "See what changed" is consolidated into this same token — a 0.05 delta nobody can see is scatter, not fidelity) |
 | `capGlow` | 1.6s | Progress bar leading-cap glow pulse (handoff `@keyframes capGlow`, opacity .35→.95, ease-in-out, autoreversing) |
 
-The handoff writes `scale(.97)` on four of its six primary buttons and `scale(.98)` on the
-other two ("Start", "Switch to High quality"); `pressScale` is a single token at 0.97 — a
-second token for a 0.01 delta nobody can see is scatter, not fidelity.
+The handoff writes `scale(.97)` on three of its five actively-styled primary buttons and
+`scale(.98)` on the other two ("Start", "Switch to High quality"); its sixth CTA ("Add
+More") carries no active style at all, and the app gives it the shared press treatment
+rather than inventing an exception. `pressScale` is a single token at 0.97 — a second
+token for a 0.01 delta nobody can see is scatter, not fidelity.
 
 Hover backgrounds the handoff pins per surface, all on the `hover` (0.15s) curve: secondary
-buttons and rows/cards/radio rows hover to `bg`; the `⋯` button and an off verb chip hover to
+buttons, rows/cards/radio rows and an off verb chip hover to `bg`; the `⋯` button hovers to
 `fill`; the versions capsule hovers to `track`; the row gear hovers to `bg` with its glyph to
 `text`; the save-destination control hovers `text3`→`text2`.
 
