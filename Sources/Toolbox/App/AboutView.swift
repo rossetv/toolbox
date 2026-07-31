@@ -114,7 +114,7 @@ private struct CloseButton: View {
         .pointingHandCursor()
         .keyboardShortcut(.cancelAction)
         .help("Close")
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         // Was a bare 0.12s literal that ran regardless of Reduce Motion — the one animation in
         // the app that never asked.
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)

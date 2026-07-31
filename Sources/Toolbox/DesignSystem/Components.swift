@@ -16,6 +16,31 @@ import SwiftUI
 /// `Queue/*`) and the app chrome (`App/*`) — the per-tool `CompressView`/`OCRView`/`SidebarView`
 /// this comment once named were retired at I1b in favour of the single-window queue (`QueueView`).
 
+// MARK: - Hover tracking
+
+/// The app's one hover-tracking mechanism — every view whose hover state drives on-screen chrome
+/// (a fill, an opacity, a colour swap) uses this, never `.onHover` directly. EMPIRICAL basis (not
+/// documented by Apple, traced live in this app): a synthetic/warped pointer — assistive input,
+/// UI automation — moves via `mouseMoved` events but never crosses an AppKit tracking area, so
+/// `.onHover`'s `mouseEntered`/`mouseExited` never fire for it and hover chrome stays dead.
+/// `onContinuousHover`'s `.active`/`.ended` phases key off `mouseMoved` instead, so they still
+/// fire. Same visual semantics as `.onHover`, strictly more robust input coverage.
+extension View {
+    func continuousHover(_ isHovering: Binding<Bool>) -> some View {
+        onContinuousHover { phase in
+            if case .active = phase { isHovering.wrappedValue = true } else { isHovering.wrappedValue = false }
+        }
+    }
+
+    /// Closure variant, for the (rarer) site that needs to react to the transition rather than
+    /// just store a `Bool` — e.g. only acting on hover-in, never on hover-out.
+    func continuousHover(perform action: @escaping (Bool) -> Void) -> some View {
+        onContinuousHover { phase in
+            if case .active = phase { action(true) } else { action(false) }
+        }
+    }
+}
+
 // MARK: - MotionButtonStyle
 
 /// The app's one press/hover motion, used in place of `.buttonStyle(.plain)` on every button in
@@ -64,8 +89,7 @@ struct MotionButtonStyle: ButtonStyle {
                 .opacity(isEnabled && (isHovering || isPressed) ? hoverOpacity : 1)
                 .animation(Theme.Motion.pressCurve(reduceMotion: reduceMotion), value: isPressed)
                 .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
-                // Continuous hover keys off mouseMoved, which always arrives for warped/teleported pointers (assistive/synthetic input); .onHover only fires entered/exited and misses those — same visual semantics, strictly more robust.
-                .onContinuousHover { phase in if case .active = phase { isHovering = true } else { isHovering = false } }
+                .continuousHover($isHovering)
         }
 
         private var isPressed: Bool { configuration.isPressed && isEnabled }
@@ -352,6 +376,10 @@ private struct ClearsClickFocusModifier: ViewModifier {
 /// control becomes disabled, an `onOpen` going non-nil to nil) — leaking the hand cursor for the
 /// rest of the session. `set()` has no stack to unbalance, and the `@State` flag plus
 /// `onDisappear` make sure a torn-down view still restores the arrow.
+///
+/// Deliberately stays on `.onHover`, not `.continuousHover`: it drives the cursor, not on-screen
+/// chrome, so it is outside this finding's "visible hover chrome" scope — converting it is a
+/// separate concern (assistive-input cursor feedback) left unaddressed here.
 private struct PointingHandCursorModifier: ViewModifier {
     @State private var isShowingHandCursor = false
 

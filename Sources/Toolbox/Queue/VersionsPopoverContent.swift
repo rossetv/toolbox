@@ -52,7 +52,7 @@ struct VersionsPopoverContent: View {
                                 Task { await model.useCard(card.key, for: job) }
                             }
                         )
-                        .onHover { hovering in if hovering { highlighted = card.key } }
+                        .continuousHover { hovering in if hovering { highlighted = card.key } }
                     }
                 }
                 SecondaryButton(title: "Compare versions…") { compareVersions(cards: cards) }

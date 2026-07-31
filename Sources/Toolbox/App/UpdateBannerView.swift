@@ -89,7 +89,7 @@ struct UpdateBannerView: View {
         }
         .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .onHover { isHoveringDismiss = $0 }
+        .continuousHover($isHoveringDismiss)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringDismiss)
         .pointingHandCursor()
         .accessibilityLabel("Dismiss this update")

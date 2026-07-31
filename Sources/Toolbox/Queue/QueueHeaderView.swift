@@ -135,7 +135,7 @@ struct QueueHeaderView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .onHover { isHoveringDestination = $0 }
+        .continuousHover($isHoveringDestination)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringDestination)
         .accessibilityLabel("Save destination, \(destinationLabel)")
         .accessibilityHint("Opens a menu to change where files are saved")
@@ -273,7 +273,7 @@ struct QueueHeaderView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .onHover { isHoveringEllipsis = $0 }
+        .continuousHover($isHoveringEllipsis)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringEllipsis)
         .accessibilityLabel("More")
     }

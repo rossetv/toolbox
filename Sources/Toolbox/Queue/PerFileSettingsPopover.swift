@@ -185,7 +185,7 @@ struct PopoverCloseButton: View {
         .pointingHandCursor()
         .keyboardShortcut(.cancelAction)
         .help("Close")
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .accessibilityLabel("Close")
     }

@@ -167,7 +167,7 @@ struct VerbChip: View {
                 }
                 .buttonStyle(MotionButtonStyle())
                 .clearsClickFocus()
-                .onHover { isHoveringOptions = $0 }
+                .continuousHover($isHoveringOptions)
                 .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringOptions)
                 .accessibilityLabel("\(title) options")
                 .accessibilityHint("Opens \(title.lowercased()) settings")
@@ -187,7 +187,7 @@ struct VerbChip: View {
             (isOn ? Color.white.opacity(isHoveringToggle ? 0.12 : 0) : Theme.Colors.fill.opacity(isHoveringToggle ? 1 : 0)),
             in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
         )
-        .onHover { isHoveringToggle = $0 }
+        .continuousHover($isHoveringToggle)
         .pointingHandCursor()
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringToggle)
         // Turning a verb on/off swaps the pill between accent-filled and outlined, and adds or
@@ -451,7 +451,7 @@ struct OptionCard: View {
         }
         .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         .pointingHandCursor()
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         // Moving the selection ring and tint from one card to the next is the sheet's main event
@@ -502,7 +502,7 @@ struct CapsuleBadge: View {
         .padding(.vertical, 3)
         .padding(.horizontal, 9)
         .background(background, in: Capsule())
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: tone)
     }
@@ -661,7 +661,7 @@ struct QueueRow<Trailing: View>: View {
         .contentShape(Rectangle())
         .focusable(onOpen != nil)
         .focused($isFocused)
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         // The hover fill fades in (handoff `transition:background .15s`); the gear it also
         // reveals rides the same change, so both are keyed off one animation.
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
@@ -721,7 +721,7 @@ struct QueueRow<Trailing: View>: View {
         .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
         .pointingHandCursor()
-        .onHover { isHoveringGear = $0 }
+        .continuousHover($isHoveringGear)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringGear)
         .accessibilityLabel("Settings for \(name)")
     }
@@ -923,7 +923,7 @@ struct BatchCard: View {
         }
         .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         .pointingHandCursor()
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .accessibilityLabel("\(title), \(subtitle)")
@@ -1099,7 +1099,7 @@ struct SecondaryButton: View {
         }
         .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         .pointingHandCursor()
         // Handoff: `transition:background .15s`, hovering to `bg`. No lift — the handoff reserves
         // that for the filled accent CTAs.
@@ -1313,7 +1313,7 @@ struct RadioRow: View {
         }
         .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .onHover { isHovering = $0 }
+        .continuousHover($isHovering)
         .pointingHandCursor()
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         // Selection moves the accent tint, the title's weight and the dot from one row to the
