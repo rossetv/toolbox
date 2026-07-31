@@ -102,7 +102,23 @@ enum UpdateSmoke {
             // failure earlier in the flow (download, checksum, install) never leaves a
             // marker behind for some later, unrelated launch to misread.
             writeMarker(oldVersion: oldVersion)
-            SelfUpdater.relaunchAndTerminate(url)
+            // Spawns the SAME helper process, built from the SAME relaunchArguments, that the
+            // shipped app uses — the wait-for-exit-then-open mechanism this whole smoke test
+            // exists to verify (already covered directly, with a stand-in for `open`, by
+            // SelfUpdaterTests.testRelaunchHelperWaitsForTheProcessToExitBeforeActing).
+            // Deliberately NOT `SelfUpdater.relaunchAndTerminate`: that also calls
+            // `NSApp.terminate(nil)`, which crashes here (SIGTRAP) — this harness runs
+            // headless, from inside ToolboxApp.init(), before SwiftUI ever starts
+            // NSApplication's run loop, and AppKit's termination sequence assumes that loop
+            // is already active. That is a limitation of running headless before the loop
+            // starts, not a gap in what's verified: this process calling `exit()` below ends
+            // it exactly as validly, for spec §11's "the old instance exits" assertion, as
+            // the production NSApp.terminate(nil) would in a normally-running app.
+            let helper = Process()
+            helper.executableURL = URL(fileURLWithPath: "/bin/sh")
+            helper.arguments = SelfUpdater.relaunchArguments(
+                pid: ProcessInfo.processInfo.processIdentifier, bundle: url)
+            try? helper.run()
         })
         await updater.update(release: release)
 

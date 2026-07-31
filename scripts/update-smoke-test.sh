@@ -96,13 +96,35 @@ echo "==> Installed old copy at $INSTALLED_APP"
 # codesign --force re-seals the bundle after PlistBuddy invalidates the existing signature by
 # editing Info.plist — an unsigned/invalid-signature app can fail to launch via `open` at all,
 # which would surface as "the relaunch is broken" against perfectly good relaunch code.
+#
+# NO --options runtime here, unlike package-dmg.sh: that script signs a RELEASE build, which
+# has no separate dylib to go out of sync with. A Debug build carries loose sibling dylibs
+# next to the main executable (Xcode's debug-dylib indirection for faster incremental builds,
+# plus the SwiftUI Previews stub) — Xcode's OWN Debug build deliberately signs this
+# combination ad-hoc WITHOUT hardened runtime ("Disabling hardened runtime with ad-hoc
+# codesigning", seen in its build output) precisely because hardened runtime's library
+# validation cannot vouch for an ad-hoc-signed dylib loaded by a separately-signed ad-hoc
+# executable ("different Team IDs", surfaced as `Library not loaded` at launch). Forcing
+# runtime back on when re-signing reproduces exactly that failure — discovered empirically
+# the first two times this script ran end to end. Matching Xcode's own choice for THIS
+# configuration is the fix, not a workaround.
+#
+# Nested code first, then the outer bundle (same ordering package-dmg.sh uses for gs, same
+# reason: an out-of-date nested signature is what the outer bundle's fresh reseal cannot fix).
+# `--deep` is deliberately avoided, as elsewhere in this repo: it can silently re-sign nested
+# code with options that don't match what was just applied here, so each nested Mach-O is
+# signed explicitly instead.
 NEW_PAYLOAD="$WORK/new-payload"
 mkdir -p "$NEW_PAYLOAD"
 NEW_APP="$NEW_PAYLOAD/Toolbox.app"
 ditto "$DEBUG_APP" "$NEW_APP"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" "$NEW_APP/Contents/Info.plist"
-codesign --force --options runtime --timestamp=none --sign - "$NEW_APP/Contents/Resources/ghostscript/bin/gs"
-codesign --force --options runtime --timestamp=none --sign - "$NEW_APP"
+for nested in "$NEW_APP/Contents/Resources/ghostscript/bin/gs" \
+              "$NEW_APP/Contents/MacOS/Toolbox.debug.dylib" \
+              "$NEW_APP/Contents/MacOS/__preview.dylib"; do
+    [ -f "$nested" ] && codesign --force --timestamp=none --sign - "$nested"
+done
+codesign --force --timestamp=none --sign - "$NEW_APP"
 codesign --verify --deep --strict --verbose=2 "$NEW_APP"
 echo "==> Fixture payload re-signed as v$NEW_VERSION"
 
@@ -121,7 +143,10 @@ python3 -u -m http.server 0 --bind 127.0.0.1 --directory "$FEED_DIR" > "$WORK/ht
 SERVER_PID=$!
 PORT=""
 for _ in $(seq 1 50); do
-    PORT="$(grep -o 'port [0-9]*' "$WORK/http.log" 2>/dev/null | head -1 | awk '{print $2}')"
+    # `|| true`: under `pipefail`, grep finding no match yet (the server hasn't written its
+    # startup line) makes the whole pipeline exit non-zero, which `set -e` would otherwise
+    # treat as this assignment statement failing and abort the script on the very first poll.
+    PORT="$(grep -o 'port [0-9]*' "$WORK/http.log" 2>/dev/null | head -1 | awk '{print $2}')" || true
     [ -n "$PORT" ] && break
     sleep 0.1
 done
@@ -146,8 +171,11 @@ echo "==> Old process running as PID $OLD_PID — waiting for it to exit…"
 # same PID; an unreaped (zombied) process still answers `kill -0` successfully, so the helper
 # would spin forever waiting for a process that has, from a script's-eye view, already
 # finished — `wait` is what actually removes it from the process table.
-wait "$OLD_PID"
-OLD_EXIT=$?
+# `|| true`: a non-zero exit (or the process dying to a signal) must not trip `set -e` here —
+# that would abort the script before OLD_EXIT is captured and before the log below is ever
+# read, turning a diagnosable failure into an opaque "the script just stopped".
+OLD_EXIT=0
+wait "$OLD_PID" || OLD_EXIT=$?
 
 echo "--- old process output ---"
 cat "$OLD_LOG"
