@@ -166,6 +166,25 @@ final class QueueViewStateTests: XCTestCase {
                                              inspections: [:], skipped: [skippedFailed.id]), .ready)
     }
 
+    /// The other half of the two tests above: an unresolved failure correctly PINS the screen on
+    /// `.problems`, so that footer must itself carry Start — otherwise the clean pending row beside
+    /// it has an estimate, `canStart` is true, and no control on screen calls `compress()`. Screen
+    /// 10 keeps its own shape when nothing is runnable, and Start never leaks onto screen 06.
+    func testProblemsFooterOffersStartWhenCleanWorkRemains() {
+        var failed = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        failed.state = .failed("Couldn't be compressed")
+        let added = ToolJob(url: URL(fileURLWithPath: "/tmp/added.pdf"))
+        let state = QueueView.screenState(jobs: [failed, added], isRunning: false, inspections: [:])
+        XCTAssertEqual(state, .problems, "sanity: the unresolved failure still owns the screen")
+
+        XCTAssertTrue(QueueFooterView.showsStart(state: state, canStart: true),
+                      "runnable work on a problems screen must have a Start to press")
+        XCTAssertFalse(QueueFooterView.showsStart(state: state, canStart: false),
+                       "nothing runnable ⇒ screen 10 renders exactly as designed, no dead control")
+        XCTAssertFalse(QueueFooterView.showsStart(state: .finished, canStart: true),
+                       "screen 06 offers Add More, never Start")
+    }
+
     // MARK: rows dim while Quality/OCR popover is open (spec §7, DESIGN.md §9 04/04b)
 
     func testRowsDimOpacityFullWhenNeitherPopoverIsOpen() {

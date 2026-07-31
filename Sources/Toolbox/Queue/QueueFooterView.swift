@@ -9,7 +9,8 @@ import SwiftUI
 
 /// The window's bottom bar across every non-empty screen state: screen 03's estimate + Start,
 /// screen 05's saved-so-far + Cancel, screen 06's save location + Show in Finder/Change
-/// quality/Add More, screen 10's "files that failed…" + Add More.
+/// quality/Add More, screen 10's "files that failed…" + Add More (plus Start while the batch still
+/// has runnable work — `showsStart`).
 struct QueueFooterView: View {
     @ObservedObject var model: QueueViewModel
     let state: QueueScreenState
@@ -75,7 +76,32 @@ struct QueueFooterView: View {
                 PrimaryButton(title: "Add More", action: onAddMore)
             }
         case .problems:
-            PrimaryButton(title: "Add More", action: onAddMore)
+            HStack(spacing: Theme.Spacing.small) {
+                if Self.showsStart(state: state, canStart: model.canStart) {
+                    SecondaryButton(title: Self.startTitle(model: model), action: onStart)
+                }
+                PrimaryButton(title: "Add More", action: onAddMore)
+            }
+        }
+    }
+
+    /// Whether this footer offers Start at all. Screen 03 always does (disabled when refused — the
+    /// button IS that screen's point). Screen 10 does too whenever the batch still has runnable
+    /// work: Add More on a batch carrying an unresolved failure keeps the screen on `.problems`
+    /// (`QueueView.screenState` — a clean pending row never launders a failure away), so without
+    /// this the added row would sit there with an estimate and no control on screen that calls
+    /// `compress()`. Spec §7's "the batch keeps going": problems never block the rest.
+    ///
+    /// Additive, never a re-styling: with nothing runnable this renders exactly DESIGN.md §10's
+    /// footer ("Files that failed were not touched at all." + `PrimaryButton` "Add More"). The
+    /// composite state — problems AND runnable rows — only exists because §7's Add More creates
+    /// it, and the design depicts the pure screen; Start joins as the SecondaryButton so screen
+    /// 10 keeps its one filled CTA where the design put it.
+    static func showsStart(state: QueueScreenState, canStart: Bool) -> Bool {
+        switch state {
+        case .ready: return true
+        case .problems: return canStart
+        case .empty, .working, .finished: return false
         }
     }
 
