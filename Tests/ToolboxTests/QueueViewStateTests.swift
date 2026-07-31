@@ -416,6 +416,49 @@ final class QueueViewStateTests: XCTestCase {
                        "2 files have their own settings, so their estimates differ from the batch.")
     }
 
+    // MARK: problems header count (spec §7) — delivered-of-total, never problem/failed rows counted as done
+
+    /// The exact repro: a `.failed` row and an unresolved `.locked` row must not inflate the
+    /// numerator — only the one row that actually delivered counts as "done".
+    func testProblemsHeadlineCountsOnlyDeliveredRowsNeverFailedOrUnresolved() {
+        var delivered = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        delivered.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        var failed = ToolJob(url: URL(fileURLWithPath: "/tmp/b.pdf"))
+        failed.state = .failed("Couldn't be compressed")
+        let locked = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        XCTAssertEqual(QueueHeaderView.problemsHeadline(jobs: [delivered, failed, locked]),
+                       "1 of 3 files done")
+    }
+
+    /// Screen 10's own render: five rows, three actually delivered — never "3 of 3" (row count),
+    /// always delivered-of-total.
+    func testProblemsHeadlineReadsDeliveredOfTotalNotRowCountOfRowCount() {
+        var jobs: [ToolJob] = []
+        for i in 0..<3 {
+            var job = ToolJob(url: URL(fileURLWithPath: "/tmp/done\(i).pdf"))
+            job.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+            jobs.append(job)
+        }
+        jobs.append(ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf")))
+        jobs.append(ToolJob(url: URL(fileURLWithPath: "/tmp/missing.pdf")))
+        XCTAssertEqual(QueueHeaderView.problemsHeadline(jobs: jobs), "3 of 5 files done")
+    }
+
+    /// The paired sub-line partitions the SAME rows: 1 delivered, 1 locked-unresolved, 1
+    /// moved-unresolved (missing) ⇒ "1 of 3 files done" + "2 files need something from you".
+    func testProblemsHeadlineAndSubtitleAgreeOnTheSameRowPartition() {
+        var delivered = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        delivered.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        let locked = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        let moved = ToolJob(url: URL(fileURLWithPath: "/tmp/moved.pdf"))
+        let inspections = [locked.id: RowInspection(problem: .locked), moved.id: RowInspection(problem: .missing)]
+        let jobs = [delivered, locked, moved]
+
+        XCTAssertEqual(QueueHeaderView.problemsHeadline(jobs: jobs), "1 of 3 files done")
+        XCTAssertEqual(QueueHeaderView.problemsSubtitle(jobs: jobs, inspections: inspections, savedSoFarBytes: 0),
+                       "2 files need something from you.")
+    }
+
     // MARK: helpers
 
     /// Every `QueueViewModel` this file constructs directly (not via `HeavyEnv`, which already

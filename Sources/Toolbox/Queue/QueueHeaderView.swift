@@ -201,24 +201,35 @@ struct QueueHeaderView: View {
         model.jobs.filter { model.versions(for: $0)?.searchableByCard[.shipped] == true }.count
     }
 
-    private var problemsHeadline: String {
-        let done = model.jobs.filter { if case .done = $0.state { return true }; if case .failed = $0.state { return true }; return false }.count
-        return "\(done) of \(model.jobs.count) files done"
+    private var problemsHeadline: String { Self.problemsHeadline(jobs: model.jobs) }
+
+    /// Delivered-of-total (spec §7): the numerator counts only rows that actually delivered
+    /// (terminal `.done`) — a `.failed` row never ran to completion and an unresolved problem row
+    /// never joined the run at all, so neither counts as "done" even though the batch is over.
+    static func problemsHeadline(jobs: [ToolJob]) -> String {
+        let done = jobs.filter { if case .done = $0.state { return true }; return false }.count
+        return "\(done) of \(jobs.count) files done"
+    }
+
+    private var problemsSubtitle: String {
+        Self.problemsSubtitle(jobs: model.jobs, inspections: model.inspections,
+                              savedSoFarBytes: model.batchProgress?.savedSoFarBytes ?? 0)
     }
 
     /// Rows needing the user's attention: a run-time failure, or an add-time problem
     /// (locked/missing/unreadable) that was never skipped or fixed and so never joined the run —
-    /// mirrors `QueueView.screenState`'s own `hasUnresolvedProblem` definition.
-    private var problemsSubtitle: String {
-        let saved = model.batchProgress?.savedSoFarBytes ?? 0
-        let needAttention = model.jobs.filter { job in
+    /// mirrors `QueueView.screenState`'s own `hasUnresolvedProblem` definition, and the same row
+    /// partition `problemsHeadline` uses (delivered rows never double as "needs attention" rows).
+    static func problemsSubtitle(jobs: [ToolJob], inspections: [ToolJob.ID: RowInspection],
+                                 savedSoFarBytes: Int) -> String {
+        let needAttention = jobs.filter { job in
             switch job.state {
             case .failed: return true
-            case .queued, .analysing: return model.inspections[job.id]?.problem != nil
+            case .queued, .analysing: return inspections[job.id]?.problem != nil
             case .done, .running: return false
             }
         }.count
-        let savedPart = saved > 0 ? "\(QueueByteFormat.string(saved)) saved. " : ""
+        let savedPart = savedSoFarBytes > 0 ? "\(QueueByteFormat.string(savedSoFarBytes)) saved. " : ""
         return needAttention == 1 ? "\(savedPart)One file needs something from you."
                                   : "\(savedPart)\(needAttention) files need something from you."
     }
