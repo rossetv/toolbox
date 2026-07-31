@@ -465,6 +465,11 @@ struct QueueRowSizeColumn: View {
     /// a same-width spacer (keeping the 70pt column aligned with changed rows) and `target`
     /// drops to the SAME grey/small styling as `current`.
     var sameSize: Bool = false
+    /// The arrow + target's colour when something actually changes: `textSecondary` (screen 03's
+    /// ready rows, only-01/02/04.html) unless the caller overrides it — screen 08's change-quality
+    /// sheet pins `accent` instead (only-08.html: both the arrow stroke and the target figure),
+    /// since those rows preview a switch the user is about to make, not a passive size figure.
+    var changedColor: Color = Theme.Colors.textSecondary
 
     var body: some View {
         HStack(spacing: 9) {
@@ -472,11 +477,11 @@ struct QueueRowSizeColumn: View {
             if sameSize {
                 Color.clear.frame(width: 9, height: 1)
             } else {
-                Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.Colors.textTertiary)
+                Image(systemName: "arrow.right").font(.system(size: 9, weight: .bold)).foregroundStyle(changedColor)
             }
             Text(target)
                 .themeFont(sameSize ? .body13 : .rowName)
-                .foregroundStyle(sameSize ? Theme.Colors.textTertiary : Theme.Colors.textSecondary)
+                .foregroundStyle(sameSize ? Theme.Colors.textTertiary : changedColor)
                 .frame(width: 70, alignment: .trailing)
         }
     }

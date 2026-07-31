@@ -149,7 +149,10 @@ struct ChangeQualitySheet: View {
                         QueueRowSizeColumn(
                             current: QueueByteFormat.string(currentBytes),
                             target: QueueByteFormat.string(target),
-                            sameSize: Self.rowIsUnchanged(state))
+                            sameSize: Self.rowIsUnchanged(state),
+                            // only-08.html: a changed row's arrow + target read accent here, not
+                            // the plain textSecondary the Ready screen's own rows use.
+                            changedColor: Theme.Colors.accent)
                     }
                 }
             }
