@@ -84,4 +84,29 @@ final class PopoverLogicTests: XCTestCase {
         XCTAssertFalse(OCRPopover.fastDisabled(languages: []), "auto-detect never disables Fast")
     }
 
+    // MARK: PerFileSettingsPopover — rebuild-toggle domain (spec §7, pinned)
+
+    func testRebuildToggleHiddenOnNonScanColourRows() {
+        for contentType: PDFContentType? in [.bornDigital, .mixedColour, .scanBilevel, nil] {
+            for preset in CompressPreset.allCases {
+                XCTAssertEqual(
+                    PerFileSettingsPopover.rebuildToggleDomain(contentType: contentType, preset: preset),
+                    .hidden, "\(String(describing: contentType)) at \(preset) must hide the toggle")
+            }
+        }
+    }
+
+    func testRebuildToggleDisabledAtMaximumQuality() {
+        XCTAssertEqual(
+            PerFileSettingsPopover.rebuildToggleDomain(contentType: .scanColour, preset: .maximumQuality),
+            .disabledAtMaximumQuality)
+    }
+
+    func testRebuildToggleEnabledOnScanColourBelowMaximumQuality() {
+        XCTAssertEqual(
+            PerFileSettingsPopover.rebuildToggleDomain(contentType: .scanColour, preset: .balanced), .enabled)
+        XCTAssertEqual(
+            PerFileSettingsPopover.rebuildToggleDomain(contentType: .scanColour, preset: .smallestSize), .enabled)
+    }
+
 }
