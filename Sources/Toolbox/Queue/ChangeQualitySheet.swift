@@ -21,16 +21,21 @@ struct ChangeQualitySheet: View {
     @ObservedObject var model: QueueViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var initialPreset: CompressPreset
+    /// Snapshot of `model.armedExclusions` at sheet open — the sibling of `initialPreset`: "Choose
+    /// which files…" writes exclusions onto the SAME view-model the preset preview lives on, so it
+    /// needs the identical structural restore (spec §7 scopes the checked subset to THE RE-RUN).
+    @State private var initialExclusions: Set<ToolJob.ID>
     @State private var showingFileChoice = false
     /// Set the moment the confirm action hands off to `Self.confirm` — the ONLY thing that stops
-    /// `onDisappear` restoring `initialPreset`. Every other exit (Cancel, Escape, the window
-    /// closing, anything else) leaves this false, so the restore fires structurally rather than
-    /// depending on which button happened to be pressed.
+    /// `onDisappear` restoring `initialPreset`/`initialExclusions`. Every other exit (Cancel,
+    /// Escape, the window closing, anything else) leaves this false, so the restore fires
+    /// structurally rather than depending on which button happened to be pressed.
     @State private var confirmed = false
 
     init(model: QueueViewModel) {
         self.model = model
         _initialPreset = State(initialValue: model.preset)
+        _initialExclusions = State(initialValue: model.armedExclusions)
     }
 
     var body: some View {
@@ -45,7 +50,10 @@ struct ChangeQualitySheet: View {
         }
         .popover(isPresented: $showingFileChoice) { fileChoicePopover }
         .onDisappear {
-            if !confirmed { model.preset = initialPreset }
+            if !confirmed {
+                model.preset = initialPreset
+                model.setArmedExclusions(initialExclusions)
+            }
         }
     }
 
@@ -163,8 +171,12 @@ struct ChangeQualitySheet: View {
             PrimaryButton(title: "Switch to \(model.preset.title)", isEnabled: canSwitch) {
                 let rows = eligibleJobs
                 let fallback = initialPreset
+                let fallbackExclusions = initialExclusions
                 confirmed = true
-                Task { await Self.confirm(rows: rows, model: model, fallback: fallback) }
+                Task {
+                    await Self.confirm(rows: rows, model: model, fallback: fallback,
+                                       fallbackExclusions: fallbackExclusions)
+                }
                 dismiss()
             }
         }
@@ -286,8 +298,17 @@ struct ChangeQualitySheet: View {
     /// the updater running, no engine) — a case this button's `isEnabled` (`canSwitch`, which only
     /// checks row states) does not rule out. If nothing actually started — no instant switch
     /// landed AND `compress()` was refused — the preview must not stick: `fallback` (the batch
-    /// preset from before the sheet opened) is restored so a no-op press leaves no trace.
-    static func confirm(rows: [ToolJob], model: QueueViewModel, fallback: CompressPreset) async {
+    /// preset from before the sheet opened) is restored so a no-op press leaves no trace, and
+    /// `fallbackExclusions` (the exclusion set from before the sheet opened) goes back with it —
+    /// the sibling leak this fixes: a no-op press must not narrow the NEXT re-run either.
+    ///
+    /// Something actually starting is what consumes the exclusion set, not the run finishing:
+    /// spec §7 scopes the checked subset to THIS re-run, so once it is under way the whole set is
+    /// cleared — a row a completed run already recompressed stops arming on its own (it now
+    /// matches its own target), and a row left untouched (excluded, or refused alongside it) is
+    /// free to arm again next time the sheet opens, unexcluded, exactly like a fresh preview.
+    static func confirm(rows: [ToolJob], model: QueueViewModel, fallback: CompressPreset,
+                        fallbackExclusions: Set<ToolJob.ID> = []) async {
         var started = false
         for job in rows {
             if case .instantSwitch = model.recompressState(for: job) {
@@ -299,8 +320,11 @@ struct ChangeQualitySheet: View {
             model.compress()
             started = true
         }
-        if !started {
+        if started {
+            model.setArmedExclusions([])
+        } else {
             model.preset = fallback
+            model.setArmedExclusions(fallbackExclusions)
         }
     }
 

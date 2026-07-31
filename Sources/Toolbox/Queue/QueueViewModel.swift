@@ -1163,6 +1163,16 @@ final class QueueViewModel: ObservableObject {
         publishJobs()
     }
 
+    /// Change quality sheet lifecycle (spec §7: the checked subset is scoped to THE RE-RUN,
+    /// never beyond it) — the whole-set counterpart to `setArmedExclusion`'s per-row toggle, used
+    /// both to restore the pre-sheet snapshot on a cancelled/escaped exit and to consume the
+    /// entire set once a re-run has actually started. Deliberately no `!isRunning` guard: the
+    /// consume call lands right after `compress()`, by which point `isRunning` is already true.
+    func setArmedExclusions(_ exclusions: Set<ToolJob.ID>) {
+        armedExclusions = exclusions
+        publishJobs()
+    }
+
     /// "Find it…" — re-point a row at a file the user has located (spec §7's Problems screen).
     ///
     /// A FULL state reset, not a URL swap: the row is describing a different document, so every
