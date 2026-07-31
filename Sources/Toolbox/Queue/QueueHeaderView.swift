@@ -45,6 +45,11 @@ struct QueueHeaderView: View {
                              isOn: model.compressOn, icon: Image(systemName: "arrow.down.right.and.arrow.up.left"),
                              toggle: { model.compressOn.toggle() },
                              openOptions: model.compressOn ? { qualityPresented = true } : nil)
+                        // Anchored to the chip itself, not the header's full-width container: a
+                        // `.popover` attaches to whatever view carries the modifier, so leaving it
+                        // on the outer `VStack` (below) opened the popover centred in the window
+                        // rather than pinned to the Compress chip (DESIGN.md §9 04).
+                        .popover(isPresented: $qualityPresented) { QualityPopover(model: model) }
                     VerbChip(title: "OCR", suffix: model.ocrOn ? ocrLanguageDisplay : nil,
                              isOn: model.ocrOn, icon: Image(systemName: "doc.text.magnifyingglass"),
                              toggle: { model.ocrOn.toggle() },
@@ -64,7 +69,6 @@ struct QueueHeaderView: View {
         .padding(.horizontal, Theme.Spacing.large)
         .padding(.top, 20)
         .padding(.bottom, state == .ready ? 14 : 16)
-        .popover(isPresented: $qualityPresented) { QualityPopover(model: model) }
         .popover(isPresented: $ocrPresented) { OCRPopover(model: model) }
     }
 
