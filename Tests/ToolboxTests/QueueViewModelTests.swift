@@ -1567,6 +1567,99 @@ final class QueueViewModelTests: XCTestCase {
                        "and survive to the run's end too")
     }
 
+    /// Regression (spec-fidelity r4/r5): `setArmedExclusions` is the sheet's whole-set restore
+    /// rule, exercised by `ChangeQualitySheet`'s `onDisappear` on every non-confirmed exit
+    /// (Cancel, Escape, the window closing) — the named acceptance test for that finding:
+    /// `armedExclusions` returns to its pre-sheet value after a dismissal with `confirmed == false`.
+    func testArmedExclusionsRestoreMirrorsTheSheetsNonConfirmedExit() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        try await env.runToDone()
+        let job = try XCTUnwrap(model.jobs.first)
+
+        let initialExclusions = model.armedExclusions
+        model.setArmedExclusion(true, for: job.id)
+        XCTAssertNotEqual(model.armedExclusions, initialExclusions, "the preview must actually move")
+
+        // Mirrors `ChangeQualitySheet.body`'s `.onDisappear { if !confirmed { … } }`.
+        model.setArmedExclusions(initialExclusions)
+        XCTAssertEqual(model.armedExclusions, initialExclusions,
+                       "armedExclusions returns to its pre-sheet value after a dismissal "
+                       + "with confirmed == false")
+    }
+
+    /// Regression (r5, sibling of the `started` fix): a press where every instant switch FAILS
+    /// and `compress()` is refused must restore both halves of the preview — the previewed
+    /// preset AND the previewed exclusion set — exactly like the plain "nothing to do" no-op
+    /// case, while leaving the failure note visible so the user knows why.
+    func testConfirmRestoresPresetAndExclusionsWhenEveryInstantSwitchFails() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Park the Balanced version behind a Smallest recompress, so the row reads as an
+        // instant-switch candidate back at Balanced.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+
+        // Same asymmetric ACL lever the sibling note-preservation test uses: denying new entries
+        // in the OUTPUT folder makes parking the shipped file throw while the parked (previous)
+        // file is never touched, so the switch fails without moving the row's own state.
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        try Fixtures.denyingNewEntries(true, at: outputFolder)
+
+        // A fabricated ID stands in for the sheet's pre-open snapshot — excluding `job` itself
+        // would make `recompressState` read `.none` (armedExclusions is checked there too) and
+        // the switch below would never even be attempted. `armedExclusions` is a plain ID set
+        // with no existence check, so this is a legitimate way to pin the whole-set restore
+        // independently of the switch under test.
+        let fallbackExclusions: Set<ToolJob.ID> = [UUID()]  // the sheet's snapshot at open
+        model.setArmedExclusions([UUID()])                 // the sheet's live preview, since changed
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced,
+                                         fallbackExclusions: fallbackExclusions)
+
+        XCTAssertNotNil(model.recompressErrors[job.id], "the failed switch's note must be visible")
+        XCTAssertEqual(model.preset, .balanced, "nothing landed — the previewed preset must not stick")
+        XCTAssertEqual(model.armedExclusions, fallbackExclusions,
+                       "nothing landed — the previewed exclusion set must not stick either")
+
+        try Fixtures.denyingNewEntries(false, at: outputFolder)
+    }
+
+    /// Regression (r5): a press where a switch actually LANDS consumes the whole exclusion set
+    /// for that run — not just the row the confirm touched — mirroring the mixed-batch test's
+    /// consume rule but pinned on its own so a regression here fails independently of that test.
+    func testConfirmConsumesTheWholeExclusionSetWhenASwitchLands() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+
+        let excludedID = try await env.addRow()
+        model.setArmedExclusion(true, for: excludedID)
+
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced)
+
+        XCTAssertTrue(model.armedExclusions.isEmpty,
+                      "a landed switch consumes the exclusion set exactly for this run")
+    }
+
     /// R12: an engine failure keeps the version the user had, on disk and on screen, and says so.
     func testRecompressFailureKeepsThePreviousVersionAndReportsIt() async throws {
         let env = try HeavyEnv()

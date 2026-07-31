@@ -297,10 +297,17 @@ struct ChangeQualitySheet: View {
     /// `compress()` itself refuses to start when `canStart` is false (a switch already in flight,
     /// the updater running, no engine) — a case this button's `isEnabled` (`canSwitch`, which only
     /// checks row states) does not rule out. If nothing actually started — no instant switch
-    /// landed AND `compress()` was refused — the preview must not stick: `fallback` (the batch
+    /// LANDED AND `compress()` was refused — the preview must not stick: `fallback` (the batch
     /// preset from before the sheet opened) is restored so a no-op press leaves no trace, and
     /// `fallbackExclusions` (the exclusion set from before the sheet opened) goes back with it —
     /// the sibling leak this fixes: a no-op press must not narrow the NEXT re-run either.
+    ///
+    /// "Landed" is load-bearing: `useVersion` can be ATTEMPTED and still fail (a transient store
+    /// error keeps the shipped file exactly as it was — see `reportSwitchFailure`), so attempting
+    /// it is not evidence anything started. `useVersion` leaves `recompressErrors[job.id]` nil on
+    /// every success path and non-nil on every failure path reachable from an `.instantSwitch` row
+    /// (the smallest honest seam it exposes), so that is what a landed switch is read from —
+    /// never "the loop ran".
     ///
     /// Something actually starting is what consumes the exclusion set, not the run finishing:
     /// spec §7 scopes the checked subset to THIS re-run, so once it is under way the whole set is
@@ -309,18 +316,20 @@ struct ChangeQualitySheet: View {
     /// free to arm again next time the sheet opens, unexcluded, exactly like a fresh preview.
     static func confirm(rows: [ToolJob], model: QueueViewModel, fallback: CompressPreset,
                         fallbackExclusions: Set<ToolJob.ID> = []) async {
-        var started = false
+        var switchLanded = false
         for job in rows {
             if case .instantSwitch = model.recompressState(for: job) {
                 await model.useVersion(.previous, for: job)
-                started = true
+                if model.recompressErrors[job.id] == nil {
+                    switchLanded = true
+                }
             }
         }
-        if model.canStart {
+        let compressStarted = model.canStart
+        if compressStarted {
             model.compress()
-            started = true
         }
-        if started {
+        if switchLanded || compressStarted {
             model.setArmedExclusions([])
         } else {
             model.preset = fallback
