@@ -144,6 +144,28 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(QueueView.screenState(jobs: [failed, added], isRunning: false, inspections: [:]), .problems)
     }
 
+    /// Finding B/A repro: a skipped `.failed` row is resolved-by-skip, same as a skipped problem
+    /// row — it must not pin the screen on `.problems` by itself.
+    func testScreenStateFinishedWhenOnlyFailedRowWasSkipped() {
+        var done = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        done.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        var skippedFailed = ToolJob(url: URL(fileURLWithPath: "/tmp/b.pdf"))
+        skippedFailed.state = .failed("Couldn't be compressed")
+        XCTAssertEqual(QueueView.screenState(jobs: [done, skippedFailed], isRunning: false,
+                                             inspections: [:], skipped: [skippedFailed.id]), .finished)
+    }
+
+    /// Finding A's exact repro: Add More on a batch carrying a failed row must not strand the new
+    /// clean row — it must pull the screen back to `.ready` (mixed failed+pending rows on screen
+    /// 03) so Start is reachable, never leaving it on `.problems` where the footer has no Start.
+    func testScreenStateReadyWhenACleanPendingRowJoinsAFailedRowThatWasSkipped() {
+        var skippedFailed = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        skippedFailed.state = .failed("Couldn't be compressed")
+        let added = ToolJob(url: URL(fileURLWithPath: "/tmp/added.pdf"))
+        XCTAssertEqual(QueueView.screenState(jobs: [skippedFailed, added], isRunning: false,
+                                             inspections: [:], skipped: [skippedFailed.id]), .ready)
+    }
+
     // MARK: rows dim while Quality/OCR popover is open (spec §7, DESIGN.md §9 04/04b)
 
     func testRowsDimOpacityFullWhenNeitherPopoverIsOpen() {
@@ -568,6 +590,24 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(QueueHeaderView.problemsHeadline(jobs: jobs), "1 of 3 files done")
         XCTAssertEqual(QueueHeaderView.problemsSubtitle(jobs: jobs, inspections: inspections, savedSoFarBytes: 0),
                        "2 files need something from you.")
+    }
+
+    /// Finding C repro: a skipped `.failed` row and a skipped problem row are both
+    /// resolved-by-skip — the subtitle must drop them from "needs something from you", mirroring
+    /// `screenState`'s own skip semantics via the shared `QueueRowPartition`.
+    func testProblemsSubtitleDropsSkippedFailedAndSkippedProblemRows() {
+        var delivered = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
+        delivered.state = .done(RowOutcome(originalBytes: 100, finalBytes: 50, compress: .compressed(before: 100, after: 50)))
+        var skippedFailed = ToolJob(url: URL(fileURLWithPath: "/tmp/b.pdf"))
+        skippedFailed.state = .failed("Couldn't be compressed")
+        let skippedProblem = ToolJob(url: URL(fileURLWithPath: "/tmp/locked.pdf"))
+        let inspections = [skippedProblem.id: RowInspection(problem: .locked)]
+        let jobs = [delivered, skippedFailed, skippedProblem]
+
+        XCTAssertEqual(QueueHeaderView.problemsSubtitle(jobs: jobs, inspections: inspections,
+                                                        skipped: [skippedFailed.id, skippedProblem.id],
+                                                        savedSoFarBytes: 0),
+                       "0 files need something from you.")
     }
 
     // MARK: helpers

@@ -1105,14 +1105,7 @@ final class QueueViewModel: ObservableObject {
     /// counts as healthy — the run-time `OpenGuard` pass is the second net, and refusing Start
     /// while a background inspection settles would make the button flicker.
     private var healthyQueuedCount: Int {
-        jobs.filter { job in
-            switch job.state {
-            case .queued, .analysing:
-                return inspections[job.id]?.problem == nil && !skippedRows.contains(job.id)
-            case .running, .done, .failed:
-                return false
-            }
-        }.count
+        jobs.filter { QueueRowPartition.classify(job: $0, inspections: inspections, skipped: skippedRows) == .cleanPending }.count
     }
 
     /// Whether "Clear finished" may run — the one gate `clearFinished()` and the view that offers

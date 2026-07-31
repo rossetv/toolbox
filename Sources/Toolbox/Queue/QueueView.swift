@@ -180,24 +180,26 @@ struct QueueView: View {
 
     /// Pure state-selection (`QueueViewStateTests`): empty until the first file lands; ready until
     /// anything has reached a terminal state; working while a batch runs; otherwise finished when
-    /// every terminal row succeeded cleanly, problems when at least one failed or a still-queued
-    /// row carries an unresolved add-time problem (a locked/missing/unreadable file the user has
-    /// neither fixed nor skipped past — left behind once the rest of the batch has finished). A
-    /// skipped problem row is resolved-by-skip, so `skipped` excludes it from that tally.
+    /// every terminal row succeeded cleanly, problems when at least one failed row or unresolved
+    /// problem row (a locked/missing/unreadable file, or a run-time failure, the user has neither
+    /// fixed nor skipped past) is left behind once the rest of the batch has finished. Every row
+    /// is classified once via `QueueRowPartition.classify` — the one shared predicate
+    /// `QueueViewModel.healthyQueuedCount` and `QueueHeaderView.problemsSubtitle`/
+    /// `problemsHeadline` also derive from, so a skip resolves a row identically everywhere. A
+    /// skipped failed row or skipped problem row is resolved-by-skip and excluded from both
+    /// `hasFailed` and `hasUnresolvedProblem`.
     ///
     /// `allFinished` is NOT this function: a skipped problem row stays `.queued` forever (it is
     /// never included in a run), which would make `allFinished` permanently false in exactly the
     /// state screen 10 depicts — so this is derived independently, from the jobs themselves.
     ///
-    /// Add More on a finished batch (spec §7) appends a clean `.queued` row — no problem, not
-    /// skipped — alongside the batch's terminal rows. That row is real, runnable work the idle
-    /// queue is sitting on, so it must pull the screen back to `.ready` (mixed done+pending rows
-    /// on screen 03) rather than leaving it on `.finished`/`.problems`, where the footer has no
-    /// Start affordance and the new file could never run. `hasCleanPending` uses exactly
-    /// `QueueViewModel.healthyQueuedCount`'s predicate, deliberately: any drift between the two
-    /// reopens this same strand wearing a different hat — `.ready` with `canStart` refusing.
-    /// A genuine failure or an unresolved problem still wins over this and reports `.problems`,
-    /// same as before — a clean pending row never launders those away.
+    /// Add More on a finished OR problems batch (spec §7) appends a clean `.queued` row — no
+    /// problem, not skipped — alongside the batch's terminal rows. That row is real, runnable
+    /// work the idle queue is sitting on, so it must pull the screen back to `.ready` (mixed
+    /// done+pending, or failed/skipped+pending, rows on screen 03) rather than leaving it on
+    /// `.finished`/`.problems`, where the footer has no Start affordance and the new file could
+    /// never run. A genuine unresolved failure or problem still wins over this and reports
+    /// `.problems`, same as before — a clean pending row never launders those away.
     static func screenState(jobs: [ToolJob], isRunning: Bool,
                             inspections: [ToolJob.ID: RowInspection],
                             skipped: Set<ToolJob.ID> = []) -> QueueScreenState {
@@ -208,19 +210,19 @@ struct QueueView: View {
         var hasUnresolvedProblem = false
         var hasCleanPending = false
         for job in jobs {
-            switch job.state {
-            case .done:
+            switch QueueRowPartition.classify(job: job, inspections: inspections, skipped: skipped) {
+            case .delivered, .failedSkipped:
                 hasTerminal = true
-            case .failed:
+            case .failedActionable:
                 hasTerminal = true
                 hasFailed = true
-            case .queued, .analysing:
-                if inspections[job.id]?.problem != nil {
-                    if !skipped.contains(job.id) { hasUnresolvedProblem = true }
-                } else {
-                    hasCleanPending = true
-                }
-            case .running:
+            case .problemUnresolved:
+                hasUnresolvedProblem = true
+            case .problemSkipped:
+                break
+            case .cleanPending:
+                hasCleanPending = true
+            case .transient:
                 break   // unreachable once `isRunning` is false, kept for exhaustiveness
             }
         }

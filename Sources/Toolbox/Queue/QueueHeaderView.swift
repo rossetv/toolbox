@@ -207,26 +207,27 @@ struct QueueHeaderView: View {
     /// (terminal `.done`) — a `.failed` row never ran to completion and an unresolved problem row
     /// never joined the run at all, so neither counts as "done" even though the batch is over.
     static func problemsHeadline(jobs: [ToolJob]) -> String {
-        let done = jobs.filter { if case .done = $0.state { return true }; return false }.count
+        let done = jobs.filter { QueueRowPartition.classify(job: $0, inspections: [:], skipped: []) == .delivered }.count
         return "\(done) of \(jobs.count) files done"
     }
 
     private var problemsSubtitle: String {
         Self.problemsSubtitle(jobs: model.jobs, inspections: model.inspections,
+                              skipped: model.skippedRows,
                               savedSoFarBytes: model.batchProgress?.savedSoFarBytes ?? 0)
     }
 
     /// Rows needing the user's attention: a run-time failure, or an add-time problem
-    /// (locked/missing/unreadable) that was never skipped or fixed and so never joined the run —
-    /// mirrors `QueueView.screenState`'s own `hasUnresolvedProblem` definition, and the same row
-    /// partition `problemsHeadline` uses (delivered rows never double as "needs attention" rows).
+    /// (locked/missing/unreadable), that was never skipped or fixed — mirrors
+    /// `QueueView.screenState`'s own `hasFailed`/`hasUnresolvedProblem` via the same shared
+    /// `QueueRowPartition.classify`, so a skipped failed/problem row (resolved-by-skip) drops out
+    /// of this count exactly as it drops out of `.problems`, never stranding the header's claim.
     static func problemsSubtitle(jobs: [ToolJob], inspections: [ToolJob.ID: RowInspection],
-                                 savedSoFarBytes: Int) -> String {
+                                 skipped: Set<ToolJob.ID> = [], savedSoFarBytes: Int) -> String {
         let needAttention = jobs.filter { job in
-            switch job.state {
-            case .failed: return true
-            case .queued, .analysing: return inspections[job.id]?.problem != nil
-            case .done, .running: return false
+            switch QueueRowPartition.classify(job: job, inspections: inspections, skipped: skipped) {
+            case .failedActionable, .problemUnresolved: return true
+            case .delivered, .failedSkipped, .problemSkipped, .cleanPending, .transient: return false
             }
         }.count
         let savedPart = savedSoFarBytes > 0 ? "\(QueueByteFormat.string(savedSoFarBytes)) saved. " : ""
