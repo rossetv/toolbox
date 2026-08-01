@@ -138,6 +138,34 @@ final class QueueAdmissionTests: XCTestCase {
         try await waitUntil(timeout: 15) { !model.isRunning }
     }
 
+    /// Spec §11's width > 1 leg, re-derived per the concurrency lessons: with TWO rows genuinely
+    /// inside the engine at once, a mid-run add must still reserve its name atomically through the
+    /// main-actor ledger — the single-in-flight tests above cannot catch a reservation race that
+    /// only exists when the launch window is actually wide.
+    func testAddDuringRunReservesWithTwoRowsInFlight() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let gate = Gate()
+        env.stub.gate = gate
+        _ = try await addOne(env)
+        _ = try await addOne(env, try Fixtures.textImagePDF())
+        model.compress()
+        // Both first rows suspended INSIDE the engine simultaneously — a genuinely wide window.
+        try await waitUntil(timeout: 15) { env.stub.callCount == 2 }
+
+        let latecomerID = try await addOne(env, try Fixtures.bornDigitalPDF())
+        let reserved = try XCTUnwrap(model.reservedDelivery(for: latecomerID),
+                                     "a mid-run add reserves at add even at width 2")
+        XCTAssertTrue(reserved.lastPathComponent.hasSuffix("-compressed.pdf"))
+        let others = model.jobs.compactMap { model.reservedDelivery(for: $0.id) }
+        XCTAssertEqual(Set(others).count, others.count,
+                        "no two rows may ever hold the same reserved name")
+
+        await gate.open()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+        XCTAssertEqual(env.stub.callCount, 3, "the latecomer must have joined the wide batch")
+    }
+
     // MARK: releasing reservations (spec §6.5)
 
     func testReservationReleasedOnRemove() async throws {

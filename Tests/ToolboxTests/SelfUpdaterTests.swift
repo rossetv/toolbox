@@ -875,7 +875,10 @@ final class FixtureHTTPServer {
         struct ListenerNotReady: Error {}
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        listener = try NWListener(using: parameters, on: .any)
+        // Loopback only: without this the fixture server listens on every interface, and each
+        // `gate: tests` run stands up an unauthenticated HTTP listener reachable from the LAN.
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        listener = try NWListener(using: parameters)
         let ready = DispatchSemaphore(value: 0)
         listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }

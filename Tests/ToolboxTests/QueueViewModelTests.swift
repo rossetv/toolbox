@@ -1664,13 +1664,17 @@ final class QueueViewModelTests: XCTestCase {
 
         let fallbackExclusions: Set<ToolJob.ID> = [UUID()]  // the sheet's snapshot at open
         model.setArmedExclusions([UUID()])                 // the sheet's live preview, since changed
-        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced,
+        // The pre-sheet preset in this scenario is `.smallestSize` (the last confirmed run) —
+        // the sheet previews `.balanced` on top of it. Passing `.balanced` as the fallback made
+        // the preset assertion vacuous (r7 finding): restored-to-fallback and stuck-preview were
+        // the same value. `.smallestSize` makes the two outcomes distinguishable.
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .smallestSize,
                                          fallbackExclusions: fallbackExclusions)
 
         XCTAssertNil(model.recompressErrors[job.id],
                      "this arm never touches recompressErrors — the old nil-inference bug's blind spot")
-        XCTAssertEqual(model.preset, .balanced,
-                       "nothing landed — the previewed preset must not stick")
+        XCTAssertEqual(model.preset, .smallestSize,
+                       "nothing landed — the previewed preset must restore to the pre-sheet value")
         XCTAssertEqual(model.armedExclusions, fallbackExclusions,
                        "nothing landed — the previewed exclusion set must not stick either")
     }

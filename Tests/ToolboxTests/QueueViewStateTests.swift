@@ -170,14 +170,22 @@ final class QueueViewStateTests: XCTestCase {
     /// `.problems`, so that footer must itself carry Start — otherwise the clean pending row beside
     /// it has an estimate, `canStart` is true, and no control on screen calls `compress()`. Screen
     /// 10 keeps its own shape when nothing is runnable, and Start never leaks onto screen 06.
-    func testProblemsFooterOffersStartWhenCleanWorkRemains() {
+    func testProblemsFooterOffersStartWhenCleanWorkRemains() async throws {
         var failed = ToolJob(url: URL(fileURLWithPath: "/tmp/a.pdf"))
         failed.state = .failed("Couldn't be compressed")
         let added = ToolJob(url: URL(fileURLWithPath: "/tmp/added.pdf"))
         let state = QueueView.screenState(jobs: [failed, added], isRunning: false, inspections: [:])
         XCTAssertEqual(state, .problems, "sanity: the unresolved failure still owns the screen")
 
-        XCTAssertTrue(QueueFooterView.showsStart(state: state, canStart: true),
+        // `canStart` comes from a REAL model holding the same scenario — feeding a literal here
+        // proved nothing about the premise (r7 finding: the doc comment asserted "canStart is
+        // true" while the test never derived it). HeavyEnv supplies a working stub engine, so
+        // the derived value is the production predicate, not an assumption.
+        let env = try HeavyEnv()
+        env.model.add([try Fixtures.bornDigitalPDF()])
+        try await waitUntil(timeout: 5) { !env.model.jobs.isEmpty }
+        XCTAssertTrue(env.model.canStart, "sanity: the model sees runnable work in this scenario")
+        XCTAssertTrue(QueueFooterView.showsStart(state: state, canStart: env.model.canStart),
                       "runnable work on a problems screen must have a Start to press")
         XCTAssertFalse(QueueFooterView.showsStart(state: state, canStart: false),
                        "nothing runnable ⇒ screen 10 renders exactly as designed, no dead control")
@@ -339,6 +347,10 @@ final class QueueViewStateTests: XCTestCase {
             return XCTFail("expected .sizeColumn trailing for a no-op finished row, got \(descriptor.trailing)")
         }
         XCTAssertEqual(current, target, "no-op row must show the SAME figure twice, not before/after")
+        // No byte assertion here on purpose: this row is synthetic (no VersionStore entry), so it
+        // renders the store-less fallback — a state production ingest never produces. The byte-
+        // keyed guarantee is pinned by `testAllOCRRowRendersGreySizePairKeyedOnActualBytes`,
+        // which runs a real pass and asserts the delivered file's actual figure.
         XCTAssertTrue(sameSize, "no-op row must use the arrowless same-size treatment")
         XCTAssertEqual(kind, .unchanged)
     }
@@ -368,6 +380,8 @@ final class QueueViewStateTests: XCTestCase {
             return XCTFail("expected .sizeColumn trailing for an OCR-only finished row, got \(descriptor.trailing)")
         }
         XCTAssertEqual(current, target, "OCR-only row must show the SAME figure twice, no savings claim")
+        XCTAssertEqual(current, QueueByteFormat.string(9_000),
+                        "the pair must be keyed on the delivered file's actual bytes")
         XCTAssertTrue(sameSize, "OCR-only row must use the arrowless same-size treatment")
         XCTAssertEqual(kind, .unchanged)
     }
@@ -711,8 +725,17 @@ final class QueueViewStateTests: XCTestCase {
     /// net read — this is the reverse direction (copy → problem) exercised via `RowInspection`,
     /// confirming the two never diverge in wording.
     func testProblemCopyMatchesRowInspectionMetaLineForEachCondition() {
-        for problem: RowProblem in [.locked, .missing, .unreadable] {
-            XCTAssertEqual(RowInspection(problem: problem).metaLine, problem.problemCopy,
+        // Pinned to the design's literal strings (handoff screen 10), not to `problemCopy`
+        // itself — after 17fd15b routed `metaLine` through the same table, an expression-equals-
+        // itself assertion could never fail. These literals are what the law says.
+        let law: [(RowProblem, String)] = [
+            (.locked, "Needs a password to open"),
+            (.missing, "Moved or renamed since you added it"),
+            (.unreadable, "This file can't be read as a PDF"),
+        ]
+        for (problem, copy) in law {
+            XCTAssertEqual(problem.problemCopy, copy)
+            XCTAssertEqual(RowInspection(problem: problem).metaLine, copy,
                             "\(problem) must read identically whether add-time or run-time")
         }
     }
