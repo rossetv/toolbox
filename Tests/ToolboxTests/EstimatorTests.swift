@@ -69,7 +69,7 @@ final class EstimatorTests: XCTestCase {
         let input = try Fixtures.imagePDF()
 
         let start = Date()
-        let analysis = await estimator.analyse(input)
+        let analysis = await estimator.analyse(input, mrcEligible: true)
         let estimate = try XCTUnwrap(analysis.estimates[.balanced])
         let elapsed = Date().timeIntervalSince(start)
 
@@ -81,7 +81,7 @@ final class EstimatorTests: XCTestCase {
         let estimator = CompressEstimator(timeBudget: 0.5)
         let input = try Fixtures.bornDigitalPDF()
 
-        let analysis = await estimator.analyse(input)
+        let analysis = await estimator.analyse(input, mrcEligible: true)
         let estimate = try XCTUnwrap(analysis.estimates[.balanced])
 
         XCTAssertFalse(estimate.isFallback)
@@ -93,7 +93,7 @@ final class EstimatorTests: XCTestCase {
         let input = try Fixtures.imagePDF()
 
         let start = Date()
-        let analysis = await estimator.analyse(input)
+        let analysis = await estimator.analyse(input, mrcEligible: true)
         let estimate = try XCTUnwrap(analysis.estimates[.balanced])
         let elapsed = Date().timeIntervalSince(start)
 
@@ -106,7 +106,7 @@ final class EstimatorTests: XCTestCase {
         let estimator = CompressEstimator(analyser: FailingAnalyser(), timeBudget: 0.5)
         let input = try Fixtures.imagePDF()
 
-        let analysis = await estimator.analyse(input)
+        let analysis = await estimator.analyse(input, mrcEligible: true)
         let estimate = try XCTUnwrap(analysis.estimates[.smallestSize])
 
         XCTAssertTrue(estimate.isFallback)
@@ -125,7 +125,7 @@ final class EstimatorTests: XCTestCase {
 
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<(CompressEstimator.maxConcurrentEstimates * 4) {
-                group.addTask { _ = await estimator.analyse(input) }
+                group.addTask { _ = await estimator.analyse(input, mrcEligible: true) }
             }
         }
 
@@ -139,10 +139,83 @@ final class EstimatorTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("does-not-exist-\(UUID().uuidString).pdf")
 
-        let analysis = await estimator.analyse(missing)
+        let analysis = await estimator.analyse(missing, mrcEligible: true)
         let estimate = try XCTUnwrap(analysis.estimates[.balanced])
 
         XCTAssertTrue(estimate.isFallback)
+    }
+
+    // MARK: the scan-rebuild calibration (spec §6.7)
+
+    /// The calibration's own proof: the `.scanColour` prediction is checked against what the REAL
+    /// pipeline delivers on this fixture — bundled Ghostscript, the Rung-3 race and its D7 gate —
+    /// never against a recalled figure. The constants were measured this way (F5d); this test is
+    /// what stops them drifting away from the engine.
+    ///
+    /// Tolerance is RELATIVE to the measured reduction, per the calibration record: ±25%, the
+    /// plan's recorded fallback. One constant prices two populations that genuinely differ — this
+    /// fixture is a raw-bitmap page that Ghostscript alone crushes ~99%, while a real scan's
+    /// delivered reduction sits lower — and no single figure sits within ±15% of both.
+    func testScanColourPredictionMatchesMRCPipelineOnFixture() async throws {
+        let input = try Fixtures.colourTextScanPDF(pages: 1)
+        let inputSize = try XCTUnwrap(input.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+        let engine = CompressEngine(runner: try GhostscriptRunner())
+        let output = input.deletingLastPathComponent()
+            .appendingPathComponent("calibration-out.pdf")
+
+        let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
+
+        XCTAssertEqual(outcome.shippedVariant, .mrc,
+                       "precondition: this fixture must exercise the REBUILD path, not gs alone")
+        let measured = 1 - Double(outcome.finalBytes) / Double(outcome.originalBytes)
+
+        // The production 0.5 s box legitimately overruns under the gate's 8 parallel workers, and
+        // a fallback estimate arrives exactly once — so the budget is raised rather than waited on.
+        let estimator = CompressEstimator(timeBudget: 30)
+        let analysis = await estimator.analyse(input, mrcEligible: true)
+        let estimate = try XCTUnwrap(analysis.estimates[.balanced])
+        XCTAssertEqual(analysis.contentType, .scanColour,
+                       "precondition: the estimator must route this document the way the engine did")
+        XCTAssertFalse(estimate.isFallback, "precondition: a fallback estimate prices nothing")
+
+        let predicted = 1 - Double(estimate.predictedBytes) / Double(inputSize)
+        XCTAssertEqual(predicted, measured, accuracy: measured * 0.25,
+                       "predicted \(predicted) vs measured \(measured) on the real pipeline")
+    }
+
+    /// §6.7's honesty rule: a row whose "Rebuild the scan" is off never runs Rung 3, so it must be
+    /// priced on the gs-only path it will actually take — and `.maximumQuality`, where the rebuild
+    /// never runs at all (MRC D3), must be untouched by the flip.
+    func testScanColourWithRebuildOptOutPredictsNonMRCReduction() async throws {
+        let input = try Fixtures.colourTextScanPDF(pages: 1)
+        let inputSize = try XCTUnwrap(input.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+        let estimator = CompressEstimator(timeBudget: 30)
+
+        let rebuilt = await estimator.analyse(input, mrcEligible: true)
+        let optedOut = await estimator.analyse(input, mrcEligible: false)
+
+        XCTAssertEqual(rebuilt.contentType, .scanColour)
+        XCTAssertFalse(try XCTUnwrap(rebuilt.estimates[.balanced]).isFallback)
+        XCTAssertFalse(try XCTUnwrap(optedOut.estimates[.balanced]).isFallback)
+
+        for preset in [CompressPreset.balanced, .smallestSize] {
+            let withRebuild = try XCTUnwrap(rebuilt.estimates[preset]).predictedBytes
+            let without = try XCTUnwrap(optedOut.estimates[preset]).predictedBytes
+            XCTAssertGreaterThan(without, withRebuild,
+                                 "\(preset): an opted-out row must predict the larger, gs-only result")
+        }
+        XCTAssertEqual(try XCTUnwrap(optedOut.estimates[.maximumQuality]).predictedBytes,
+                       try XCTUnwrap(rebuilt.estimates[.maximumQuality]).predictedBytes,
+                       "the rebuild never runs at Maximum quality, so the flip cannot move it")
+
+        // Both predictions share this document's payload ratio, so the tempering cancels in the
+        // ratio: what is left is exactly the two tables' balanced entries. Pinned so neither
+        // constant can move without this calibration being revisited.
+        let reduction = { (bytes: Int) in 1 - Double(bytes) / Double(inputSize) }
+        let ratio = reduction(try XCTUnwrap(optedOut.estimates[.balanced]).predictedBytes)
+            / reduction(try XCTUnwrap(rebuilt.estimates[.balanced]).predictedBytes)
+        XCTAssertEqual(ratio, 0.45 / 0.82, accuracy: 0.01,
+                       "the opt-out must price from the incumbent gs-path constant")
     }
 
     /// The recompress prediction (R16) can only tell whether the engine path repeats if it knows
@@ -151,7 +224,7 @@ final class EstimatorTests: XCTestCase {
         let estimator = CompressEstimator()
         let input = try Fixtures.bornDigitalPDF()
 
-        let analysis = await estimator.analyse(input)
+        let analysis = await estimator.analyse(input, mrcEligible: true)
 
         XCTAssertEqual(analysis.contentType, .bornDigital)
         XCTAssertEqual(analysis.estimates.count, CompressPreset.allCases.count)
@@ -164,7 +237,7 @@ final class EstimatorTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("absent-\(UUID().uuidString).pdf")
 
-        let analysis = await estimator.analyse(missing)
+        let analysis = await estimator.analyse(missing, mrcEligible: true)
 
         XCTAssertNil(analysis.contentType)
         XCTAssertTrue(analysis.estimates[.balanced]?.isFallback == true)

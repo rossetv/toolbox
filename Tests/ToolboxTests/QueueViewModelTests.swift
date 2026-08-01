@@ -9,43 +9,297 @@ import Combine
 import XCTest
 @testable import Toolbox
 
-/// Drives `CompressViewModel` exactly as the view does — the full batch/preset/estimate/
+// MARK: - R-net re-derivation map (spec §11; plan Task P-D)
+//
+// The redesign reverses prior-art rules this suite was written to defend (spec §5's change
+// table), so every test it carried has to be re-derived rather than assumed still meaningful.
+// This is that enumeration: all 62 test funcs present at the redesign's base commit 624d398 —
+// `grep -c 'func test'` on `CompressViewModelTests.swift`, the file this one was renamed from,
+// a count that INCLUDES the three untagged funcs preceding the first `// MARK:` — each with
+// the disposition it now stands at, plus the siblings added since.
+//
+// DERIVATION, not recollection. Dispositions come from per-commit BODY diffs
+// (`git show -M --unified=0 <sha> -- <path>`, each hunk mapped onto its enclosing func), and
+// the cross-suite sweep at the foot comes from grepping the MECHANISM's symbols —
+// `runTask == nil`, `isRunning`, `alternateOutput`, `switchesInFlight`, `compressedHeavy`,
+// `canCompress` — never the R-tags in the MARK headings. An R-tag records which rule a group
+// was written for; it does not record whether the redesign moved it, and three of the four
+// reversals below sit in groups whose heading names no rule that changed.
+//
+//   adapt             the invariant survives; the body changed only to track a renamed symbol
+//                     or a new mechanism, or did not change at all
+//   superseded-by(X)  the assertion no longer exists here; X carries the invariant forward
+//   flipped-by(F<n>)  the asserted BEHAVIOUR itself was reversed by that task
+//   new(F<n>)         sibling added by that task
+//
+// TALLIES, reconciled against the rows below (`git log` for 647fd8c carries an earlier count
+// that did not add to 62 — these are the numbers, and the derivation is in the rows):
+//   of the 62 at base: 3 superseded · 5 body-adapted · 54 carried unchanged  (3 + 5 + 54 = 62)
+//   flipped: 3 — ONE inside this file (`testAddIsIgnoredWhileABatchIsRunning`, which is also one
+//     of the three superseded) and TWO cross-suite (`ToolQueueTests.testAddWhileRunningIsRefused`,
+//     `CompressEngineMRCTests.testHybridLargerThanGsShipsGsOutput`)
+//   new siblings: 3 already landed (F1b ×2, F4 ×1) + 4 filled by P-D
+//   the 5 body-adapted: testThreeFileSyntheticBatchCompressesEndToEnd ·
+//     testCompressIsRefusedWhileASwitchIsInFlight · testMixedRunCountsBothSets ·
+//     testArmedRowsAloneEnableTheButton · testAPlainResultWithAPreviousVersionOffersTheCapsule
+//
+// Task keys: F1 ecb3968 · F1b 8f803b7 · F2 cc3c3cb · F4 a256405 + d46511a + 1e1aa74 ·
+// F5a 08fc827 · F5e f45dc19 · F6 a630def · P-D (this task).
+//
+// F4's rename commit (a256405) rewrote every func in the file. Its diff filtered on
+// `CompressViewModel` → `QueueViewModel` is EMPTY, so it changed no assertion and is not
+// recorded per row.
+//
+// === untagged early block (3 at base) ===
+//   testAddIsIgnoredWhileABatchIsRunning ....... flipped-by(F4) → superseded-by(
+//                                               QueueAdmissionTests.testAddDuringRunJoinsBatch);
+//                                               tombstoned in place at the head of the class body
+//   testThreeFileSyntheticBatchCompressesEndToEnd ... adapt — F1 destructures the compound
+//                                               outcome, F4 `canCompress` → `canStart`,
+//                                               F6 injects a temp-rooted `HistoryStore`
+//   testChangingPresetReestimatesQueuedJobs .... adapt (body unchanged)
+//   testCJKLanguageClampsAccuracyToAccurate .... new(F4)
+//
+// === MARK: runner-up switch + lifecycle (Task 18) — 21 at base ===
+// (3 + 21 + 5 + 4 + 12 + 5 + 3 + 3 + 4 + 2 = 62, the base count derived above.)
+// The spec's R7-asymmetry reversal is an ENGINE change (F2): it decides WHICH variants reach a
+// row, never how the row switches between the ones it has. Every switch invariant below is
+// therefore intact, and the group needed no flips.
+//   testCompressedHeavyOutcomePublishesBothVersions ... adapt (body unchanged)
+//   testRunnerUpMarkedAsOriginalWhenBytesEqualInputSize ... adapt (body unchanged) — the
+//                                               `runnerUpBytes == inputSize` marker F2's
+//                                               withhold rule deliberately exempts
+//   testCompressedHeavyRetainsMRCReportOnJob ... adapt (body unchanged)
+//   testSecondUseVersionTapWhileFirstIsInFlightIsANoOp ... adapt (body unchanged)
+//   testSwitchTogglesInstantlyAndReversibly .... adapt (body unchanged)
+//   testPlainSwitchNeverExposesARunningRowOrDropsAllFinished ... adapt (body unchanged)
+//   testCapsuleTitleFlipsOnSwitch ............. superseded-by(testShippedCardFlipsOnSwitch)
+//                                               (F1b) — `capsuleTitle` became the "N versions"
+//                                               family, so the honest-label invariant moved
+//                                               onto the popover's shipped card
+//   testCapsuleTitleReadsOriginalWhenRunnerUpIsInput ... superseded-by(
+//                                               testCardsSurfaceOriginalKindParkedVariant) (F1b)
+//   testShippedCardFlipsOnSwitch .............. new(F1b), amended by F5a (the always-present
+//                                               Original reference row takes the row to three)
+//   testCardsSurfaceOriginalKindParkedVariant .. new(F1b)
+//   testSavedBytesUsesShippedVersionForHeavyJob ... adapt (body unchanged)
+//   testDisplayedBytesTracksShippedVersion ..... adapt (body unchanged)
+//   testSwitchWithMissingRunnerUpRerunsJob ..... adapt (body unchanged) — the re-run path it
+//                                               drives was rebuilt by F5e; the invariant it
+//                                               asserts (a vanished runner-up is regenerated,
+//                                               not silently dropped) is unchanged, and F5e's
+//                                               own additions live in `QueuePassTests`
+//   testUseVersionIsIgnoredWhileARunIsInFlight .. adapt (body unchanged)
+//   testCompressIsRefusedWhileASwitchIsInFlight . adapt — F4 `canCompress` → `canStart`
+//   testClearFinishedRefusedWhileASwitchIsInFlight ... adapt (body unchanged)
+//   testSwitchFailingAfterRerunLeavesStateCanonical ... adapt (body unchanged)
+//   testRerunSwitchClearsAStaleRecompressErrorOnSuccess ... adapt (body unchanged)
+//   testLaterBatchDoesNotRewriteAFinishedRowsPreset ... adapt (body unchanged) — spec §5 keeps
+//                                               this one BY NAME through the per-row override
+//                                               reversal; `effectivePreset` equals the batch
+//                                               preset on a row with no override
+//   testSwitchWithADeletedShippedFileFailsLoudlyRatherThanMislabelling ... adapt (unchanged)
+//   testRemoveRowDiscardsRunnerUp ............. adapt (body unchanged)
+//   testClearFinishedDiscardsRunnerUps ........ adapt (body unchanged)
+//   testCancelDiscardsRunnerUpReservations .... adapt (body unchanged)
+//
+// === MARK: arming (R1/R3/R6/R7) — 5 at base ===
+// F4 step 5 re-keyed arming and futility onto `effectivePreset(for:)`/`effectiveVerbs(for:)`.
+// None of these five needed a body change: with no override the effective preset IS the batch
+// preset, so each still asserts its own invariant. Their per-row siblings are F4's
+// `QueueAdmissionTests.testArmingUsesRowEffectivePreset` and `testFutilityKeyIncludesVerbSet`,
+// and P-D's `testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs` below.
+//   testSelectingADifferentPresetArmsAFinishedRow ... adapt (body unchanged)
+//   testReselectingTheRowsPresetDisarmsIt ..... adapt (body unchanged)
+//   testFailedRowsNeverArm .................... adapt (body unchanged)
+//   testNoGainRowArmsElsewhereAndIsFutileAtItsOwnPreset ... adapt (body unchanged)
+//   testNothingArmsWhileARunIsInFlight ........ adapt (body unchanged)
+//   testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs ... new(P-D)
+//
+// === MARK: recompress prediction (R16) — 4 at base ===
+// R16's calibration gate is the engine's own `wantsMRC` conjunction, and the redesign ADDED a
+// third term to it: the row's `rebuildScan` override. The two path tests below predate that
+// term and exercise only the preset term, hence P-D's sibling.
+//   testPredictionScalesByTheObservedRatioWhenThePathRepeats ... adapt (body unchanged)
+//   testPredictionUsesTheRawEstimateWhenTheEnginePathChanges ... adapt (body unchanged)
+//   testPredictionIsWithheldWhenItWouldNotBeatTheOriginal ... adapt (body unchanged)
+//   testPredictionIsWithheldWhenTheOriginalIsGone ... adapt (body unchanged)
+//   testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut ... new(P-D)
+//
+// === MARK: recompress commit protocol (R10–R13) — 12 at base ===
+// F5e rebuilt `recompress`'s engine call (OCR re-applied, row `rebuildScan` honoured, commit
+// through `replaceItemAt`, `finalBytes` re-stat). Its new assertions live in `QueuePassTests`;
+// every commit-protocol invariant here survives unchanged, because R10–R13 govern WHERE the
+// result lands and WHAT is parked, neither of which the reversals touch.
+//   testRecompressCommitsAndParksThePreviousVersion ... adapt (body unchanged)
+//   testRecompressDeliversTheFreshResultWhenTheShippedFileWasDeletedOutsideTheApp ... adapt
+//   testPreviousVersionsPresetOffersAnInstantSwitchRatherThanArming ... adapt (unchanged)
+//   testRecompressFailureKeepsThePreviousVersionAndReportsIt ... adapt (body unchanged)
+//   testARecompressErrorClearsWhenThePresetChangesOrTheNextRunStarts ... adapt (unchanged)
+//   testCancellingDuringTheQueuePhaseNeverStartsTheRecompressPhase ... adapt (unchanged)
+//   testCancellingARecompressKeepsThePreviousResult ... adapt (body unchanged)
+//   testNoGainRecompressKeepsEveryReference ... adapt (body unchanged)
+//   testRecompressWritesToTheRowsExistingResultPathAfterTheFolderChanged ... adapt (unchanged)
+//   testAQueuedJobNeverClaimsAnArmedRowsResultPath ... adapt (body unchanged) — the reservation
+//                                               ledger moved to add time (F4), and this still
+//                                               asserts the collision it was written for
+//   testAQueuedJobNeverClaimsAnExistingRowsLiveRunnerUpPath ... adapt (body unchanged)
+//   testMissingOriginalReportsPerRowAndLeavesTheResultIntact ... adapt (body unchanged)
+//   testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious ... new(P-D)
+//
+// === MARK: one run, two phases (R5/R9) — 5 at base ===
+//   testMixedRunCountsBothSets ................ adapt — F4 `canCompress` → `canStart`
+//   testArmedRowsAloneEnableTheButton ......... adapt — F4 `canCompress` → `canStart`
+//   testTheRecompressPhaseWaitsForTheQueuePhase ... adapt (body unchanged)
+//   testRunProgressIsScopedToTheRunsOwnRows ... adapt (body unchanged)
+//   testAFailedQueuedRowStillCountsTowardTheProgressBar ... adapt (body unchanged)
+//
+// === MARK: armed-state aggregates and cache lifecycle (R4/R17/R18) — 3 at base ===
+//   testAllFinishedIsFalseWhileARowIsArmed .... adapt (body unchanged)
+//   testClearFinishedDiscardsTheParkedPreviousVersion ... adapt (body unchanged)
+//   testAPlainResultWithAPreviousVersionOffersTheCapsule ... adapt — F1b moved the capsule to
+//                                               the "N versions" family, F5a took the row to
+//                                               three cards; the GATE it pins (a parked slot,
+//                                               never the card count) is unchanged
+//
+// === MARK: the armed banner's arithmetic (R4) — 3 at base ===
+//   testArmedSummarySumsThePredictedExtraSaving ... adapt (body unchanged)
+//   testArmedSummaryGoesNonPositiveWhenTheArmedPresetIsLessAggressive ... adapt (unchanged)
+//   testArmedSummaryWithholdsTheExtraWhenNoRowPredictsConfidently ... adapt (unchanged)
+//   testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset ... new(P-D)
+//
+// === MARK: the previous version, end to end (R7/R15) — 4 at base ===
+// The R7 in this heading is RECOMPRESS R7 (the previous-version slot), not MRC R7 (the
+// discarded losing hybrid). Only the latter is reversed — the tag-grep trap this map exists
+// to avoid.
+//   testUsingThePreviousVersionSwapsTheDeliveredFileBack ... adapt (body unchanged)
+//   testUsingAVanishedPreviousVersionReportsItAndDropsTheSlot ... adapt (body unchanged)
+//   testAFailedSwitchKeepsAPreviousVersionThatIsStillOnDisk ... adapt (body unchanged)
+//   testAFailedRunnerUpSwitchKeepsTheRunnerUpThatIsStillOnDisk ... adapt (body unchanged)
+//
+// === MARK: lead derivation (R2/R6/R10/R12) — 2 at base ===
+//   testANoGainRowIsBothUnchangedAndArmed ..... adapt (body unchanged)
+//   testAnArmedRowWithAMissingOriginalOffersNoPrediction ... adapt (body unchanged)
+//
+// === cross-suite: every test elsewhere whose asserted behaviour this spec reverses ===
+// Located by the mechanism greps above, not by rule tags. Each disposition below was VERIFIED
+// against the commit that owns it; the flips are their owners' work, recorded here so the
+// re-derivation is complete in one place.
+//
+//   `alternateOutput` — CompressEngineMRCTests (F2 owns all eight; verified landed):
+//     testHybridLargerThanGsShipsGsOutput ..... flipped-by(F2) → superseded-by(
+//                                               testHybridLostGateStillWritesRunnerUp).
+//                                               It asserted `alternateOutput` was NOT written
+//                                               when the hybrid lost — the exact R7 asymmetry
+//                                               spec §5 removes
+//     testHybridSmallerThanGsShipsHybridWithRunnerUp ......... adapt — hybrid-won retention was
+//                                               already symmetric; body changed only for F2's
+//                                               `ReportSpy` count refactor
+//     testHybridWinsButGsCandidateNotSmallerThanInputParksOriginalAsRunnerUp ... adapt — the
+//                                               untouched-original park is not a compress
+//                                               artefact, so §6.3's withhold rule spares it
+//                                               (DECISIONS 2026-07-24)
+//     testMRCInternalFailureShipsGsSilently ... adapt — no valid hybrid exists, so retention
+//                                               cannot fire
+//     testNeverLargerThanInputStillHolds ...... adapt — no-gain path, nothing to retain
+//     testScanColourOnMaximumQualityNeverAttemptsMRC ......... adapt — no hybrid built (D3)
+//     testScanBilevelStillRoutesToRungTwo ..... adapt — no hybrid built
+//     testCancelDuringRungThreeDeliversNoOutput ............... adapt — body untouched by F2
+//   MRCInvariantTests.testEndToEndMixedDocumentBeatsGs ....... adapt — the hybrid WINS there,
+//                                               and the winning path always retained its loser
+//
+//   `isRunning` / the add-time guard — F4 owns both flips (verified landed):
+//     ToolQueueTests.testAddWhileRunningIsRefused ............. flipped-by(F4) → superseded-by(
+//                                               testAddDuringRunJoinsTheLiveBatch), the
+//                                               queue-level half; tombstoned in that file
+//     QueueViewModelTests.testAddIsIgnoredWhileABatchIsRunning ... see the untagged block above
+//   ToolQueueTests.testSecondRunIsRefusedSoTheLiveBatchStaysCancellable ... adapt — the `run`
+//                                               re-entrancy guard is NOT the add guard and is
+//                                               deliberately untouched (plan F4)
+//
+//   `switchesInFlight` — no reversal: the switch guard's semantics are unchanged by the spec, and
+//                                               its only consumer outside this file is
+//                                               `QueuePassTests`, written by F5a/F5b/F5e AFTER
+//                                               the reversals landed — it cannot be asserting the
+//                                               old behaviour. All adapt.
+//
+//   Checked and INERT — the two files `grep -rln isRunning Tests/` returns that no row above
+//   accounts for. Named so the sweep is re-runnable: a reader repeating that grep gets five
+//   files and must be able to tell a null result from an omission.
+//     `BatchProgressTests` ..................... created by F5c (bb45372), after every reversal,
+//                                               so it cannot assert pre-reversal behaviour; its
+//                                               `isRunning` hits are `waitUntil` conditions, not
+//                                               assertions
+//     `SeatbeltRunTests` ....................... homonym: every hit is `Foundation.Process`'s own
+//                                               `isRunning` on the gs child, not the view model's.
+//                                               Untouched since 624d398, and the seatbelt scope is
+//                                               a KEPT constraint (spec §5), not a reversed one
+//
+//   Recompress R19 (OCR gains no recompress behaviour) — reversed by F5e. No test asserted R19
+//                                               anywhere: the mechanism grep returns only two
+//                                               `Sources/` comments and no assertion, so the
+//                                               reversal's whole test surface is F5e's new
+//                                               `QueuePassTests` re-run block. (One of those
+//                                               comments is now a stale claim — reported to the
+//                                               orchestrator, not fixed here: no `Sources/`
+//                                               edits in this track.)
+//
+// === gaps this task filled (4) ===
+// Each is a rule that survives R1–R18 but whose mechanism the redesign changed underneath it,
+// leaving the rule asserted only against the pre-redesign shape. Every one was seen to FAIL
+// against a deliberately broken assertion before being committed — the suite is green by
+// construction here, so a test that has never been red is a test that proves nothing.
+//   testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs — R6 futility, preset axis, per row
+//   testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut — R16 calibration, the
+//     `rebuildScan` term the redesign added to the path test
+//   testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset — R4 banner arithmetic, per row
+//   testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious — spec §5's version-cap
+//     collision driven end to end through the view model (`VersionStoreTests`'
+//     `testConsentRetentionPlusPreviousParkStaysWithinCap` proves it at the store)
+
+/// Drives `QueueViewModel` exactly as the view does — the full batch/preset/estimate/
 /// output-folder GUI path (Track C, Task C.2), end to end, with no UI harness involved (the
 /// view itself has no logic beyond calling into this model).
 @MainActor
-final class CompressViewModelTests: XCTestCase {
+final class QueueViewModelTests: XCTestCase {
 
-    /// `compress()` reserves an output name for every job it snapshots, but several MainActor hops
-    /// separate that snapshot from the queue launching anything. A file added in that window would
-    /// be `.queued`, so the live batch would run it — with no reserved name, allocating from
-    /// inside a concurrent job body and racing the very collision the reservation prevents. Both
-    /// the "+ Add" button and the drop handler call `add` unconditionally, so the window is
-    /// reachable by an ordinary user dropping a file just as a batch starts.
-    func testAddIsIgnoredWhileABatchIsRunning() async throws {
-        let model = CompressViewModel()
-        XCTAssertNil(model.loadError)
+    // `testAddIsIgnoredWhileABatchIsRunning` lived here. It asserted the OLD add-time guard —
+    // names were reserved in a serial pass at run start, so a file dropped mid-batch would run
+    // unreserved. Reservation moved to add time (spec §6.5), so the drop now JOINS the batch:
+    // SUPERSEDED by `QueueAdmissionTests.testAddDuringRunJoinsBatch`.
 
-        let inputs = [try Fixtures.imagePDF(), try Fixtures.textImagePDF()]
-        model.outputFolder = inputs[0].deletingLastPathComponent()
-        model.add(inputs)
-        try await waitUntil(timeout: 5) { model.jobs.count == 2 }
+    /// Vision's `.fast` recognition supports only the six Latin-script entries of
+    /// `OCROptions.curatedLanguages` — Chinese, Japanese and Korean need `.accurate` (recorded on
+    /// `OCROptions` itself, read from `supportedRecognitionLanguages()`). A Fast + CJK request
+    /// either fails or reads nothing, so the pairing is clamped at the view model's own options
+    /// surface, where the user sees the control snap back rather than being quietly overridden
+    /// deeper down.
+    func testCJKLanguageClampsAccuracyToAccurate() throws {
+        let model = QueueViewModel(engine: nil)
 
-        model.compress()
-        XCTAssertTrue(model.isRunning)
+        for code in ["zh-Hans", "ja-JP", "ko-KR"] {
+            model.ocrOptions = OCROptions(accuracy: .fast, languages: [code])
+            XCTAssertEqual(model.ocrOptions.accuracy, .accurate,
+                           "\(code) cannot be read at Fast, so the request must not claim it will")
+            XCTAssertEqual(model.ocrOptions.languages, [code], "only the accuracy is clamped")
+        }
 
-        // The drop that lands a moment too late.
-        model.add([try Fixtures.bornDigitalPDF()])
-        XCTAssertEqual(model.jobs.count, 2,
-                       "a file added mid-batch must not join the running batch unreserved")
+        // A mixed selection still clamps — one unsupported language is enough to make Fast a lie.
+        model.ocrOptions = OCROptions(accuracy: .fast, languages: ["en-US", "ja-JP"])
+        XCTAssertEqual(model.ocrOptions.accuracy, .accurate)
 
-        try await waitUntil(timeout: 60) { !model.isRunning }
-        // And once the batch is over, adding works normally again.
-        model.add([try Fixtures.bornDigitalPDF()])
-        try await waitUntil(timeout: 5) { model.jobs.count == 3 }
+        // And a Latin-only Fast request is left exactly as the user set it.
+        model.ocrOptions = OCROptions(accuracy: .fast, languages: ["en-US", "fr-FR"])
+        XCTAssertEqual(model.ocrOptions.accuracy, .fast)
     }
 
     func testThreeFileSyntheticBatchCompressesEndToEnd() async throws {
-        let model = CompressViewModel()
+        // A temp-rooted history store: this test drives a real `compress()` through the
+        // production entry point, and a history entry must never land in the developer's own
+        // `~/Library/Application Support/Toolbox/history.json`.
+        let historyRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("history-\(UUID().uuidString)", isDirectory: true)
+        let model = QueueViewModel(history: HistoryStore(directory: historyRoot))
         XCTAssertNil(model.loadError, "Ghostscript should resolve from the test host bundle")
 
         // Three distinct basenames: a shared output folder collision-avoidance race between
@@ -72,7 +326,7 @@ final class CompressViewModelTests: XCTestCase {
             XCTAssertGreaterThan(job.estimate!.predictedBytes, 0)
         }
 
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
         model.compress()
         XCTAssertTrue(model.isRunning)
 
@@ -87,12 +341,17 @@ final class CompressViewModelTests: XCTestCase {
         // Every job reached a terminal, real (queue-driven) outcome — not a leftover estimate.
         for job in model.jobs {
             switch job.state {
-            case .done(.compressed(let before, let after)):
-                XCTAssertGreaterThan(before, 0)
-                XCTAssertGreaterThan(after, 0)
-                XCTAssertLessThan(after, before)
-            case .done(.noGain):
-                break   // the tiny born-digital fixture may legitimately not shrink
+            case .done(let outcome):
+                switch outcome.compress {
+                case .compressed(let before, let after):
+                    XCTAssertGreaterThan(before, 0)
+                    XCTAssertGreaterThan(after, 0)
+                    XCTAssertLessThan(after, before)
+                case .noGain:
+                    break   // the tiny born-digital fixture may legitimately not shrink
+                default:
+                    XCTFail("expected a compressed or no-gain leg, got \(outcome)")
+                }
             case .failed(let message):
                 XCTFail("job for \(job.url.lastPathComponent) failed: \(message)")
             default:
@@ -105,7 +364,7 @@ final class CompressViewModelTests: XCTestCase {
             let expected = outputFolder.appendingPathComponent(
                 "\(input.deletingPathExtension().lastPathComponent)-compressed.pdf")
             let job = try XCTUnwrap(model.jobs.first { $0.url == input })
-            if case .done(.compressed) = job.state {
+            if case .done(let outcome) = job.state, case .compressed = outcome.compress {
                 XCTAssertTrue(FileManager.default.fileExists(atPath: expected.path),
                               "expected compressed output at \(expected.path)")
             }
@@ -113,7 +372,7 @@ final class CompressViewModelTests: XCTestCase {
     }
 
     func testChangingPresetReestimatesQueuedJobs() async throws {
-        let model = CompressViewModel()
+        let model = QueueViewModel()
         let input = try Fixtures.imagePDF()
         model.add([input])
 
@@ -207,8 +466,8 @@ final class CompressViewModelTests: XCTestCase {
         let shippedURL = try XCTUnwrap(job.resultURL)
         XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes)
 
-        async let first: Void = model.useVersion(.runnerUp, for: job)
-        async let second: Void = model.useVersion(.runnerUp, for: job)
+        async let first = model.useVersion(.runnerUp, for: job)
+        async let second = model.useVersion(.runnerUp, for: job)
         _ = await (first, second)
 
         let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
@@ -284,46 +543,61 @@ final class CompressViewModelTests: XCTestCase {
                        "a plain swap must keep the row .done/.doneHeavy and allFinished true throughout")
     }
 
-    /// `capsuleTitle` drives the row's capsule label; it must flip with the shipped version and use
-    /// the popover's own vocabulary for the parked version — "Normal compression" when the runner-up
-    /// is a real gs output, matching the label `VersionsPopover.label(_:slot:)` gives the parked
-    /// card, "Normal".
-    func testCapsuleTitleFlipsOnSwitch() async throws {
+    /// The honest-label invariant the superseded `testCapsuleTitleFlipsOnSwitch` used to carry now
+    /// lives on the popover's rows: the capsule only counts them, so a switch must flip the SHIPPED
+    /// card's variant — the vocabulary `VersionsPopoverContent` renders per row.
+    func testShippedCardFlipsOnSwitch() async throws {
         let env = try HeavyEnv()
         let model = env.model
         try await env.runToDone()
 
         var job = try XCTUnwrap(env.doneHeavyJob(model))
         var versions = try XCTUnwrap(model.versions(for: job))
-        XCTAssertEqual(versions.capsuleTitle, "Heavy compression")
+        XCTAssertEqual(versions.cards.first?.key, .shipped)
+        XCTAssertEqual(versions.cards.first?.version.variant, .mrc)
+        // Three from F5a on: the batch's commit records the untouched input, so the popover's
+        // always-present Original reference row joins the pair (spec §6.4).
+        XCTAssertEqual(versions.capsuleTitle, "3 versions")
 
         await model.useVersion(.runnerUp, for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
-        XCTAssertEqual(versions.capsuleTitle, "Normal compression",
+        XCTAssertEqual(versions.cards.first?.version.variant, .plain,
                        "the parked version is a real gs output, not the untouched input")
+        // The runner-up card BY KEY, not `cards.last`: the reference row is appended last now.
+        XCTAssertEqual(versions.cards.first(where: { $0.key == .runnerUp })?.version.variant, .mrc,
+                       "and the heavy version is now the parked one")
+        XCTAssertEqual(versions.capsuleTitle, "3 versions")
 
         await model.useVersion(.runnerUp, for: job)
         job = try XCTUnwrap(env.doneHeavyJob(model))
         versions = try XCTUnwrap(model.versions(for: job))
-        XCTAssertEqual(versions.capsuleTitle, "Heavy compression",
-                       "switching back restores the heavy label")
+        XCTAssertEqual(versions.cards.first?.version.variant, .mrc,
+                       "switching back restores the heavy version to the shipped card")
+        XCTAssertEqual(versions.capsuleTitle, "3 versions")
     }
 
-    /// When the runner-up is the untouched original (R6/R7 field fix), switching to it must label
-    /// the capsule "Original" — matching the label `VersionsPopover.label(_:slot:)` gives that card
-    /// — not "Normal compression".
-    func testCapsuleTitleReadsOriginalWhenRunnerUpIsInput() async throws {
+    /// When the runner-up is the untouched original (R6/R7 field fix), the popover must surface it
+    /// with its kind intact — `VersionsPopoverContent` labels that row "Original", and a `.plain`
+    /// kind there would advertise a gs output that was never produced.
+    func testCardsSurfaceOriginalKindParkedVariant() async throws {
         let env = try HeavyEnv(before: HeavyEnv.normalBytes)
         let model = env.model
         try await env.runToDone()
 
         let job = try XCTUnwrap(env.doneHeavyJob(model))
+        var versions = try XCTUnwrap(model.versions(for: job))
+        let parked = try XCTUnwrap(versions.cards.first { $0.key == .runnerUp })
+        XCTAssertEqual(parked.version.variant, .original,
+                       "the parked file IS the input, and the card must say so")
+        XCTAssertEqual(versions.capsuleTitle, "2 versions")
+
         await model.useVersion(.runnerUp, for: job)
         let switchedJob = try XCTUnwrap(env.doneHeavyJob(model))
-        let versions = try XCTUnwrap(model.versions(for: switchedJob))
+        versions = try XCTUnwrap(model.versions(for: switchedJob))
         XCTAssertFalse(versions.shipped?.variant == .mrc)
-        XCTAssertEqual(versions.capsuleTitle, "Original")
+        XCTAssertEqual(versions.cards.first?.version.variant, .original,
+                       "the kind travels with the bytes across the switch")
     }
 
     /// `displayedSizes(for:)` feeds the batch success banner's totals; for a `.compressedHeavy` job it
@@ -474,7 +748,7 @@ final class CompressViewModelTests: XCTestCase {
         env.stub.gate = gate
         let callsBefore = env.stub.callCount
 
-        async let switching: Void = model.useVersion(.runnerUp, for: job)
+        async let switching = model.useVersion(.runnerUp, for: job)
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
         XCTAssertTrue(model.switchesInFlight.contains(job.id))
         XCTAssertFalse(model.isRunning, "the switch's re-run, not a compress run, is in flight")
@@ -482,7 +756,7 @@ final class CompressViewModelTests: XCTestCase {
         // An armed/queued row present alongside the in-flight switch.
         model.add([try Fixtures.bornDigitalPDF()])
         try await waitUntil(timeout: 5) { model.jobs.count == 2 }
-        XCTAssertFalse(model.canCompress, "the footer button must disable, not silently no-op")
+        XCTAssertFalse(model.canStart, "the footer button must disable, not silently no-op")
 
         model.compress()
         XCTAssertFalse(model.isRunning, "compress() must not start a run while a switch is in flight")
@@ -494,7 +768,7 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.switchesInFlight.contains(job.id) }
 
         // Now that the switch has landed, compress() must work again.
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
         let callsAfterSwitch = env.stub.callCount
         model.compress()
         try await waitUntil(timeout: 5) { model.isRunning }
@@ -519,7 +793,7 @@ final class CompressViewModelTests: XCTestCase {
         env.stub.gate = gate
         let callsBefore = env.stub.callCount
 
-        async let switching: Void = model.useVersion(.runnerUp, for: job)
+        async let switching = model.useVersion(.runnerUp, for: job)
         try await waitUntil(timeout: 5) { env.stub.callCount == callsBefore + 1 }
         XCTAssertTrue(model.switchesInFlight.contains(job.id))
 
@@ -851,6 +1125,45 @@ final class CompressViewModelTests: XCTestCase {
         try await waitUntil(timeout: 5) { !model.isRunning }
     }
 
+    /// R6's futile record is keyed by `(row, effective preset, verb set)`, and the PRESET term is
+    /// the row's own — the half the redesign moved and the half nothing covered. F4's
+    /// `QueueAdmissionTests.testFutilityKeyIncludesVerbSet` varies the verb set;
+    /// `testNoGainRowArmsElsewhereAndIsFutileAtItsOwnPreset` above varies the BATCH preset. Neither
+    /// drives the row back onto a futile preset by override, which is the case that discriminates:
+    /// a lookup still reading the batch preset would find no record at Smallest Size and offer to
+    /// re-run a job it has already been told cannot shrink — R6's whole point.
+    func testFutilityIsKeyedByTheRowsEffectivePresetNotTheBatchs() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        env.stub.script = { _, _ in .init(outcome: .noGain(bytes: 9000),
+                                          shippedBytes: nil, runnerUpBytes: nil) }
+        model.preset = .balanced
+        let id = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .futile(.balanced), "the record is made at the preset the row ran at")
+
+        // The batch moves away, so the row re-opens at the new preset — the positive control.
+        model.preset = .smallestSize
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize))
+
+        // …and an override pointing the ROW back at Balanced must find the record again, while the
+        // batch still sits at Smallest Size.
+        model.setOverride(RowOverride(preset: .balanced), for: id)
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .futile(.balanced),
+                       "futility follows the preset the row would actually run at")
+        XCTAssertEqual(model.armedCount, 0, "and a futile row is not in the armed set")
+
+        // Dropping the override hands the row back to the batch, proving the effective preset — not
+        // some sticky per-row copy of it — is what the lookup reads.
+        model.setOverride(nil, for: id)
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
+                       .armed(.smallestSize))
+    }
+
     // MARK: recompress prediction (R16)
 
     /// A row whose engine path repeats scales the raw estimate by what the engine actually did —
@@ -947,6 +1260,55 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertTrue(model.isOriginalMissing(for: job))
     }
 
+    /// The third term of R16's path test. The calibration gate is the engine's own `wantsMRC`
+    /// conjunction — the row's `rebuildScan`, `.scanColour`, and a preset other than Maximum
+    /// quality — and the redesign ADDED the first of those (spec §7's per-file settings). The two
+    /// path tests above predate it and both move the PRESET term, so an implementation that read
+    /// the batch's rebuild decision, or none at all, would pass every one of them while quoting a
+    /// scan-rebuild's ratio to a row that has just been told not to rebuild — the over-promise the
+    /// calibration exists to remove.
+    func testPredictionTakesTheRawEstimateWhenTheRowsRebuildIsOptedOut() async throws {
+        // A large original for the reason `testPredictionUsesTheRawEstimateWhenTheEnginePathChanges`
+        // needs one: the "must beat the original" guard is checked LAST and would return nil for
+        // both legs, testing nothing. `timeBudget` is raised because this asserts on a real
+        // analysis — a fallback estimate arrives once and no waiting recovers it.
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour, timeBudget: 5)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.runToDone().id
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        // Positive control: rebuild on, `.scanColour`, Smallest Size, shipped MRC — all three terms
+        // agree, so the observed ratio is applied and the answer is NOT the raw estimate.
+        var job = try XCTUnwrap(model.jobs.first)
+        let rawBefore = try XCTUnwrap(model.analysis(for: job)?
+            .estimates[.smallestSize]?.predictedBytes)
+        let calibrated = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        XCTAssertNotEqual(calibrated, rawBefore,
+                          "precondition: with the rebuild on, this row calibrates")
+
+        // The row opts out. That re-prices the analysis onto the gs-only path (spec §6.7), so the
+        // raw figure the prediction must now equal is a NEW number — read it after the re-price
+        // lands, or this compares against the rebuild's own estimate.
+        let displayed = try XCTUnwrap(model.jobs.first?.estimate?.predictedBytes)
+        model.setOverride(RowOverride(rebuildScan: false), for: id)
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate?.predictedBytes != displayed }
+
+        job = try XCTUnwrap(model.jobs.first)
+        let raw = try XCTUnwrap(model.analysis(for: job)?.estimates[.smallestSize]?.predictedBytes)
+        XCTAssertEqual(model.recompressPrediction(for: job, at: .smallestSize), raw,
+                       "an MRC-shipped row whose rebuild is off changes path — the ratio learned "
+                       + "on the rebuild does not transfer, so the raw estimate stands")
+
+        // Named negative control: the figure an implementation blind to the override would give.
+        // Associated exactly as the implementation associates it, and three orders of magnitude
+        // away from the right answer, so this test can never pass by accident.
+        let baseline = try XCTUnwrap(model.analysis(for: job)?.estimates[.balanced]?.predictedBytes)
+        XCTAssertNotEqual(model.recompressPrediction(for: job, at: .smallestSize),
+                          Int((Double(HeavyEnv.heavyBytes) / Double(baseline)) * Double(raw)),
+                          "quoting the rebuild's own ratio here is the defect this pins")
+    }
+
     // MARK: recompress commit protocol (R10–R13)
 
     /// The happy path: the fresh result takes the row's existing output path, the version it
@@ -1027,6 +1389,321 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)),
                        .instantSwitch(.balanced))
         XCTAssertEqual(model.armedCount, 0)
+    }
+
+    /// The Change quality sheet's footer CTA (regression fix, spec §7): an `.instantSwitch` row
+    /// pressed through the sheet must actually land the parked previous version on the delivery
+    /// path — the SAME on-disk switch `useVersion` drives for the versions popover — not silently
+    /// do nothing because the row was in neither `armedJobs` nor a queued state.
+    func testConfirmLandsTheParkedVersionForAnInstantSwitchRow() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Recompress at Smallest, parking the Balanced version.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+        let shippedURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
+
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
+
+        let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertEqual(row.shipped?.preset, .balanced, "the switch, not a recompute, must have landed")
+        XCTAssertEqual(try fileSize(shippedURL), HeavyEnv.heavyBytes,
+                       "the parked Balanced bytes are back on the delivered path")
+        XCTAssertEqual(model.recompressState(for: try XCTUnwrap(model.jobs.first)), .none,
+                       "the row now matches its own target — nothing left to switch or arm")
+    }
+
+    /// Regression (review finding, spec §7): a press that lands NEITHER an instant switch nor a
+    /// `compress()` run — because `canStart` refuses (here: the updater reports busy) and there is
+    /// nothing to switch — must not leave the previewed batch preset stuck. The sheet's `isEnabled`
+    /// gate (`canSwitch`) only checks row states, so this refusal is invisible to the button.
+    func testConfirmRestoresTheFallbackPresetWhenNothingActuallyStarts() async throws {
+        final class Flag { var busy = false }
+        let flag = Flag()
+        let env = try HeavyEnv(isUpdating: { flag.busy })
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .none, "already at its own preset — no work to do")
+        flag.busy = true
+        XCTAssertFalse(model.canStart, "the updater being busy must refuse the start")
+
+        model.preset = .smallestSize  // the sheet's live preview
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
+
+        XCTAssertEqual(model.preset, .balanced,
+                       "nothing started — the previewed preset must not stick")
+    }
+
+    /// Mixed batch (spec §7): an instant-switch row and an armed row pressed through the same
+    /// sheet confirm both land — the switch via `useVersion`, the recompress via `compress()` —
+    /// while a row that already matches its target is left exactly alone.
+    func testConfirmHandlesAMixedBatchOfInstantSwitchArmedAndUnchangedRows() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+        let instantID = try XCTUnwrap(model.jobs.first).id
+
+        let unchangedID = try await env.addRow()
+        let armedID = try await env.addRow()
+        model.compress()  // both queued rows land at .balanced, same as the instant-switch row
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        let unchangedShippedURL = try XCTUnwrap(model.versions(for: try XCTUnwrap(
+            model.jobs.first { $0.id == unchangedID }))?.shipped?.url)
+        // Pinned to a preset the batch never moves to below, so it stays armed against ITS OWN
+        // target throughout, regardless of what `model.preset` does (R1's row-preset rule).
+        model.setOverride(RowOverride(preset: .maximumQuality), for: armedID)
+
+        // Park the instant-switch row's Balanced version behind a Smallest recompress — the
+        // other two rows are excluded so this step leaves them exactly as they are.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.setArmedExclusion(true, for: unchangedID)
+        model.setArmedExclusion(true, for: armedID)
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.setArmedExclusion(false, for: unchangedID)
+        model.setArmedExclusion(false, for: armedID)
+        model.preset = .balanced
+
+        let instantJob = try XCTUnwrap(model.jobs.first { $0.id == instantID })
+        let unchangedJob = try XCTUnwrap(model.jobs.first { $0.id == unchangedID })
+        let armedJob = try XCTUnwrap(model.jobs.first { $0.id == armedID })
+        XCTAssertEqual(model.recompressState(for: instantJob), .instantSwitch(.balanced))
+        XCTAssertEqual(model.recompressState(for: unchangedJob), .none)
+        XCTAssertEqual(model.recompressState(for: armedJob), .armed(.maximumQuality))
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 900),
+                                          shippedBytes: 900, runnerUpBytes: nil) }
+        await ChangeQualitySheet.confirm(rows: [instantJob, unchangedJob, armedJob], model: model,
+                                         fallback: .balanced, fallbackExclusions: [])
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let switchedRow = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first { $0.id == instantID })))
+        XCTAssertEqual(switchedRow.shipped?.preset, .balanced, "the parked version landed via the switch")
+
+        let recompressedRow = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first { $0.id == armedID })))
+        XCTAssertEqual(recompressedRow.shipped?.preset, .maximumQuality, "the armed row was recompressed")
+
+        XCTAssertEqual(try fileSize(unchangedShippedURL), HeavyEnv.heavyBytes,
+                       "a row that already matches its target is left exactly alone")
+    }
+
+    /// Regression (review finding, R12): `confirm`'s instant-switch loop can record a failure note
+    /// on a row whose switch failed for a transient reason that leaves the ROW STATE unchanged
+    /// (store contract: any ordinary throw restores the shipped file, so `recompressState` still
+    /// reads `.instantSwitch` afterwards — never `.armed`, never queued). `confirm` unconditionally
+    /// calls `compress()` right after in the same press whenever `canStart` allows it (its own
+    /// doc: a case the button's `isEnabled` does not rule out) — and `compress()` used to blank
+    /// `recompressErrors` wholesale at the start of every run, wiping that note before the user
+    /// ever saw it, even though this row never actually entered the run it just started.
+    func testConfirmPreservesAFailedInstantSwitchNoteAcrossTheSamePresssCompress() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Park the Balanced version behind a Smallest recompress, so the row reads as an
+        // instant-switch candidate back at Balanced.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let instantJob = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: instantJob), .instantSwitch(.balanced))
+
+        // `compress()` refuses outright (`canStart`) unless something is queued or armed, so a
+        // second, unrelated row is needed for the press to actually start a run at all —
+        // `confirm`'s own doc names this exact shape ("a case this button's `isEnabled` does not
+        // rule out"). Run it to done, then override its target so it reads `.armed`.
+        let armedID = try await env.addRow()
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.setOverride(RowOverride(preset: .maximumQuality), for: armedID)
+        let armedJob = try XCTUnwrap(model.jobs.first { $0.id == armedID })
+        XCTAssertEqual(model.recompressState(for: armedJob), .armed(.maximumQuality))
+
+        // Same asymmetric ACL lever `testAFailedSwitchKeepsAPreviousVersionThatIsStillOnDisk`
+        // uses: denying new entries in the OUTPUT folder makes parking the shipped file throw
+        // while the parked (previous) file, living in the cache root, is never touched — so the
+        // row's `versionStore` record, and hence `recompressState`, is unchanged by the failure.
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        try Fixtures.denyingNewEntries(true, at: outputFolder)
+
+        await ChangeQualitySheet.confirm(rows: [instantJob, armedJob], model: model,
+                                         fallback: .balanced, fallbackExclusions: [])
+
+        // `recompressState` reads `.none` for every row while `isRunning` (arming is suppressed
+        // for the run's duration, R9) — the load-bearing check here is `recompressErrors` itself,
+        // not the derived arming state.
+        XCTAssertEqual(model.recompressErrors[instantJob.id],
+                       "Switch failed — kept your \(CompressPreset.smallestSize.title) version. "
+                       + "Try again.",
+                       "the failed switch's note must survive the SAME press's compress() call")
+
+        // Let the armed row's own recompress (which the same press just started) actually land,
+        // so teardown isn't left with a run in flight.
+        try Fixtures.denyingNewEntries(false, at: outputFolder)
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        XCTAssertEqual(model.recompressErrors[instantJob.id],
+                       "Switch failed — kept your \(CompressPreset.smallestSize.title) version. "
+                       + "Try again.",
+                       "and survive to the run's end too")
+    }
+
+    /// Regression (spec-fidelity r4/r5): `setArmedExclusions` is the sheet's whole-set restore
+    /// rule, exercised by `ChangeQualitySheet`'s `onDisappear` on every non-confirmed exit
+    /// (Cancel, Escape, the window closing) — the named acceptance test for that finding:
+    /// `armedExclusions` returns to its pre-sheet value after a dismissal with `confirmed == false`.
+    func testArmedExclusionsRestoreMirrorsTheSheetsNonConfirmedExit() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        try await env.runToDone()
+        let job = try XCTUnwrap(model.jobs.first)
+
+        let initialExclusions = model.armedExclusions
+        model.setArmedExclusion(true, for: job.id)
+        XCTAssertNotEqual(model.armedExclusions, initialExclusions, "the preview must actually move")
+
+        // Mirrors `ChangeQualitySheet.body`'s `.onDisappear { if !confirmed { … } }`.
+        model.setArmedExclusions(initialExclusions)
+        XCTAssertEqual(model.armedExclusions, initialExclusions,
+                       "armedExclusions returns to its pre-sheet value after a dismissal "
+                       + "with confirmed == false")
+    }
+
+    /// Regression (r5, sibling of the `started` fix): a press where every instant switch FAILS
+    /// and `compress()` is refused must restore both halves of the preview — the previewed
+    /// preset AND the previewed exclusion set — exactly like the plain "nothing to do" no-op
+    /// case, while leaving the failure note visible so the user knows why.
+    func testConfirmRestoresPresetAndExclusionsWhenEveryInstantSwitchFails() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Park the Balanced version behind a Smallest recompress, so the row reads as an
+        // instant-switch candidate back at Balanced.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+
+        // Same asymmetric ACL lever the sibling note-preservation test uses: denying new entries
+        // in the OUTPUT folder makes parking the shipped file throw while the parked (previous)
+        // file is never touched, so the switch fails without moving the row's own state.
+        let outputFolder = try XCTUnwrap(model.outputFolder)
+        try Fixtures.denyingNewEntries(true, at: outputFolder)
+
+        // A fabricated ID stands in for the sheet's pre-open snapshot — excluding `job` itself
+        // would make `recompressState` read `.none` (armedExclusions is checked there too) and
+        // the switch below would never even be attempted. `armedExclusions` is a plain ID set
+        // with no existence check, so this is a legitimate way to pin the whole-set restore
+        // independently of the switch under test.
+        let fallbackExclusions: Set<ToolJob.ID> = [UUID()]  // the sheet's snapshot at open
+        model.setArmedExclusions([UUID()])                 // the sheet's live preview, since changed
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced,
+                                         fallbackExclusions: fallbackExclusions)
+
+        XCTAssertNotNil(model.recompressErrors[job.id], "the failed switch's note must be visible")
+        XCTAssertEqual(model.preset, .balanced, "nothing landed — the previewed preset must not stick")
+        XCTAssertEqual(model.armedExclusions, fallbackExclusions,
+                       "nothing landed — the previewed exclusion set must not stick either")
+
+        try Fixtures.denyingNewEntries(false, at: outputFolder)
+    }
+
+    /// Regression (review finding, R12): the missing-shipped-file arm of `useVersion` only sets
+    /// `switchFailures`, never `recompressErrors` — so a `confirm` that inferred "landed" from
+    /// `recompressErrors[job.id] == nil` would misread this failure as a success, consuming the
+    /// exclusion set and letting the sheet's preset stick even though nothing switched. Sibling of
+    /// `testConfirmRestoresPresetAndExclusionsWhenEveryInstantSwitchFails`, pinned on the OTHER
+    /// failure arm the correctness lens flagged as unaudited.
+    func testConfirmDoesNotCountAMissingShippedFileAsALandedSwitch() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // Park the Balanced version behind a Smallest recompress, so the row reads as an
+        // instant-switch candidate back at Balanced.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+
+        // The user deletes the delivered file in Finder — there is no file watcher — so
+        // `useVersion` hits its "no version to switch to" arm, which records the failure only in
+        // `switchFailures`, never `recompressErrors`.
+        let shippedURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
+        try FileManager.default.removeItem(at: shippedURL)
+
+        let fallbackExclusions: Set<ToolJob.ID> = [UUID()]  // the sheet's snapshot at open
+        model.setArmedExclusions([UUID()])                 // the sheet's live preview, since changed
+        // The pre-sheet preset in this scenario is `.smallestSize` (the last confirmed run) —
+        // the sheet previews `.balanced` on top of it. Passing `.balanced` as the fallback made
+        // the preset assertion vacuous (r7 finding): restored-to-fallback and stuck-preview were
+        // the same value. `.smallestSize` makes the two outcomes distinguishable.
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .smallestSize,
+                                         fallbackExclusions: fallbackExclusions)
+
+        XCTAssertNil(model.recompressErrors[job.id],
+                     "this arm never touches recompressErrors — the old nil-inference bug's blind spot")
+        XCTAssertEqual(model.preset, .smallestSize,
+                       "nothing landed — the previewed preset must restore to the pre-sheet value")
+        XCTAssertEqual(model.armedExclusions, fallbackExclusions,
+                       "nothing landed — the previewed exclusion set must not stick either")
+    }
+
+    /// Regression (r5): a press where a switch actually LANDS consumes the whole exclusion set
+    /// for that run — not just the row the confirm touched — mirroring the mixed-batch test's
+    /// consume rule but pinned on its own so a regression here fails independently of that test.
+    func testConfirmConsumesTheWholeExclusionSetWhenASwitchLands() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
+
+        let excludedID = try await env.addRow()
+        model.setArmedExclusion(true, for: excludedID)
+
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
+
+        XCTAssertTrue(model.armedExclusions.isEmpty,
+                      "a landed switch consumes the exclusion set exactly for this run")
     }
 
     /// R12: an engine failure keeps the version the user had, on disk and on screen, and says so.
@@ -1316,6 +1993,60 @@ final class CompressViewModelTests: XCTestCase {
         XCTAssertNotNil(model.versions(for: job)?.shipped)
     }
 
+    /// Spec §5's version-cap collision (R14/R15), driven end to end. Both parked slots fill at once
+    /// the moment a re-run keeps a second variant of its own: the fresh loser takes the runner-up
+    /// slot while the version it replaced parks as the previous. `VersionStoreTests`'
+    /// `testConsentRetentionPlusPreviousParkStaysWithinCap` proves the store holds that shape;
+    /// nothing proved a real recompress PRODUCES it — and both incumbent re-run tests here
+    /// (`testRecompressCommitsAndParksThePreviousVersion`,
+    /// `testAPlainResultWithAPreviousVersionOffersTheCapsule`) script a re-run that comes back with
+    /// no runner-up at all, so the commit's two slot writes have only ever been exercised apart.
+    func testARecompressKeepsARetainedRunnerUpWhileParkingThePrevious() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+        let firstRunnerUp = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first))?
+            .runnerUp?.url)
+        XCTAssertNil(model.versions(for: try XCTUnwrap(model.jobs.first))?.previous,
+                     "precondition: only one slot is occupied before the re-run")
+
+        env.stub.script = { _, _ in .init(outcome: .compressedHeavy(before: 9000, after: 600,
+                                                                    runnerUpBytes: 2_000),
+                                          shippedBytes: 600, runnerUpBytes: 2_000) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertEqual(row.shipped?.bytes, 600)
+        XCTAssertEqual(row.shipped?.preset, .smallestSize)
+        XCTAssertEqual(row.runnerUp?.bytes, 2_000, "the runner-up slot holds THIS run's loser")
+        XCTAssertEqual(row.previous?.bytes, HeavyEnv.heavyBytes,
+                       "and the previous slot the version this run replaced")
+        XCTAssertEqual(row.previous?.preset, .balanced)
+
+        // The cap is four ROWS, not four slots: two parked versions, the file in use, and the
+        // untouched original referenced in place (spec §5's ruling; the popover lists exactly this).
+        XCTAssertEqual(row.cards.map(\.key), [.shipped, .runnerUp, .previous, .originalReference])
+        XCTAssertEqual(row.capsuleTitle, "4 versions")
+
+        // Every named version is really on disk — a card advertising a switch to a file that is not
+        // there is the mislabel R12 forbids.
+        for card in row.cards {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: card.version.url.path),
+                          "\(card.key) must name a file that exists")
+        }
+        XCTAssertEqual(try fileSize(try XCTUnwrap(row.runnerUp?.url)), 2_000)
+        XCTAssertEqual(try fileSize(try XCTUnwrap(row.previous?.url)), HeavyEnv.heavyBytes)
+
+        // …and the superseded runner-up is NOT still lying around: replacing the slot discards the
+        // file it held, or the session cache grows a version nothing can reach (D6/R18).
+        XCTAssertNotEqual(row.runnerUp?.url, firstRunnerUp)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstRunnerUp.path),
+                       "the version the runner-up slot no longer holds is discarded, not orphaned")
+    }
+
     // MARK: one run, two phases (R5/R9)
 
     /// R5: newly added files and armed rows form ONE run behind one button. The counts the button
@@ -1337,7 +2068,7 @@ final class CompressViewModelTests: XCTestCase {
         model.preset = .smallestSize
         XCTAssertEqual(model.pendingCount, 1)
         XCTAssertEqual(model.armedCount, 1, "both sets: the button reads Compress K · Recompress M")
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
     }
 
     /// The armed set alone is enough to arm the button — with nothing queued, "Recompress N PDFs"
@@ -1347,10 +2078,10 @@ final class CompressViewModelTests: XCTestCase {
         let model = env.model
         model.preset = .balanced
         try await env.runToDone()
-        XCTAssertFalse(model.canCompress)
+        XCTAssertFalse(model.canStart)
 
         model.preset = .smallestSize
-        XCTAssertTrue(model.canCompress)
+        XCTAssertTrue(model.canStart)
     }
 
     /// Risk 2's resolution, asserted: the recompress phase does not start until the queue phase is
@@ -1476,8 +2207,10 @@ final class CompressViewModelTests: XCTestCase {
                        "the parked previous version must go with the row")
     }
 
-    /// R15: the capsule renders on ANY row with two or more versions — including a plain
-    /// (non-heavy) result that gained a previous version from a recompress.
+    /// R15: the capsule renders on ANY row holding a PARKED version — including a plain (non-heavy)
+    /// result that gained a previous version from a recompress. The gate is the parked slots, not
+    /// the card count: the popover's always-present Original reference row puts every delivered row
+    /// at two cards or more.
     func testAPlainResultWithAPreviousVersionOffersTheCapsule() async throws {
         let env = try HeavyEnv()
         let model = env.model
@@ -1493,8 +2226,12 @@ final class CompressViewModelTests: XCTestCase {
 
         let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
         XCTAssertNil(row.runnerUp, "the re-run shipped plain gs, so there is no runner-up")
-        XCTAssertEqual(row.count, 2, "current + previous still draws the capsule")
-        XCTAssertEqual(row.capsuleTitle, "Versions")
+        // Current + previous + the Original reference row F5a's commit records (spec §6.4). The
+        // capsule's GATE is still the parked slot, not the card count — this row draws one because
+        // it holds a `previous`, and a row with no parked version draws none however many cards
+        // the popover would list.
+        XCTAssertEqual(row.count, 3, "current + previous + the original still draws the capsule")
+        XCTAssertEqual(row.capsuleTitle, "3 versions")
     }
 
     // MARK: the armed banner's arithmetic (R4)
@@ -1576,6 +2313,45 @@ final class CompressViewModelTests: XCTestCase {
         let summary = try XCTUnwrap(model.armedSummary)
         XCTAssertEqual(summary.armedCount, 1, "the row IS armed — the number is what is missing")
         XCTAssertNil(summary.extraSaving)
+    }
+
+    /// The banner's arithmetic is per ROW, not per batch (spec §6.1). All three branches above
+    /// price their row at the batch preset because none of them overrides anything, so a summary
+    /// still summing at `preset` passes every one — while promising a saving for a run the row
+    /// will never make. The pill and the banner must describe the same run.
+    func testArmedSummaryPricesAnOverriddenRowAtItsOwnPreset() async throws {
+        // The 50 MB original keeps BOTH legs confident: at Maximum quality the row changes engine
+        // path and takes the raw estimate, which the "must beat the original" guard would refuse
+        // against `HeavyEnv`'s default 9 kB — and a nil prediction contributes nothing, so the
+        // test would compare two identical sums.
+        let env = try HeavyEnv(before: 50_000_000, contentType: .scanColour, timeBudget: 5)
+        let model = env.model
+        model.preset = .balanced
+        let id = try await env.runToDone().id
+        try await waitUntil(timeout: 5) { model.jobs.first?.estimate != nil }
+
+        model.preset = .smallestSize
+        var job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .armed(.smallestSize))
+        let atSmallest = try XCTUnwrap(model.recompressPrediction(for: job, at: .smallestSize))
+        XCTAssertEqual(model.armedSummary?.extraSaving, HeavyEnv.heavyBytes - atSmallest,
+                       "with no override the row prices at the batch preset")
+
+        // The row alone moves to Maximum quality. A preset override re-prices nothing (every preset
+        // is predicted in one analysis pass), so the numbers below come from the same estimates.
+        model.setOverride(RowOverride(preset: .maximumQuality), for: id)
+        job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .armed(.maximumQuality),
+                       "the row arms at its own preset")
+        let atMaximum = try XCTUnwrap(model.recompressPrediction(for: job, at: .maximumQuality))
+        XCTAssertNotEqual(atMaximum, atSmallest, "precondition: the two presets price apart")
+
+        let summary = try XCTUnwrap(model.armedSummary)
+        XCTAssertEqual(summary.armedCount, 1)
+        XCTAssertEqual(summary.extraSaving, HeavyEnv.heavyBytes - atMaximum,
+                       "the banner sums what the row will actually run, not what the batch selects")
+        XCTAssertNotEqual(summary.extraSaving, HeavyEnv.heavyBytes - atSmallest,
+                          "quoting the batch preset's figure here is the defect this pins")
     }
 
     // MARK: the previous version, end to end (R7/R15)
@@ -1796,204 +2572,5 @@ final class CompressViewModelTests: XCTestCase {
         return try XCTUnwrap(attributes[.size] as? Int)
     }
 
-    /// A view model wired to a stub engine that emits `.compressedHeavy` and writes both versions,
-    /// plus a temp-rooted store and output folder — the shared fixture for the switch/lifecycle tests.
-    @MainActor
-    private struct HeavyEnv {
-        static let heavyBytes = 1200
-        static let normalBytes = 3400
-        let model: CompressViewModel
-        let stub: StubEngine
-        let input: URL
-        let storeRoot: URL
 
-        init(before: Int = 9000, contentType: PDFContentType? = nil) throws {
-            let tmp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
-            try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-            storeRoot = tmp.appendingPathComponent("cache", isDirectory: true)
-            let outputFolder = tmp.appendingPathComponent("out", isDirectory: true)
-            try FileManager.default.createDirectory(at: outputFolder,
-                                                    withIntermediateDirectories: true)
-
-            input = try Fixtures.imagePDF()
-            stub = StubEngine(outcome: .compressedHeavy(before: before,
-                                                        after: HeavyEnv.heavyBytes,
-                                                        runnerUpBytes: HeavyEnv.normalBytes),
-                              shippedBytes: HeavyEnv.heavyBytes,
-                              runnerUpBytes: HeavyEnv.normalBytes)
-            // The ONLY change to the existing body: the estimator is injected when a caller pins
-            // the classification, and is the default otherwise, so every existing `HeavyEnv()`
-            // call site behaves exactly as before.
-            let estimator = contentType.map {
-                CompressEstimator(analyser: FixedAnalyser(contentType: $0))
-            } ?? CompressEstimator()
-            model = CompressViewModel(engine: stub, estimator: estimator,
-                                      store: RunnerUpStore(rootOverride: storeRoot))
-            model.outputFolder = outputFolder
-        }
-
-        /// A `PDFAnalysing` that answers with a fixed classification, so a prediction test pins the
-        /// R16 boundary rather than whatever a fixture happens to classify as.
-        private struct FixedAnalyser: PDFAnalysing {
-            let contentType: PDFContentType
-            func pageCount(_ url: URL) throws -> Int { 1 }
-            func classify(_ url: URL) throws -> PDFContentType { contentType }
-        }
-
-        /// The single job once it has reached `.done(.compressedHeavy)`.
-        func doneHeavyJob(_ model: CompressViewModel) -> ToolJob? {
-            model.jobs.first { if case .done(.compressedHeavy) = $0.state { return true }; return false }
-        }
-
-        /// Runs the input through to `.done(.compressedHeavy)` — the add/wait/compress/wait
-        /// preamble nearly every test in this file starts with.
-        @discardableResult
-        func runToDone() async throws -> ToolJob {
-            model.add([input])
-            try await waitUntil(timeout: 5) { model.jobs.count == 1 }
-            model.compress()
-            try await waitUntil(timeout: 5) { doneHeavyJob(model) != nil }
-            return try XCTUnwrap(doneHeavyJob(model))
-        }
-    }
-
-    /// Stub `Compressing`: writes the shipped (and, when given, the runner-up) file, optionally
-    /// suspends on a `Gate`, then returns a fixed outcome. Never touches the real MRC pipeline.
-    private final class StubEngine: Compressing, @unchecked Sendable {
-        let outcome: JobOutcome
-        let shippedBytes: Int
-        let runnerUpBytes: Int
-        /// What one scripted call writes and returns, so a recompress can differ from the run that
-        /// produced the row.
-        struct Response {
-            let outcome: JobOutcome
-            /// Bytes to write at the primary output, or nil to write nothing (a no-gain run).
-            let shippedBytes: Int?
-            /// Bytes to write at the alternate output, or nil to leave that slot empty.
-            let runnerUpBytes: Int?
-        }
-
-        // `compress` runs concurrently: `ToolQueue.execute` fans out up to `performanceCoreCount`
-        // jobs at once, so `callCount`, `presets`, `script`, `throwOnCall`, `reportToDeliver` and
-        // `gate` all need genuine synchronisation rather than plain mutable state. Everything below
-        // the lock keeps the same external API (synchronous property access from @MainActor tests)
-        // but is backed by a private, lock-guarded store.
-        private let lock = NSLock()
-        private var _callCount = 0
-        private var _presets: [CompressPreset] = []
-        private var _script: ((Int, CompressPreset) -> Response)?
-        private var _throwOnCall: Int?
-        private var _reportToDeliver: MRCDocumentReport?
-        private var _gate: Gate?
-
-        /// Number of `compress` calls made so far.
-        var callCount: Int { lock.lock(); defer { lock.unlock() }; return _callCount }
-        /// Every preset the engine was called with, in order — so a test can assert which one a
-        /// re-run reproduced.
-        var presets: [CompressPreset] { lock.lock(); defer { lock.unlock() }; return _presets }
-        /// Per-call script (1-based call index). Nil keeps the fixed outcome the initialiser took.
-        var script: ((Int, CompressPreset) -> Response)? {
-            get { lock.lock(); defer { lock.unlock() }; return _script }
-            set { lock.lock(); defer { lock.unlock() }; _script = newValue }
-        }
-        /// When set, the engine throws on this 1-based call instead of writing anything.
-        var throwOnCall: Int? {
-            get { lock.lock(); defer { lock.unlock() }; return _throwOnCall }
-            set { lock.lock(); defer { lock.unlock() }; _throwOnCall = newValue }
-        }
-        /// When set, handed to the caller's `mrcReport` closure — exercises the retention path.
-        var reportToDeliver: MRCDocumentReport? {
-            get { lock.lock(); defer { lock.unlock() }; return _reportToDeliver }
-            set { lock.lock(); defer { lock.unlock() }; _reportToDeliver = newValue }
-        }
-        var gate: Gate? {
-            get { lock.lock(); defer { lock.unlock() }; return _gate }
-            set { lock.lock(); defer { lock.unlock() }; _gate = newValue }
-        }
-
-        init(outcome: JobOutcome, shippedBytes: Int, runnerUpBytes: Int) {
-            self.outcome = outcome
-            self.shippedBytes = shippedBytes
-            self.runnerUpBytes = runnerUpBytes
-        }
-
-        func compress(_ input: URL, preset: CompressPreset, to output: URL,
-                      alternateOutput: URL?, mrcReport: ((MRCDocumentReport) -> Void)?,
-                      progress: @escaping (Double) -> Void) async throws -> JobOutcome {
-            // Increment, append and decide the throw/script outcome atomically, capturing locals so
-            // no other concurrent call can observe or mutate state mid-decision.
-            let call: Int
-            let shouldThrow: Bool
-            let currentScript: ((Int, CompressPreset) -> Response)?
-            lock.lock()
-            _callCount += 1
-            _presets.append(preset)
-            call = _callCount
-            shouldThrow = (_throwOnCall == call)
-            currentScript = _script
-            lock.unlock()
-            if shouldThrow { throw CompressError.validationFailed }
-            let response = currentScript?(call, preset)
-                ?? Response(outcome: outcome, shippedBytes: shippedBytes, runnerUpBytes: runnerUpBytes)
-            let fm = FileManager.default
-            // Mirror the production engine's never-overwrite delivery contract (it `moveItem`s the
-            // winner into place, which throws on an existing destination) — a stub that overwrites
-            // via `Data.write` would mask a caller that targets an already-occupied destination.
-            if let bytes = response.shippedBytes {
-                guard !fm.fileExists(atPath: output.path) else {
-                    throw CocoaError(.fileWriteFileExists)
-                }
-                try Data(repeating: 0x48, count: bytes).write(to: output)
-            }
-            if let alternateOutput, let bytes = response.runnerUpBytes {
-                guard !fm.fileExists(atPath: alternateOutput.path) else {
-                    throw CocoaError(.fileWriteFileExists)
-                }
-                try Data(repeating: 0x4E, count: bytes).write(to: alternateOutput)
-            }
-            if let reportToDeliver { mrcReport?(reportToDeliver) }
-            if let gate { await gate.wait() }
-            return response.outcome
-        }
-    }
-
-    /// A one-shot latch: `wait()` suspends until `open()` is called (or returns at once if already open).
-    /// A latch, not a handoff: phase 2 runs up to `performanceCoreCount` recompresses at once, so
-    /// two engine calls can be suspended here simultaneously. A single stored continuation would
-    /// let the second waiter overwrite (and orphan) the first.
-    private actor Gate {
-        private var opened = false
-        private var continuations: [CheckedContinuation<Void, Never>] = []
-
-        func wait() async {
-            if opened { return }
-            await withCheckedContinuation { continuations.append($0) }
-        }
-
-        func open() {
-            opened = true
-            for continuation in continuations { continuation.resume() }
-            continuations = []
-        }
-    }
-
-}
-
-private struct TimedOut: Error, CustomStringConvertible {
-    let seconds: TimeInterval
-    var description: String { "condition not met within \(seconds)s" }
-}
-
-/// Polls `condition` until true or `timeout` elapses — a genuine timeout is a **test
-/// failure** (thrown, not skipped): this guards real async completion, not an
-/// environment precondition. File-scope so both the test methods and `HeavyEnv` can use it.
-private func waitUntil(timeout: TimeInterval, _ condition: @escaping () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeout)
-    while !condition() {
-        if Date() > deadline {
-            throw TimedOut(seconds: timeout)
-        }
-        try await Task.sleep(nanoseconds: 20_000_000)
-    }
 }

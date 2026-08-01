@@ -13,15 +13,16 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 ## Purpose
 
 The app's design tokens (`Theme`, sourced from root `DESIGN.md`) and the reusable
-SwiftUI components built from them. Every tool view composes from this layer rather
-than styling inline.
+SwiftUI components built from them. Every view composes from this layer rather than
+styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model state.
 
 ## Key files
 
 | File | Role |
 |------|------|
-| `Sources/Toolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography; `Color(light:dark:)` / `NSColor(hex:)` helpers |
-| `Sources/Toolbox/DesignSystem/Components.swift` | `PrimaryButton`, `LinkButton`, `Card`, `DropZone`, `StatPill`, `SegmentedPreset`(Option), `FileRow`, `ToolIconTile`, `SectionLabel`, `ToolHeader` |
+| `Sources/Toolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography, Motion; `Color(light:dark:)` / `NSColor(hex:)` and the `themeFont(_:)` text helper |
+| `Sources/Toolbox/DesignSystem/Components.swift` | The app-wide primitives: `PrimaryButton`, `LinkButton`, `PDFThumbnail`, `SectionLabel`, `MotionButtonStyle` (the one press/hover style every button wears — plain rendering, `configuration.isPressed` scale, hover lift/fade, Reduce Motion gated) and the `clearsClickFocus()`/`pointingHandCursor()`/`continuousHover(_:)` view modifiers |
+| `Sources/Toolbox/DesignSystem/QueueComponents.swift` | Everything the redesigned window is built from: `VerbChip`, `QueueRow` (+ `Emphasis`, `QueueRowSizeColumn`), `StatusIndicator`, `CapsuleProgressBar`, `CapsuleBadge`, `OptionCard`, `VariantCard`, `BatchCard`, `SecondaryButton`, `SegmentedRow`, `DropdownRow`, `ToggleRow`, `RadioRow`, `CheckRow`, `PopoverChrome`, `SheetChrome`, `UpdateBannerChrome`, `QueueRowShimmer` (the active-row sweep, extracted so its `onAppear` fires when the row turns active). Its head comment carries the per-screen component map (which component each of the design's screens uses, and what is deliberately *not* a component) |
 
 ## Invariants
 
@@ -30,12 +31,20 @@ than styling inline.
   appearance* — a `static let` built once stays correct across live light/dark
   switches with no further plumbing.
 - `Theme.Radius.pill` (980) is reserved for pill CTAs and compact badges; the primary
-  button and rectangular containers use `card`/`input`/`control` (≤12pt) — root
-  `DESIGN.md`'s Do/Don't caps rectangular corners at 12px.
-- Sidebar row text takes **no explicit colour** (`SidebarView.row(for:)` — see
-  [App](app.md)): the selected row's fill is drawn by AppKit, which flips the label to
-  white on top of it; hard-coding `Theme.Colors.text` would leave near-black text on
-  the blue selection.
+  button and rectangular containers use `control` (8), `row` (10), `card` (12) and
+  `sheet` (14) — root `DESIGN.md`'s Do/Don't caps rectangular corners at 12px, which
+  every token but the redesign's sheet radius keeps. `input` (11) has no consumer left
+  and is kept only as a token.
+- **Every plain-rendering button (all `MotionButtonStyle` sites) gets `clearsClickFocus()`** unless it
+  deliberately keeps click focus: a click on any focusable SwiftUI control makes it
+  first responder and macOS then draws a keyboard focus ring the user never asked for.
+  Tab/arrow navigation is untouched (it assigns focus without a click), and the modifier
+  pairs with `WindowSetup`'s first-responder clear (see [App](app.md)) for the rings
+  AppKit assigns with no click at all.
+- **`themeFont(_:)` is the only way type is applied**, and it applies
+  `.monospacedDigit()` universally — `DESIGN.md` requires every number in the UI to be
+  monospaced-digit, so making it a property of the font helper rather than a per-call-site
+  modifier is what stops a figure jittering as it counts.
 
 ## Gotchas
 
@@ -43,37 +52,27 @@ than styling inline.
   `.background` applied *outside* the label (or outside the `Button` entirely) are
   visually present but dead to clicks. Every padded/filled `.plain` button needs an
   explicit `.contentShape(...)` covering the full visual rect placed *inside* the
-  label closure (`PrimaryButton`, `VersionsPopover`'s "Use this" button both do this —
-  `VersionsPopover` had to move its padding/background into the label for the same
-  reason). Fixed in both call sites 2026-07-27 after only the label text was
-  clickable in each; check new `.plain` buttons against this pattern before shipping.
-- **`FileRow` is tool-agnostic about the recompress/arm vocabulary it draws**: `lead`
-  (`FileRow.Lead` — `.accentPill`/`.neutralPill`/`.link`/`.error`) is the trailing
-  cluster's leading item (an armed prediction, a futile/instant-switch note, a
-  per-row error) and `metaAccent` is a second accent-toned clause appended to the
-  meta line ("· will recompress at Smallest"); Compress is the only caller today
-  (`CompressView`), but neither string is hard-coded to it. `SuccessBanner.Tone`
-  (`.success`/`.accent`) is the same split at the banner level: `.accent` (with its
-  own `arrow.triangle.2.circlepath` symbol) is for a state where nothing has run yet
-  — the armed-recompress summary — so a green tick never claims a saving that hasn't
-  happened.
-- **`FileRow.Status.doneHeavy`'s row applies `.fixedSize()`** to its trailing
-  `HStack` (which adds the "Heavy compression" capsule alongside the usual
-  strikethrough/size/pill/checkmark cluster) — without it, width pressure wraps the
-  capsule onto a second line and grows the row past R8's single-line height; the name
-  column absorbs the squeeze instead (lineLimit + middle truncation), not the
-  trailing cluster.
-- **`Tool.tint`** (see [App](app.md)) gives each sidebar tool tile its own colour and is a
-  **deliberate, recorded divergence** from `DESIGN.md`'s single-accent rule, not a bug to
-  fix back to blue — see `.claude/DECISIONS.md`, 2026-07-23. `Theme.Colors.success` and
-  `.documentBadge` already predated it as non-blue tokens.
+  label closure — `PrimaryButton` and `SecondaryButton` both do this, the latter with
+  its padding and background inside the label for the same reason. Established
+  2026-07-27 after only the label text was clickable; check new `.plain` buttons
+  against this pattern before shipping.
+- **`QueueRow` is one shape for every screen**: `Emphasis` carries the row's tint
+  (including the Problems screen's danger/warn/degraded variants) and the trailing slot
+  is composed by the caller, so a ready, working, finished and problem row are the same
+  component with different trailing content rather than four row types. See
+  [Queue](queue.md).
+- **`VariantCard` carries no `action`/`Button`** — the scan-choice cards are the one
+  place in the design with neither a pointer cursor nor a hover style; `isSelected`
+  drives the ring/tint only, and the choice is made by the sheet's footer buttons.
 - `Theme.Typography` line-heights are **not** reproduced per role from `DESIGN.md`:
   SwiftUI's `lineSpacing` adds to a font's natural leading rather than replacing the
   CSS line-box `DESIGN.md`'s values assume, so a naive px→points copy would be
-  silently wrong. Every current consumer is single-line; multi-line tuning is
-  deferred until real paragraph content exists to check it against.
+  silently wrong. Multi-line tuning is deferred: the app's few wrapping strings (a card
+  explanation, a reassurance line) take SwiftUI's natural leading rather than a token.
 
 ## Related
 
-- Modules: [App](app.md), [Compress](compress.md), [OCR](ocr.md)
+- Modules: [Queue](queue.md) (`QueueComponents.swift`'s main consumer; the app chrome
+  takes `SheetChrome`/`UpdateBannerChrome` from it too), [App](app.md),
+  [Compress](compress.md), [OCR](ocr.md)
 - Human docs: root `DESIGN.md` (the law this module implements)

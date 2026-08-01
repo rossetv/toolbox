@@ -10,14 +10,14 @@ import Foundation
 /// What a job produced: its outcome, and where the output landed (nil when nothing was written —
 /// a no-gain compress keeps the original, so there is no new file to reveal or open).
 struct JobResult {
-    let outcome: JobOutcome
+    let outcome: RowOutcome
     let outputURL: URL?
     /// The retained runner-up output (Rung-3's plain-gs alternative), if the body produced one.
     let alternateURL: URL?
     /// The MRC per-page report (spec §6's debugging record), if the body produced one.
     let mrcReport: MRCDocumentReport?
 
-    init(_ outcome: JobOutcome, outputURL: URL? = nil, alternateURL: URL? = nil,
+    init(_ outcome: RowOutcome, outputURL: URL? = nil, alternateURL: URL? = nil,
          mrcReport: MRCDocumentReport? = nil) {
         self.outcome = outcome
         self.outputURL = outputURL
@@ -44,14 +44,35 @@ final class ToolQueue: ObservableObject {
 
     private var runTask: Task<Void, Never>?
 
-    /// A no-op while a batch is in flight: `execute`'s `queuedIDs` snapshot is taken once at
-    /// `run`'s start, so a job appended mid-batch would never be picked up — it would sit
-    /// `.queued` forever with no UI signal. Both view models also gate on `isRunning`, but the
-    /// invariant belongs here, in the type that owns the state (§6.3, same shape as `run`'s own
-    /// `runTask == nil` guard).
+    /// Accepted at any time, a live batch included (spec §6.5). `execute`'s launch loop re-polls
+    /// the queue as each job finishes rather than working from a snapshot taken at `run`'s start,
+    /// so a row added mid-batch is picked up by the batch it landed in. The one window this cannot
+    /// reach is an add that lands after the last running job has already completed: the batch is
+    /// over by then, and the row simply stays `.queued` as pending work for the next Start.
+    ///
+    /// The caller still owns delivery names — `QueueViewModel` reserves them at add time, which is
+    /// what made this admission safe. A caller that allocates names at run start must keep its own
+    /// guard.
     func add(_ urls: [URL]) {
-        guard runTask == nil else { return }
         jobs.append(contentsOf: urls.map(ToolJob.init(url:)))
+    }
+
+    /// Point a row at a different file and return it to the start of its life — the "Find it…"
+    /// rebind (spec §7's Problems screen). Everything the previous file produced is dropped: the
+    /// row is describing a different document now.
+    ///
+    /// Refused on a running row: pulling the input out from under a job in flight would orphan the
+    /// work exactly as `remove(_:)`'s guard prevents. The invariant lives here, in the type that
+    /// owns the state (§6.3).
+    func rebind(_ id: ToolJob.ID, to url: URL) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        if case .running = jobs[index].state { return }
+        jobs[index].url = url
+        jobs[index].state = .queued
+        jobs[index].resultURL = nil
+        jobs[index].alternateURL = nil
+        jobs[index].estimate = nil
+        jobs[index].mrcReport = nil
     }
 
     /// Remove one job. Only a job that has not started is removable — pulling a running job out
@@ -70,18 +91,23 @@ final class ToolQueue: ObservableObject {
         }
     }
 
-    /// Run every currently-queued job through `body`, at most `maxConcurrent` at once.
-    /// Returns when all launched jobs have reached a terminal state (or been cancelled).
+    /// Run every queued job through `body`, at most `maxConcurrent` at once — including rows
+    /// added after the batch started (see `add`). Returns when all launched jobs have reached a
+    /// terminal state (or been cancelled).
+    ///
+    /// `skipping` names rows the caller has excluded from this run (the Problems screen's Skip).
+    /// They are never launched, so they never flash `.running` and are left exactly as they are.
     ///
     /// A call made while a batch is already running returns immediately without touching the
     /// queue: overwriting `runTask` would leave the live batch running with nothing able to
     /// cancel it. (Both view models also gate on `isRunning`, but the invariant belongs here.)
     func run(_ body: @escaping (ToolJob, _ report: @escaping @Sendable (Double) -> Void) async throws -> JobResult,
-             maxConcurrent: Int = SystemInfo.performanceCoreCount) async {
+             maxConcurrent: Int = SystemInfo.performanceCoreCount,
+             skipping: Set<ToolJob.ID> = []) async {
         guard runTask == nil else { return }
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.execute(body: body, maxConcurrent: max(1, maxConcurrent))
+            await self.execute(body: body, maxConcurrent: max(1, maxConcurrent), skipping: skipping)
         }
         runTask = task
         // Cleared on the way out so a later `cancel()` can't cancel a finished task, and the next
@@ -97,26 +123,41 @@ final class ToolQueue: ObservableObject {
     // MARK: private
 
     private func execute(body: @escaping (ToolJob, @escaping @Sendable (Double) -> Void) async throws -> JobResult,
-                         maxConcurrent: Int) async {
-        let queuedIDs: [UUID] = jobs.compactMap { job in
-            if case .queued = job.state { return job.id } else { return nil }
-        }
-        var iterator = queuedIDs.makeIterator()
+                         maxConcurrent: Int, skipping: Set<ToolJob.ID>) async {
+        // Re-polled rather than snapshotted, which is what lets a row added mid-batch join it
+        // (spec §6.5). `launched` is the memory a snapshot used to provide: a job cancelled
+        // mid-flight goes back to `.queued` by design, and without this it would be picked up
+        // again by the very batch that was cancelling it.
+        var launched: Set<ToolJob.ID> = []
+        var free = maxConcurrent
 
         await withTaskGroup(of: Void.self) { group in
             // Sliding window: keep at most `maxConcurrent` in flight; launch the next as each
             // finishes (NOT add-all, which would ignore the cap).
-            func launchNext() {
-                guard !Task.isCancelled, let id = iterator.next() else { return }
-                group.addTask { [weak self] in
-                    await self?.process(id: id, body: body)
+            while true {
+                while free > 0, !Task.isCancelled,
+                      let id = self.nextQueuedID(excluding: launched, skipping: skipping) {
+                    launched.insert(id)
+                    free -= 1
+                    group.addTask { [weak self] in
+                        await self?.process(id: id, body: body)
+                    }
                 }
-            }
-            for _ in 0..<maxConcurrent { launchNext() }
-            while await group.next() != nil {
-                launchNext()
+                guard await group.next() != nil else { break }
+                free += 1
             }
         }
+    }
+
+    /// The next job this batch may launch: still `.queued`, not already launched by this batch,
+    /// and not excluded by the caller. Re-read from `jobs` on every call — that read is the whole
+    /// mechanism behind mid-run admission.
+    private func nextQueuedID(excluding launched: Set<ToolJob.ID>,
+                              skipping: Set<ToolJob.ID>) -> ToolJob.ID? {
+        jobs.first { job in
+            guard case .queued = job.state else { return false }
+            return !launched.contains(job.id) && !skipping.contains(job.id)
+        }?.id
     }
 
     private func process(id: UUID,

@@ -10,9 +10,12 @@ import XCTest
 
 /// Proves the hosted test target is wired (TEST_HOST launches, `@testable import`
 /// resolves the app module) before the real engine tests build on top of it.
+///
+/// Re-targeted at I1b: the original assertion (`Tool.allCases == [.compress, .ocr]`) died with
+/// `Tool.swift` itself. The canary's purpose — prove the hosted target links and resolves a
+/// real app-module symbol — survives onto a surviving one.
 final class SmokeTests: XCTestCase {
-    /// The sidebar lists only tools that exist — no placeholders for unbuilt features.
-    func testToolCatalogueListsOnlyBuiltTools() {
-        XCTAssertEqual(Tool.allCases, [.compress, .ocr])
+    func testHostedTargetResolvesAppModuleSymbols() {
+        XCTAssertEqual(CompressPreset.allCases.count, 3)
     }
 }

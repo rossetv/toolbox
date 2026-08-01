@@ -11,10 +11,26 @@ import SwiftUI
 struct ToolboxApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    /// The About sheet's presentation state, owned here because it has two entry points — this
+    /// app menu's command and the queue header's `⋯` menu. One state, so the two can never
+    /// present the sheet twice over each other.
+    @State private var showAbout = false
+
     init() {
+        #if DEBUG
+        // Detects a relaunch triggered by UpdateSmoke's real update-smoke run (spec §11) and
+        // exits before anything else runs — see UpdateSmoke.swift's doc comment for why this
+        // has to be a marker file rather than an environment variable.
+        UpdateSmoke.checkRelaunchIfMarked()
+        #endif
         // Headless self-test hook (TOOLBOX_SMOKE=compress) — runs the real compress path
         // from the app process and exits, before any window appears.
         CompressSmoke.runIfRequested()
+        #if DEBUG
+        // Headless self-test hook (TOOLBOX_SMOKE=update) — runs a real update against a
+        // fixture feed and exits, before any window appears.
+        UpdateSmoke.runIfRequested()
+        #endif
         Self.yieldToExistingInstance()
         // As an XCTest host (the same detection the instance guard uses) the app is
         // scaffolding, not a product: drop to accessory activation so no Dock icon appears
@@ -60,16 +76,24 @@ struct ToolboxApp: App {
 
     var body: some Scene {
         // A single `Window`, not a `WindowGroup`. The group hands out File ▸ New Window (⌘N) for
-        // free, and a second window builds a second `RootView` — a second `CompressViewModel`
+        // free, and a second window builds a second `RootView` — a second `QueueViewModel`
         // sweeping the live runner-up cache, and a second output-name allocator handing out a
         // path the first window has already reserved but not yet written. One window is the same
         // "one allocator, one cache" invariant the instance guard above enforces between copies.
         Window("Toolbox", id: "main") {
-            RootView()
-                .frame(minWidth: 820, minHeight: 560)
+            RootView(showAbout: $showAbout)
+                .frame(minWidth: 900, minHeight: 640)
         }
-        .defaultSize(width: 900, height: 600)
+        .defaultSize(width: 900, height: 640)
         .windowResizability(.contentMinSize)
+        .commands {
+            // Replaces the standard About item rather than adding beside it: AppKit's own
+            // "About Toolbox" opens a separate, unstyled panel, so leaving it in place would
+            // give the app two different About surfaces.
+            CommandGroup(replacing: .appInfo) {
+                Button("About Toolbox") { showAbout = true }
+            }
+        }
     }
 }
 

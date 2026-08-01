@@ -630,3 +630,224 @@ accept destroyed the page.
 **Affects:** `Sources/Toolbox/Compress/BilevelScan.swift` (`chromaCeiling`, `chromaFraction`),
 `Tests/ToolboxTests/BilevelScanTests.swift` (`testSmallColourStampIsNotBinarised`,
 `testSubThresholdChromaStillBinarises`).
+
+## 2026-07-30 — Panel: UI-redesign spec §6.4/§6.5 amendments — searchability carve-out and compress-failure OCR rescue
+
+**Decision:** Panel verdict, winner = the defensive proposal, adopted with grafts. (1) §6.4
+gains the `.alreadySearchable` carve-out — the Original version row is labelled searchable iff
+the OCR leg returned `.alreadySearchable` (`OCREngine` returns that only after every page passed
+`pageHasText`, so the label is evidence-backed); every other OCR outcome keeps the blanket
+"not searchable"; "searchable" is pinned as "extractable text layer on every page, keyed to the
+OCR leg's outcome, never a fresh probe". (2) §6.5 gains the compress-failure OCR rescue — a
+compress-SPECIFIC failure (`ghostscriptFailed`/`validationFailed`) with OCR effective-on delivers
+an OCR-only rescue named `-ocr.pdf` via the normal reservation ledger; the rescued row is
+classified warn/degraded (never "failed", keeping the Problems footer's "Files that failed were
+not touched at all" true) and counts as OCR-only in all savings sums (never toward "N MB saved");
+on rescue-leg OCR failure both reservations are released and the job fails to a problem row
+(worst case identical to no-rescue); encrypted/corrupt still fail the whole job; compress-failure
+with OCR OFF still fails the row with a recorded copy-divergence problem line.
+
+**Why:** Judge's core reasoning — amendment 1 was unanimous and forced by acceptance criterion 3
+(a text-bearing Original labelled "not searchable" is a false label on a switch path); amendment
+2's rescue re-dispatches into the already-first-class OCR-only pipeline and its worst case equals
+the no-rescue outcome, so it dominates (same floor, better ceiling).
+
+**Losing proposals:** the simplicity-first proposal adopted the carve-out but rejected the rescue
+as unbought machinery (judge: its costs dissolve — the pipeline and ledger paths already exist,
+and its own recovery copy taxes the least-able users); the requirements-first proposal adopted
+both but left the rescued row's classification and the savings-accounting honesty unpinned.
+
+**Provenance:** autonomous panel (three lensed Fable panellists + hardened judge), convened on
+the human's explicit instruction 2026-07-30.
+**Spec:** .claude/specs/20260730-ui-redesign.md
+**Affects:** Sources/Toolbox/Compress/VersionStore.swift, Sources/Toolbox/Queue/ (QueueViewModel
+job body), Sources/Toolbox/Models/JobOutcome.swift, Sources/Toolbox/Shared/FileNaming.swift
+consumers
+
+## 2026-07-31 — Self-update posture reversal: full in-app self-update, hand-rolled to mirror `install.sh`
+
+**Decision:** The update banner's button now performs a full self-update — download the release
+DMG, verify its published `.sha256`, mount, validate the payload, aside-swap the running bundle,
+and relaunch via a detached helper — instead of only opening the release page. Trust model,
+stated plainly: the DMG is self-signed, so no code signature can be verified; the anchor is
+HTTPS to GitHub alone (`UpdateChecker.parseRelease` pins the initial hosts to `https` +
+`github.com`; every redirect hop is forced HTTPS; the redirected host itself is deliberately
+unconstrained, since GitHub serves release assets from `release-assets.githubusercontent.com`
+today and has changed that host before).
+
+**Why:** User: the DMG is self-signed "and will stay that way for a while"; the updater must do
+everything the one-line `install.sh` installer does, in-app. A compromised GitHub account or
+release channel now means arbitrary code execution — accepted by the human. Rejected: open the
+release page only (too weak for the designed button); Sparkle (dependency + appcast/key
+infrastructure for a channel that stays unsigned while the DMG is self-signed). Revisit when
+code signing lands.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (D1, §6.10)
+**Affects:** `Sources/Toolbox/App/SelfUpdater.swift`, `Sources/Toolbox/App/UpdateChecker.swift`
+**Supersedes:** 2026-07-23 — Notify-only update check is a deliberate exception to "no network"
+(that entry's "the app never downloads or installs the update" is exactly the posture this
+reverses).
+
+## 2026-07-31 — MRC R7 asymmetry removed: both scan variants retained regardless of which wins the D7 gate
+
+**Decision:** The MRC spec's R7 rule — retain the losing version only when the hybrid (MRC)
+variant WON the D7 byte-size gate, discard it silently when the hybrid lost — is reversed: both
+variants are now retained whenever a valid hybrid AND a valid gs output exist for a rebuilt
+scan. The D7 gate now only decides which variant ships **provisionally**; a per-file consent
+sheet (Scan choice screen) lets the user keep either, with an instant version switch, and a
+"Rebuild scans from now on without asking" preference to suppress future sheets (keeping the
+rebuilt variant whenever it exists and validates).
+
+**Why:** Consent is about the *look* of the rebuilt page (whether photograph pages read better
+hybrid-rebuilt or as the gs pass renders them), not only about which file is smaller —
+discarding the loser silently answered a question only the user should. Approved in the
+pre-spec summary for the UI redesign.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§5, human decision D7); reverses
+`.claude/specs/20260723-mrc-rung3.md` R7 ("When any page was MRC-encoded in the shipped output,
+retain the losing version and offer the switch... When none was, behave exactly as today" — i.e.
+no runner-up retained when gs won the gate).
+**Affects:** `Sources/Toolbox/Compress/CompressEngine.swift`,
+`Tests/ToolboxTests/CompressEngineMRCTests.swift`
+
+## 2026-07-31 — Deferral fulfilments: combined pass, per-file overrides, drag-during-run and history all ship in the redesign
+
+**Decision:** Four deferrals recorded against earlier specs are fulfilled by this redesign, not
+carried forward as debt: (1) the combined compress+OCR pass in one run, listed as v2+ in the v1
+spec (§2's "Out (v2+, noted, not built)": "combined compress+OCR pass"); (2) per-file
+preset/rebuild-scan/OCR overrides, deferred by the Recompress spec's D5 ("Batch-level control
+only... per-row is deferred until it actually annoys... expected first follow-up"); (3)
+drag-and-drop accepted everywhere including mid-run, reversing the Recompress spec's R9 pairing
+of batch-width concurrency with add/drop disabled while running; (4) a persistent history of
+recent batches with defined storage/retention/clear semantics, cut from v1 for lack of those
+semantics (v1 spec §7 deviation 2: "'Saved this month' widget: cut from v1... needs cross-session
+storage + reset semantics... Reconsidered for v2").
+
+**Why:** The unified-queue redesign's core shape (one queue, verbs you tick, one pass) makes all
+four the natural, no-longer-deferred behaviour rather than new speculative scope.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§5 reversal table)
+**Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift`,
+`Sources/Toolbox/Queue/PerFileSettingsPopover.swift`, `Sources/Toolbox/Queue/HistoryStore.swift`,
+`Sources/Toolbox/DesignSystem/QueueComponents.swift`
+
+## 2026-07-31 — UI-redesign parallax mechanism: rotation3DEffect replaced by composed CATransform3D
+
+**Decision:** Commit d51f132 replaced the spec-named `rotation3DEffect` parallax mechanism with a hand-built `CATransform3D` composition (the `PointerTilt` GeometryEffect with `m34 = -1/700`), applied via `.modifier(PointerTilt(dx:dy:))`.
+
+**Why:** `rotation3DEffect`'s `perspective` argument has no documented unit, so no value provably matches the handoff's `perspective:700px` CSS container. Chaining two `rotation3DEffect`s applies two separate projections, which read as shear in the live app. The composed `CATransform3D` with `m34 = -1/700` (the same number the CSS states) applies one unified perspective, providing the near/far foreshortening that makes the tilt read as depth — on the 76px icon, the two vertical edges differ by ~1.8px at full 13° yaw, matching the handoff exactly.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 Empty)
+**Affects:** Sources/Toolbox/Queue/EmptyStateView.swift (PointerTilt)
+
+## 2026-07-31 — UI-redesign drag-drop: modal-panel exception gates drops during FilePicker
+
+**Decision:** `QueueView.shouldAcceptDrop()` returns false (refuses drops) when `NSApp.modalWindow != nil`, which is true for the duration of `NSOpenPanel.runModal()` calls in `FilePicker.choosePDFs()` and `FilePicker.chooseFolder()`.
+
+**Why:** A drop accepted while the synchronous modal panel is presented mutates the queue beneath the modal session. This orphans the panel and any consent sheets it triggers, leaving Escape/Cancel non-functional — a live-reproduced wedge on the original design. The panel is the active affordance at that moment, not the queue beneath, so drops must gate on modal presence. `NSApp.modalWindow` is the native signal for exactly this interval.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 Drag-over, with pinned exception recorded)
+**Affects:** Sources/Toolbox/Queue/QueueView.swift (`shouldAcceptDrop`)
+
+## 2026-07-31 — Problems footer offers a secondary Start when clean work remains
+
+**Decision:** Commit 5cfb1f4 adds a `SecondaryButton` Start to the Problems screen's
+footer (`QueueFooterView.showsStart(state:canStart:)`), rendered only when
+`model.canStart` is true, alongside the existing `PrimaryButton` "Add More". DESIGN.md
+§9 screen 10 depicts only "Files that failed were not touched at all." + "Add More";
+this is a recorded divergence from that depiction (DESIGN.md §11), not a silent one.
+
+**Why:** Spec §7's "the batch keeps going": a clean pending row added to a batch that
+still carries an unresolved failure (`QueueView.screenState` keeps the screen on
+`.problems` by design, test-pinned) must stay startable without first resolving the
+unrelated failure. Adjudicated at ladder key `QueueView.screenState` tier-3 (review-team
+r4) after the sonnet-tier fixes left the composite state — problems and runnable rows
+together — with no control on screen that calls `compress()`. Add More remains the
+screen's one filled `PrimaryButton`; Start joins as a `SecondaryButton` so the screen
+keeps its single accent CTA.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 "the batch keeps going")
+**Affects:** Sources/Toolbox/Queue/QueueFooterView.swift (`showsStart`), DESIGN.md (§11)
+
+## 2026-08-01 — Motion polish across the redesign is human-authorised, including beyond-handoff additions
+
+**Decision:** Every interactive control in the redesigned UI gains a polished hover state AND a
+pressed state, and the state changes between screens/rows gain transitions — including on
+controls for which the handoff defines no motion at all. Values the handoff states are
+reproduced verbatim (hover 0.15s, press 0.12s, `opacity:.9`, `translateY(-1px)`,
+`scale(.97)`, links `opacity:.6`); everything added beyond them is expressed in the same
+`Theme.Motion` token vocabulary rather than as per-component literals. Press is carried by one
+shared `MotionButtonStyle` reading `configuration.isPressed`, which requires each component's
+chrome to sit inside its `Button` label so the press scale covers the whole control, not just
+its text. Reduce Motion suppresses every transform and loop.
+
+**Why:** Human instruction (2026-08-01, verbatim): "Make sure all the animations are very
+polished. There should be a polished animation on:hover and on click of buttons, tick boxes
+should have pretty animations, pretty animations for transitions... Implement the UI as
+designed by Claude Design, but feel free to polish it even further where we could add
+animations that would fit the design... E.g. Choose Files... button should have an on:hover
+and on:click animation. Ensure transitions are smooth and pretty, and that everything is very
+well polished." The handoff's own CSS carries an active state for only its six primary buttons
+and no motion at all for tick boxes, radio selection, row insertion or screen changes, so
+satisfying the instruction necessarily goes past the handoff — which is why it is recorded
+here and in DESIGN.md §11 rather than applied silently.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§8 Motion)
+**Affects:** DESIGN.md (§8, §11), Sources/Toolbox/DesignSystem/Theme.swift (`Theme.Motion`),
+Sources/Toolbox/DesignSystem/Components.swift (`MotionButtonStyle`),
+Sources/Toolbox/DesignSystem/QueueComponents.swift, Sources/Toolbox/Queue/*
+
+## 2026-08-01 — Addendum: motion law reconciled with the code after the motion wave
+
+Amends (does not replace) the 2026-08-01 entry above, "Motion polish across the redesign is
+human-authorised, including beyond-handoff additions". Three of its statements were checked
+against the shipped code and the handoff and are corrected here.
+
+**Decision:**
+
+1. **Shared values are tokenised; one-shot per-component transforms are enumerated.** The
+   earlier entry's "everything added beyond them is expressed in the same `Theme.Motion` token
+   vocabulary rather than as per-component literals" overstates what was built. The durations
+   and curves the added motion rides *are* tokens (`standard`, `hover`, `press`, `checkPop`,
+   `capGlow`, …). The transition *transforms* — the header's −8/−6pt settles, the bar's 0.4 leading scale, the screen swap's
+   ±10pt, the row's +26pt landing and 0.96 removal, the gear's 0.7, the radio dot's 0.1, the
+   tick box's 0.92 — are per-component literals, each with a single caller, and stay that way:
+   a token with one caller is scatter, not vocabulary. They are law all the same, enumerated in
+   DESIGN.md §8 with their homes so the set is auditable in one place.
+
+2. **`StatusIndicator`'s active arc does not rotate.** The handoff's README states a 0.9s
+   linear ring rotation; the handoff's own markup draws the arc static and determinate, and its
+   `@keyframes ringTurn` is applied to nothing. The code follows the markup — a trim tied to
+   the row's progress, 0.2s linear on change — and DESIGN.md §4.2/§8 now say so, with the
+   README divergence recorded in §11.
+
+3. **The handoff is not silent on row insertion or the header.** The earlier entry's "no motion
+   at all for tick boxes, radio selection, row insertion or screen changes" holds for tick
+   boxes, radio selection and screen changes, but not for row insertion: the handoff pins
+   `@keyframes landRow` (.45s, 90ms stagger, 26px rise, .985 scale), `@keyframes landHead`
+   (−8px) and a hover fade-in for the row gear. DESIGN.md §11 now states exactly what the
+   handoff animates, what the app reproduces, and the two `landRow` details it simplifies away
+   (no per-row stagger, no .985 scale).
+
+**Why:** review-team r6 findings against DESIGN.md §8/§11 — the law and the code disagreed on
+three motions and the record above claimed a property the code does not have
+(`CODE_GUIDELINES.md` §8.4: divergence is recorded, never silent). Append-only, so the original
+entry stands as written and this is its correction.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§8 Motion)
+**Affects:** DESIGN.md (§4.2, §8, §11)
+
+## 2026-08-01 — Problem-row affordances hidden mid-run
+
+**Decision:** `describeProblem`/`describeFailed` (`QueueRowsView.swift`) refuse Skip, Remove,
+Undo and "Find it…" for the duration of a run (`model.isRunning`), rendering an empty trailing
+zone on a locked/moved/unreadable/failed row rather than a disabled button. This was landed in
+ce35682 ("Find it…") and 324d9e5 (Skip/Remove/Undo) without a DESIGN.md §11 record, a gap
+CODE_GUIDELINES §8.4 forbids.
+
+**Why:** every affordance's underlying model method (`setSkipped`, `remove`, `rebind`) already
+refuses mid-run, so rendering the button anyway would be a silently-refused no-op — worse than
+no button at all. The precedent is deliberate, not an oversight; only its record was missing.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§7 Problems)
+**Affects:** DESIGN.md (§11)

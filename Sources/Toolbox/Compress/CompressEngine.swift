@@ -17,8 +17,8 @@ enum CompressError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .encrypted: return "The PDF is password-protected."
-        case .corrupt: return "The PDF is damaged and cannot be read."
+        case .encrypted: return RowProblem.lockedMessage
+        case .corrupt: return RowProblem.unreadableMessage
         case .sameInputOutput: return "The output path must differ from the input."
         case .ghostscriptFailed(let message): return "Compression failed: \(message)"
         case .validationFailed: return "The compressed PDF failed validation."
@@ -66,25 +66,49 @@ struct CompressEngine {
     /// verify it, so its per-page peak is several times Rung 2's — hence the tighter ceiling.
     /// Beyond this the document declines to the gs path, which streams and has no such limit.
     static let maxMRCPages = 400
+    /// Where the gs pass's progress ceiling sits on a row attempting the Rung-2/3 rebuild — the
+    /// gs pass maps into `0...rungProgressCeiling`, the rebuild leg into `rungProgressCeiling...1`
+    /// (see `compress`'s `gsProgressCeiling`). Named so `QueueViewModel`'s "Compressing…" /
+    /// "Rebuilding scan…" active-meta label (spec §6.8) reads the SAME threshold this engine
+    /// composes progress against, rather than an independently-chosen number that could drift.
+    static let rungProgressCeiling = 0.45
 
     let runner: any GhostscriptRunning
     let service: PDFService
     let validator: OutputValidator
+    /// Test-only seams for the Rung-3 leg *through `compress`*, both default off and neither with a
+    /// production caller — the same pair `mrcCompress` already exposes as parameters, and for the
+    /// same reason: `forceEligible` pushes a page past the classifier envelope, `verifierOverride`
+    /// rewrites a page's verifier score. They live on the initialiser rather than on `compress`
+    /// because `compress` is the `Compressing` protocol requirement (spec §6.3) — its signature is
+    /// the seam every caller shares and must not grow test arguments.
+    let forceEligible: Bool
+    let verifierOverride: (@Sendable (MRCVerifier.Score) -> MRCVerifier.Score)?
 
     init(runner: any GhostscriptRunning,
          service: PDFService = PDFService(),
-         validator: OutputValidator = OutputValidator()) {
+         validator: OutputValidator = OutputValidator(),
+         forceEligible: Bool = false,
+         verifierOverride: (@Sendable (MRCVerifier.Score) -> MRCVerifier.Score)? = nil) {
         self.runner = runner
         self.service = service
         self.validator = validator
+        self.forceEligible = forceEligible
+        self.verifierOverride = verifierOverride
     }
 
+    /// - Parameter rebuildScan: the per-file "Rebuild the scan" override (spec §7). `nil` derives
+    ///   the MRC decision exactly as before; `false` forces the hybrid leg off; `true` opts in —
+    ///   but only ever *within* the eligibility the classifier and the preset allow. Opting in
+    ///   never overrides classification (MRC R2's complex-page safety rule stands) and never
+    ///   reaches `.maximumQuality` (MRC D3).
     func compress(_ input: URL,
                   preset: CompressPreset,
                   to output: URL,
                   alternateOutput: URL? = nil,
+                  rebuildScan: Bool? = nil,
                   mrcReport: ((MRCDocumentReport) -> Void)? = nil,
-                  progress: @escaping (Double) -> Void) async throws -> JobOutcome {
+                  progress: @escaping (Double) -> Void) async throws -> RowOutcome {
         let fm = FileManager.default
         let input = input.canonical
         let output = output.canonical
@@ -114,11 +138,15 @@ struct CompressEngine {
         // the hybrid against — but its progress is mapped into 0…0.45 to leave 0.45…0.95 for the
         // MRC leg (delivery finishes at 1.0).
         let classification = try? service.classify(input)
-        let wantsMRC = classification == .scanColour && preset != .maximumQuality
+        // The per-file override only ever narrows the derived decision or leaves it alone: opting
+        // in (`true`) still has to clear the classification and preset gates below, so a
+        // born-digital document or a `.maximumQuality` run never rebuilds however the toggle is set.
+        let wantsMRC = (rebuildScan ?? true) && classification == .scanColour
+            && preset != .maximumQuality
         // A `.scanBilevel` document now runs the gs pass too, so Rung 2's CCITT rebuild can be
         // *raced* against it (D7) rather than shipped merely for beating the input — see step 4b.
         let wantsBilevel = classification == .scanBilevel
-        let gsProgressCeiling = (wantsMRC || wantsBilevel) ? 0.45 : 1.0
+        let gsProgressCeiling = (wantsMRC || wantsBilevel) ? Self.rungProgressCeiling : 1.0
 
         // gs runs first (0…0.45) and the Rung-2/Rung-3 leg maps into 0.45…0.95, so a decline that
         // falls back to the gs delivery must never let a late progress callback move the bar
@@ -208,7 +236,12 @@ struct CompressEngine {
                 try fm.moveItem(at: destTemp, to: output)
                 placed = true
                 reportProgress(1.0)
-                return .compressed(before: inputSize, after: bytes)
+                // The CCITT rebuild is this row's ordinary compressed variant — Rung 2 never races
+                // a hybrid and never parks a runner-up, so `.plain` is the whole of its version
+                // story (`.mrc` would advertise a pair that was never written).
+                return RowOutcome(originalBytes: inputSize, finalBytes: bytes,
+                                  compress: .compressed(before: inputSize, after: bytes),
+                                  shippedVariant: .plain)
             }
             // Rung 2 lost the race or declined — fall through to the gs delivery below.
         }
@@ -221,62 +254,94 @@ struct CompressEngine {
         //     composition/write failures propagate out of it, so this catch has the exact Rung-2
         //     call-site shape — only a `CancellationError` may escape; every other failure declines
         //     to the gs output (D10), never a throw, so the document is never worse off than gs.
+        //     A hybrid that loses the gate but is legitimate lands here, to be parked beside the gs
+        //     winner once that has shipped (see the delivery at step 7).
+        var retainedHybrid: (url: URL, bytes: Int)?
         if wantsMRC {
             var mrcResult: (url: URL, bytes: Int, report: MRCDocumentReport)?
             do {
                 mrcResult = try await mrcCompress(workIn, preset: preset, to: work,
+                                                  forceEligible: forceEligible,
+                                                  verifierOverride: verifierOverride,
                                                   progress: { reportProgress(0.45 + $0 * 0.5) })
             } catch let cancellation as CancellationError {
                 throw cancellation
             } catch {
                 mrcResult = nil   // D10: any MRC failure ships the gs output below, never a throw
             }
-            if let (mrcURL, mrcBytes, report) = mrcResult,
-               mrcBytes < outputSize, mrcBytes < inputSize,
-               await validatesOffPool(input: workIn, output: mrcURL) {
-                // The hybrid wins — deliver it via the same atomic idiom as every other winner.
-                try Task.checkCancellation()
-                let destTemp = outputDir.appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
-                var placed = false
-                defer { if !placed { try? fm.removeItem(at: destTemp) } }
-                try fm.copyItem(at: mrcURL, to: destTemp)
-                try Task.checkCancellation()
-                try fm.moveItem(at: destTemp, to: output)
-                placed = true
-                // The losing version becomes the runner-up: a plain copy into the caller's cache
-                // slot, so an MRC-shipped document ALWAYS offers the switch (R7). Normally that is
-                // the gs output; when gs itself bloated (≥ input) it is nothing legitimate to
-                // switch to — R6 forbids delivering a file not smaller than the input — so the
-                // untouched original is parked instead (`runnerUpBytes == before` is the marker
-                // the UI reads to label that card "Original"). Best-effort — the user's output has
-                // already shipped, so a cache-write failure must never fail the job;
-                // `RunnerUpStore` already tolerates an absent runner-up.
-                reportProgress(1.0)
-                mrcReport?(report)
-                let gsIsLegitimate = outputSize < inputSize
-                if let alternateOutput {
-                    try? fm.copyItem(at: gsIsLegitimate ? workOut : workIn, to: alternateOutput)
+            if let (mrcURL, mrcBytes, report) = mrcResult {
+                // Two questions decide the hybrid's fate, in this order and once each. First: is it
+                // a legitimate compress artefact at all? A variant ≥ the input can neither ship (R6)
+                // nor be offered as a version to switch to (spec §6.3's withhold rule) — and asking
+                // it first is what keeps the validation below off every document whose hybrid is out
+                // of the running anyway. Second: does it validate? Only then does the D7 size gate
+                // decide which of the two legitimate variants SHIPS — the loser is retained either
+                // way (spec §5's R7-asymmetry reversal). Validating here rather than above the size
+                // gate is deliberate: hoisted, it would add a page-render pass to EVERY MRC document.
+                if mrcBytes < inputSize, await validatesOffPool(input: workIn, output: mrcURL) {
+                    if mrcBytes < outputSize {
+                        // The hybrid wins — deliver it via the same atomic idiom as every other winner.
+                        try Task.checkCancellation()
+                        let destTemp = outputDir
+                            .appendingPathComponent(".toolbox-\(UUID().uuidString).pdf").canonical
+                        var placed = false
+                        defer { if !placed { try? fm.removeItem(at: destTemp) } }
+                        try fm.copyItem(at: mrcURL, to: destTemp)
+                        try Task.checkCancellation()
+                        try fm.moveItem(at: destTemp, to: output)
+                        placed = true
+                        // The losing version becomes the runner-up: a plain copy into the caller's
+                        // cache slot, so an MRC-shipped document ALWAYS offers the switch (R7).
+                        // Normally that is the gs output; when gs itself bloated (≥ input) it is a
+                        // compress variant the withhold rule forbids offering — so the UNTOUCHED
+                        // ORIGINAL is parked instead (`runnerUpBytes == before` is the marker the UI
+                        // reads to label that card "Original"; it is not a compress artefact, so the
+                        // withhold rule does not reach it — spec §6.4, DECISIONS 2026-07-24).
+                        // Best-effort — the user's output has already shipped, so a cache-write
+                        // failure must never fail the job; `RunnerUpStore` tolerates an absent file.
+                        reportProgress(1.0)
+                        mrcReport?(report)
+                        let gsIsLegitimate = outputSize < inputSize
+                        if let alternateOutput {
+                            try? fm.copyItem(at: gsIsLegitimate ? workOut : workIn, to: alternateOutput)
+                        }
+                        // The descriptor names the PARKED loser, never the winner: `.mrc` shipped, so
+                        // the retained variant is the gs output, or the untouched original when gs
+                        // bloated. Its presence — not which variant won — is what the UI keys the
+                        // switch on.
+                        let parked = RetainedVariant(kind: gsIsLegitimate ? .plain : .original,
+                                                     bytes: gsIsLegitimate ? outputSize : inputSize,
+                                                     searchable: false)
+                        return RowOutcome(originalBytes: inputSize, finalBytes: mrcBytes,
+                                          compress: .compressed(before: inputSize, after: mrcBytes),
+                                          shippedVariant: .mrc, runnerUp: parked)
+                    }
+                    // The hybrid lost the size gate but is a legitimate, validated variant, so it is
+                    // RETAINED and offered as the runner-up beside the gs winner (spec §5's R7
+                    // reversal: the consent sheet is about the LOOK of the page, not only bytes).
+                    // The copy itself waits until the gs delivery has actually landed — a job that
+                    // throws on its way there must leave no parked remnant behind, exactly as the
+                    // winner branch above copies only after its own rename.
+                    retainedHybrid = (url: mrcURL, bytes: mrcBytes)
                 }
-                return .compressedHeavy(before: inputSize, after: mrcBytes,
-                                        runnerUpBytes: gsIsLegitimate ? outputSize : inputSize)
-            }
-            // The hybrid lost (nil, larger or invalid) — fall through to the gs delivery below,
-            // exactly as any non-MRC document; `alternateOutput` is never written (R7). The
-            // attempt's report is still the spec §6 debugging record regardless of the gate
-            // outcome, so it ships even though the attempt lost.
-            if let mrcResult {
-                mrcReport?(mrcResult.report)
+                // The attempt's report is the spec §6 debugging record regardless of the gate
+                // outcome, so it ships even though the attempt lost. Reached only on the loss path —
+                // the winner branch fired it and returned.
+                mrcReport?(report)
             }
         }
 
         // 5. Never emit a larger file — on no gain keep the original and write nothing. The
         //    ≥-input output must still be a valid PDF (opens, page count preserved): otherwise a
         //    silent gs corruption that happens to be ≥ the input would masquerade as `.noGain`.
+        //    A retained hybrid cannot reach this branch: retention means `gs ≤ hybrid < input`, so
+        //    the gs output is itself smaller than the input and the guard below passes.
         guard outputSize < inputSize else {
             guard let outDoc = PDFDocument(url: workOut), outDoc.pageCount == pageCount else {
                 throw CompressError.ghostscriptFailed("Ghostscript produced an invalid output.")
             }
-            return .noGain(bytes: inputSize)
+            return RowOutcome(originalBytes: inputSize, finalBytes: inputSize,
+                              compress: .noGain(bytes: inputSize))
         }
 
         // 6. Re-validate the smaller output before it is delivered. Validation renders pages —
@@ -300,7 +365,19 @@ struct CompressEngine {
         placed = true
 
         reportProgress(1.0)
-        return .compressed(before: inputSize, after: outputSize)
+        // The gs output has shipped; only now is the retained hybrid copied into the caller's cache
+        // slot — best-effort for the same reason as the winner branch's park, and after the delivery
+        // for the same reason the winner's is: nothing is left behind by a job that failed.
+        var parkedHybrid: RetainedVariant?
+        if let retainedHybrid {
+            if let alternateOutput {
+                try? fm.copyItem(at: retainedHybrid.url, to: alternateOutput)
+            }
+            parkedHybrid = RetainedVariant(kind: .mrc, bytes: retainedHybrid.bytes, searchable: false)
+        }
+        return RowOutcome(originalBytes: inputSize, finalBytes: outputSize,
+                          compress: .compressed(before: inputSize, after: outputSize),
+                          shippedVariant: .plain, runnerUp: parkedHybrid)
     }
 
     /// What the user is shown — and what the job list retains — when gs fails.
@@ -459,11 +536,15 @@ struct CompressEngine {
     /// the routing gate converts it to a whole-document decline at the call site (same catch shape as
     /// Rung 2's `bilevelCompress` caller). Only `CancellationError` may pass through that call-site catch.
     ///
-    /// Reached directly by tests until the routing/D7 gate (Task 15) wires it behind `compress`; it
-    /// is `internal` rather than `private` for exactly that reason. `forceEligible` and
+    /// `internal` rather than `private` so `CompressEngineMRCTests` can reach it directly,
+    /// isolated from the gs race and the routing/D7 gate (Task 15, wired) that `compress` calls
+    /// it behind in production (`CompressEngineRoutingTests` exercises that wired path).
+    /// `forceEligible` and
     /// `verifierOverride` are test-only seams (both default off): the former pushes a page past the
     /// classifier envelope, the latter rewrites a page's verifier score so the verify→fallback swap
-    /// (spec §9) can be exercised deterministically. Neither has a production caller.
+    /// (spec §9) can be exercised deterministically. `compress` forwards the engine's own
+    /// same-named properties here, which are themselves test-only and default off — no production
+    /// caller ever sets either.
     func mrcCompress(_ input: URL,
                      preset: CompressPreset,
                      to work: URL,

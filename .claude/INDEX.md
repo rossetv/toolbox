@@ -18,21 +18,22 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 
 | Doc | Purpose | Verified |
 |-----|---------|----------|
-| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-26 @ 9f89b0e |
+| [OVERVIEW](OVERVIEW.md) | system summary — always injected | 2026-07-31 @ 79a54a0 |
 | [DECISIONS](DECISIONS.md) | append-only decision log | 2026-07-27 @ 9a14a90 |
 | [MEMORY](MEMORY.md) | project memory index — always injected | 2026-07-25 @ b2d0a6f |
 | [GATES](GATES.md) | the gates that define "done" — Claude's runbook | 2026-07-26 @ 9f89b0e |
-| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-25 @ b2d0a6f |
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | module map, flows, invariants | 2026-07-31 @ 79a54a0 |
 
 ## Modules
 
 | Module | Purpose | Entrypoint | Doc |
 |--------|---------|-----------|-----|
-| App | Shell: entry point, sidebar/detail layout, tool enum, smoke test | `Sources/Toolbox/App/ToolboxApp.swift` | [→](docs/modules/app.md) |
-| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) compression, estimate, batch UI | `Sources/Toolbox/Compress/CompressEngine.swift` | [→](docs/modules/compress.md) |
-| OCR | Vision-based invisible text layer, batch UI | `Sources/Toolbox/OCR/OCREngine.swift` | [→](docs/modules/ocr.md) |
+| App | Shell: entry point, single-pane window + window setup, self-update, smoke tests | `Sources/Toolbox/App/ToolboxApp.swift` | [→](docs/modules/app.md) |
+| Queue | The unified queue: one view model, every screen, progress/ETA, consent + version switch, history | `Sources/Toolbox/Queue/QueueViewModel.swift` | [→](docs/modules/queue.md) |
+| Compress | Rung-1 (Ghostscript) + Rung-2 (bilevel/CCITT) + Rung-3 (MRC) compression, estimate | `Sources/Toolbox/Compress/CompressEngine.swift` | [→](docs/modules/compress.md) |
+| OCR | Vision-based invisible text layer | `Sources/Toolbox/OCR/OCREngine.swift` | [→](docs/modules/ocr.md) |
 | Services | gs runner + sandbox, PDF inspection, output validation, PDF writer | `Sources/Toolbox/Services/GhostscriptRunner.swift` | [→](docs/modules/services.md) |
-| Shared | Batch runner, file naming, path canonicalisation, system info, logging | `Sources/Toolbox/Shared/ToolQueue.swift` | [→](docs/modules/shared.md) |
+| Shared | Batch runner, file naming, path canonicalisation, file picker, system info | `Sources/Toolbox/Shared/ToolQueue.swift` | [→](docs/modules/shared.md) |
 | Models | Tool-agnostic value types (job/preset/content-type/estimate) | `Sources/Toolbox/Models/ToolJob.swift` | [→](docs/modules/models.md) |
 | DesignSystem | Theme tokens + reusable SwiftUI components | `Sources/Toolbox/DesignSystem/Theme.swift` | [→](docs/modules/design-system.md) |
 
@@ -44,8 +45,9 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 | Change how gs is sandboxed/invoked | [modules/services](docs/modules/services.md) |
 | Change the compression pipeline/presets | [modules/compress](docs/modules/compress.md), [modules/models](docs/modules/models.md) |
 | Change OCR recognition/embedding | [modules/ocr](docs/modules/ocr.md) |
-| Add a new sidebar tool | [modules/app](docs/modules/app.md) |
-| Change batch/queue/naming behaviour | [modules/shared](docs/modules/shared.md) |
+| Change the window's screens, rows or run flow | [modules/queue](docs/modules/queue.md) |
+| Change the window setup, self-update or smoke tests | [modules/app](docs/modules/app.md) |
+| Change batch/queue/naming behaviour | [modules/queue](docs/modules/queue.md), [modules/shared](docs/modules/shared.md) |
 | Change visual styling | [modules/design-system](docs/modules/design-system.md), root `DESIGN.md` |
 | Check what "done" means / run the gates | [GATES](GATES.md) |
 
@@ -58,9 +60,9 @@ Hard byte ceiling: ≤8,000 B — its SessionStart block is the file alone (10,0
 
 ## Central vs peripheral
 
-- **Central** (changes fan out to both tools): `Sources/Toolbox/Services/` (gs
-  runner, sandbox profile, PDF inspection/validation/writer), `Sources/Toolbox/Shared/`
-  (batch queue, naming, path canonicalisation).
+- **Central** (changes fan out to both legs of the pass): `Sources/Toolbox/Services/`
+  (gs runner, sandbox profile, PDF inspection/validation/writer), `Sources/Toolbox/Shared/`
+  (batch runner, naming, path canonicalisation).
 - **Peripheral** (isolated): `Sources/Toolbox/DesignSystem/` (presentation only, no
   logic dependents), `Sources/Toolbox/Models/` (leaf value types, no outward
   dependencies).

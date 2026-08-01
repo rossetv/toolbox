@@ -8,6 +8,7 @@
 import CoreGraphics
 import Foundation
 import PDFKit
+import XCTest
 @testable import Toolbox
 
 /// Shared test helpers.
@@ -61,5 +62,376 @@ enum TestSupport {
                                               rotation: page.rotation)))
         }
         return try MRCComposer.compose(pages: pages)
+    }
+}
+
+/// A one-shot latch: `wait()` suspends until `open()` is called (or returns at once if already
+/// open). A latch, not a handoff — the queue and the recompress phase both run up to
+/// `performanceCoreCount` engine calls at once, so several callers can be suspended here
+/// simultaneously. A single stored continuation would let the second waiter overwrite (and orphan)
+/// the first, which is why this holds an array.
+actor Gate {
+    private var opened = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { continuations.append($0) }
+    }
+
+    func open() {
+        opened = true
+        for continuation in continuations { continuation.resume() }
+        continuations = []
+    }
+}
+
+/// Stub `Compressing`: writes the shipped (and, when given, the runner-up) file, optionally
+/// suspends on a `Gate`, then returns a fixed outcome. Never touches the real MRC pipeline.
+final class StubCompressEngine: Compressing, @unchecked Sendable {
+    let outcome: RowOutcome
+    let shippedBytes: Int
+    let runnerUpBytes: Int
+    /// What one scripted call writes and returns, so a recompress can differ from the run that
+    /// produced the row.
+    struct Response {
+        let outcome: RowOutcome
+        /// Bytes to write at the primary output, or nil to write nothing (a no-gain run).
+        let shippedBytes: Int?
+        /// Bytes to write at the alternate output, or nil to leave that slot empty.
+        let runnerUpBytes: Int?
+        /// A real PDF to deliver instead of filler bytes — required by any test that then runs the
+        /// REAL `OCREngine` over the variant, because `append` parses the target and matches its
+        /// page count against the recognition. `TestSupport.tinyValidPDF(matching:)` produces one.
+        /// Takes precedence over the byte count when both are set.
+        var shippedPayload: Data?
+        var runnerUpPayload: Data?
+    }
+
+    // `compress` runs concurrently: `ToolQueue.execute` fans out up to `performanceCoreCount`
+    // jobs at once, so `callCount`, `presets`, `script`, `throwOnCall`, `reportToDeliver` and
+    // `gate` all need genuine synchronisation rather than plain mutable state. Everything below
+    // the lock keeps the same external API (synchronous property access from @MainActor tests)
+    // but is backed by a private, lock-guarded store.
+    private let lock = NSLock()
+    private var _callCount = 0
+    private var _presets: [CompressPreset] = []
+    private var _inputs: [URL] = []
+    private var _rebuildScans: [Bool?] = []
+    private var _script: ((Int, CompressPreset) -> Response)?
+    private var _throwOnCall: Int?
+    private var _errorToThrow: Error = CompressError.validationFailed
+    private var _reportToDeliver: MRCDocumentReport?
+    private var _gate: Gate?
+
+    /// Number of `compress` calls made so far.
+    var callCount: Int { lock.lock(); defer { lock.unlock() }; return _callCount }
+    /// Every preset the engine was called with, in order — so a test can assert which one a
+    /// re-run reproduced, or which one an overridden row was dispatched at.
+    var presets: [CompressPreset] { lock.lock(); defer { lock.unlock() }; return _presets }
+    /// Every input the engine was called with, in order — so a concurrent batch's calls can be
+    /// attributed to their rows.
+    var inputs: [URL] { lock.lock(); defer { lock.unlock() }; return _inputs }
+    /// Every `rebuildScan` override the engine was called with, in order.
+    var rebuildScans: [Bool?] { lock.lock(); defer { lock.unlock() }; return _rebuildScans }
+    /// Per-call script (1-based call index). Nil keeps the fixed outcome the initialiser took.
+    var script: ((Int, CompressPreset) -> Response)? {
+        get { lock.lock(); defer { lock.unlock() }; return _script }
+        set { lock.lock(); defer { lock.unlock() }; _script = newValue }
+    }
+    /// When set, the engine throws on this 1-based call instead of writing anything.
+    var throwOnCall: Int? {
+        get { lock.lock(); defer { lock.unlock() }; return _throwOnCall }
+        set { lock.lock(); defer { lock.unlock() }; _throwOnCall = newValue }
+    }
+    /// What `throwOnCall` throws. Defaults to `CompressError.validationFailed`; the compress-failure
+    /// rescue distinguishes the compress-specific errors from the rest, so it must be selectable.
+    var errorToThrow: Error {
+        get { lock.lock(); defer { lock.unlock() }; return _errorToThrow }
+        set { lock.lock(); defer { lock.unlock() }; _errorToThrow = newValue }
+    }
+    /// When set, handed to the caller's `mrcReport` closure — exercises the retention path.
+    var reportToDeliver: MRCDocumentReport? {
+        get { lock.lock(); defer { lock.unlock() }; return _reportToDeliver }
+        set { lock.lock(); defer { lock.unlock() }; _reportToDeliver = newValue }
+    }
+    var gate: Gate? {
+        get { lock.lock(); defer { lock.unlock() }; return _gate }
+        set { lock.lock(); defer { lock.unlock() }; _gate = newValue }
+    }
+
+    init(outcome: RowOutcome, shippedBytes: Int, runnerUpBytes: Int) {
+        self.outcome = outcome
+        self.shippedBytes = shippedBytes
+        self.runnerUpBytes = runnerUpBytes
+    }
+
+    func compress(_ input: URL, preset: CompressPreset, to output: URL,
+                  alternateOutput: URL?, rebuildScan: Bool?,
+                  mrcReport: ((MRCDocumentReport) -> Void)?,
+                  progress: @escaping (Double) -> Void) async throws -> RowOutcome {
+        // Increment, append and decide the throw/script outcome atomically, capturing locals so
+        // no other concurrent call can observe or mutate state mid-decision.
+        let call: Int
+        let thrown: Error?
+        let currentScript: ((Int, CompressPreset) -> Response)?
+        lock.lock()
+        _callCount += 1
+        _presets.append(preset)
+        _inputs.append(input)
+        _rebuildScans.append(rebuildScan)
+        call = _callCount
+        thrown = _throwOnCall == call ? _errorToThrow : nil
+        currentScript = _script
+        lock.unlock()
+        if let thrown { throw thrown }
+        let response = currentScript?(call, preset)
+            ?? Response(outcome: outcome, shippedBytes: shippedBytes, runnerUpBytes: runnerUpBytes)
+        let fm = FileManager.default
+        // Mirror the production engine's never-overwrite delivery contract (it `moveItem`s the
+        // winner into place, which throws on an existing destination) — a stub that overwrites
+        // via `Data.write` would mask a caller that targets an already-occupied destination.
+        if let payload = response.shippedPayload ?? response.shippedBytes.map({
+            Data(repeating: 0x48, count: $0)
+        }) {
+            guard !fm.fileExists(atPath: output.path) else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            try payload.write(to: output)
+        }
+        if let alternateOutput,
+           let payload = response.runnerUpPayload ?? response.runnerUpBytes.map({
+               Data(repeating: 0x4E, count: $0)
+           }) {
+            guard !fm.fileExists(atPath: alternateOutput.path) else {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            try payload.write(to: alternateOutput)
+        }
+        if let reportToDeliver { mrcReport?(reportToDeliver) }
+        if let gate { await gate.wait() }
+        return response.outcome
+    }
+}
+
+/// Stub `OCRing`: hands back a scripted `RecognisedDocument` and, for `append`, copies the target
+/// verbatim to the output (a stub cannot embed a real layer, and copying keeps the caller's
+/// temp-then-replace delivery exercised end to end).
+///
+/// Concurrency-aware for the same reason as `StubCompressEngine`: the OCR leg runs inside the
+/// batch's task group, so `recognise` can be entered by several jobs at once. `peakConcurrent`
+/// records the high-water mark, which is what the width-2 semaphore is asserted against.
+final class StubOCREngine: OCRing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _recogniseCallCount = 0
+    private var _appendCallCount = 0
+    private var _appendTargets: [URL] = []
+    private var _inFlight = 0
+    private var _peakConcurrent = 0
+    private var _throwOnRecogniseCall: Int?
+    private var _recogniseError: Error = OCRError.validationFailed
+    private var _appendShouldThrow = false
+    private var _throwOnAppendCall: Int?
+    private var _growthBytes = 0
+    private var _gate: Gate?
+
+    /// The document every `recognise` hands back. No default: a wrong default would decide the
+    /// row's `OCROutcome` behind the test's back.
+    let document: RecognisedDocument
+
+    init(document: RecognisedDocument) {
+        self.document = document
+    }
+
+    var recogniseCallCount: Int { lock.lock(); defer { lock.unlock() }; return _recogniseCallCount }
+    var appendCallCount: Int { lock.lock(); defer { lock.unlock() }; return _appendCallCount }
+    /// Every target `append` was asked to write from, in order — so a test can assert which
+    /// variants received the layer.
+    var appendTargets: [URL] { lock.lock(); defer { lock.unlock() }; return _appendTargets }
+    /// The most `recognise` calls ever in flight at once.
+    var peakConcurrent: Int { lock.lock(); defer { lock.unlock() }; return _peakConcurrent }
+    /// When set, `recognise` throws on this 1-based call.
+    var throwOnRecogniseCall: Int? {
+        get { lock.lock(); defer { lock.unlock() }; return _throwOnRecogniseCall }
+        set { lock.lock(); defer { lock.unlock() }; _throwOnRecogniseCall = newValue }
+    }
+    var recogniseError: Error {
+        get { lock.lock(); defer { lock.unlock() }; return _recogniseError }
+        set { lock.lock(); defer { lock.unlock() }; _recogniseError = newValue }
+    }
+    /// When true, every `append` throws — the honest "this variant could not carry the layer" path.
+    var appendShouldThrow: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _appendShouldThrow }
+        set { lock.lock(); defer { lock.unlock() }; _appendShouldThrow = newValue }
+    }
+    /// When set, only this 1-based `append` call throws — the leg appends to the delivered file
+    /// first and the runner-up second, so one variant can fail while the other succeeds.
+    var throwOnAppendCall: Int? {
+        get { lock.lock(); defer { lock.unlock() }; return _throwOnAppendCall }
+        set { lock.lock(); defer { lock.unlock() }; _throwOnAppendCall = newValue }
+    }
+    /// Bytes `append` adds on top of the copied target. A real text layer grows the file, and the
+    /// commit step's per-artefact re-stat is only observable if the stub grows it too.
+    var growthBytes: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _growthBytes }
+        set { lock.lock(); defer { lock.unlock() }; _growthBytes = newValue }
+    }
+    /// Suspends every `recognise` until opened, so a test can hold the OCR leg mid-flight.
+    var gate: Gate? {
+        get { lock.lock(); defer { lock.unlock() }; return _gate }
+        set { lock.lock(); defer { lock.unlock() }; _gate = newValue }
+    }
+
+    func recognise(_ input: URL, options: OCROptions,
+                   progress: @escaping (Double) -> Void) async throws -> RecognisedDocument {
+        let thrown: Error?
+        let currentGate: Gate?
+        lock.lock()
+        _recogniseCallCount += 1
+        _inFlight += 1
+        _peakConcurrent = max(_peakConcurrent, _inFlight)
+        thrown = _throwOnRecogniseCall == _recogniseCallCount ? _recogniseError : nil
+        currentGate = _gate
+        lock.unlock()
+        // Decremented on every exit, throw included: a leaked in-flight count would make the
+        // concurrency assertion read high for the rest of the run.
+        defer { lock.lock(); _inFlight -= 1; lock.unlock() }
+        if let currentGate { await currentGate.wait() }
+        if let thrown { throw thrown }
+        progress(1)
+        return document
+    }
+
+    func append(_ recognised: RecognisedDocument, to target: URL, output: URL) throws {
+        let shouldThrow: Bool
+        let growth: Int
+        lock.lock()
+        _appendCallCount += 1
+        _appendTargets.append(target)
+        shouldThrow = _appendShouldThrow || _throwOnAppendCall == _appendCallCount
+        growth = _growthBytes
+        lock.unlock()
+        if shouldThrow { throw OCRError.validationFailed }
+        try FileManager.default.copyItem(at: target, to: output)
+        guard growth > 0 else { return }
+        // Appended, never rewritten: the real writer's incremental update keeps the target as the
+        // output's verbatim prefix, so a stub that replaced the bytes would model the wrong thing.
+        let handle = try FileHandle(forWritingTo: output)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(repeating: 0x54, count: growth))
+    }
+}
+
+struct TimedOut: Error, CustomStringConvertible {
+    let seconds: TimeInterval
+    var description: String { "condition not met within \(seconds)s" }
+}
+
+/// Polls `condition` until true or `timeout` elapses — a genuine timeout is a **test
+/// failure** (thrown, not skipped): this guards real async completion, not an
+/// environment precondition.
+func waitUntil(timeout: TimeInterval, _ condition: @escaping () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() {
+        if Date() > deadline {
+            throw TimedOut(seconds: timeout)
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+}
+
+/// A view model wired to a stub engine that emits `.compressedHeavy` and writes both versions,
+/// plus a temp-rooted store and output folder — the shared fixture for the switch/lifecycle tests.
+@MainActor
+struct HeavyEnv {
+    static let heavyBytes = 1200
+    static let normalBytes = 3400
+    let model: QueueViewModel
+    let stub: StubCompressEngine
+    let input: URL
+    let storeRoot: URL
+    let historyRoot: URL
+    let history: HistoryStore
+
+    /// `defaults` is passed by the tests that touch a persisted preference, which MUST drive their
+    /// own suite: a bundle that ever wrote one of these keys into `.standard` would leak the state
+    /// into the next run and make a later test order-dependent.
+    init(before: Int = 9000, contentType: PDFContentType? = nil,
+         timeBudget: TimeInterval = 0.5,
+         ocrEngine: (any OCRing)? = nil,
+         defaults: UserDefaults = .standard,
+         isUpdating: @escaping () -> Bool = { false }) throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mrc-track-b-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        storeRoot = tmp.appendingPathComponent("cache", isDirectory: true)
+        let outputFolder = tmp.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputFolder,
+                                                withIntermediateDirectories: true)
+        // Hermetic, like `storeRoot` beside it: every test gets its own `history.json`, never the
+        // developer's real one.
+        historyRoot = tmp.appendingPathComponent("history", isDirectory: true)
+        history = HistoryStore(directory: historyRoot)
+
+        input = try Fixtures.imagePDF()
+        stub = StubCompressEngine(outcome: .compressedHeavy(before: before,
+                                                    after: HeavyEnv.heavyBytes,
+                                                    runnerUpBytes: HeavyEnv.normalBytes),
+                          shippedBytes: HeavyEnv.heavyBytes,
+                          runnerUpBytes: HeavyEnv.normalBytes)
+        // The estimator is injected when a caller pins the classification, and is the default
+        // otherwise, so every existing `HeavyEnv()` call site behaves exactly as before.
+        // `timeBudget` is raised only by tests that ASSERT on a non-fallback analysis: the
+        // production 0.5 s box legitimately overruns under the gate's 8 parallel workers, and a
+        // fallback estimate arrives exactly once, so no amount of waiting can recover it.
+        let estimator = contentType.map {
+            CompressEstimator(analyser: FixedAnalyser(contentType: $0), timeBudget: timeBudget)
+        } ?? CompressEstimator(timeBudget: timeBudget)
+        model = QueueViewModel(engine: stub, ocrEngine: ocrEngine ?? OCREngine(),
+                               estimator: estimator,
+                               store: RunnerUpStore(rootOverride: storeRoot),
+                               history: history,
+                               defaults: defaults,
+                               isUpdating: isUpdating)
+        model.outputFolder = outputFolder
+    }
+
+    /// A `PDFAnalysing` that answers with a fixed classification, so a prediction test pins the
+    /// R16 boundary rather than whatever a fixture happens to classify as.
+    private struct FixedAnalyser: PDFAnalysing {
+        let contentType: PDFContentType
+        func pageCount(_ url: URL) throws -> Int { 1 }
+        func classify(_ url: URL) throws -> PDFContentType { contentType }
+    }
+
+    /// Add one file and wait for its row to appear — `nil` adds the env's own input.
+    @discardableResult
+    func addRow(_ url: URL? = nil) async throws -> ToolJob.ID {
+        let before = model.jobs.count
+        model.add([url ?? input])
+        try await waitUntil(timeout: 5) { self.model.jobs.count == before + 1 }
+        return try XCTUnwrap(model.jobs.last).id
+    }
+
+    /// The single job once it has reached a done state carrying the heavy pair.
+    func doneHeavyJob(_ model: QueueViewModel) -> ToolJob? {
+        model.jobs.first {
+            if case .done(let outcome) = $0.state {
+                return outcome.shippedVariant == .mrc && outcome.runnerUp != nil
+            }
+            return false
+        }
+    }
+
+    /// Runs the input through to the done heavy pair — the add/wait/compress/wait
+    /// preamble nearly every test in this file starts with.
+    @discardableResult
+    func runToDone() async throws -> ToolJob {
+        model.add([input])
+        try await waitUntil(timeout: 5) { model.jobs.count == 1 }
+        model.compress()
+        try await waitUntil(timeout: 5) { doneHeavyJob(model) != nil }
+        return try XCTUnwrap(doneHeavyJob(model))
     }
 }

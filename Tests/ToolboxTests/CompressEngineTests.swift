@@ -22,8 +22,8 @@ final class CompressEngineTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
 
-        guard case let .compressed(before, after) = outcome else {
-            return XCTFail("expected .compressed, got \(outcome)")
+        guard case let .compressed(before, after) = outcome.compress else {
+            return XCTFail("expected a compressed leg, got \(outcome)")
         }
         XCTAssertLessThan(after, before, "expected a smaller output: \(before) → \(after)")
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
@@ -41,8 +41,8 @@ final class CompressEngineTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
 
-        guard case let .noGain(bytes) = outcome else {
-            return XCTFail("expected .noGain, got \(outcome)")
+        guard case let .noGain(bytes) = outcome.compress else {
+            return XCTFail("expected a no-gain leg, got \(outcome)")
         }
         XCTAssertGreaterThan(bytes, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
@@ -60,9 +60,9 @@ final class CompressEngineTests: XCTestCase {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
 
-        switch outcome {
+        switch outcome.compress {
         case .compressed, .noGain: break   // both acceptable; the point is it did NOT throw validationFailed
-        default: XCTFail("expected .compressed or .noGain, got \(outcome)")
+        default: XCTFail("expected a compressed or no-gain leg, got \(outcome)")
         }
     }
 
@@ -304,22 +304,6 @@ private final class RecordingRunner: GhostscriptRunning, @unchecked Sendable {
     }
 }
 
-/// Deterministic handshake: lets the test cancel exactly while the "gs run" is in flight, with no
-/// ordering race (open-before-wait returns immediately).
-private actor Gate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var opened = false
-    func wait() async {
-        if opened { return }
-        await withCheckedContinuation { continuation = $0 }
-    }
-    func open() {
-        opened = true
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
 /// A stub runner that parks mid-run until the test releases it, then writes a valid, smaller
 /// output — i.e. a run that *would* be delivered if cancellation were ignored.
 private struct GatedRunner: GhostscriptRunning {
@@ -384,8 +368,8 @@ extension CompressEngineTests {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
 
-        guard case let .compressed(before, after) = outcome else {
-            return XCTFail("expected .compressed for a bilevel scan, got \(outcome)")
+        guard case let .compressed(before, after) = outcome.compress else {
+            return XCTFail("expected a compressed leg for a bilevel scan, got \(outcome)")
         }
         XCTAssertLessThan(after, before, "Rung 2 must shrink a bilevel scan: \(before) → \(after)")
         let inDoc = try XCTUnwrap(PDFDocument(url: input))
@@ -444,8 +428,8 @@ extension CompressEngineTests {
         let output = scan.deletingLastPathComponent().appendingPathComponent("ocr-scan-out.pdf")
         let outcome = try await engine.compress(ocr, preset: .balanced, to: output) { _ in }
 
-        guard case let .compressed(before, after) = outcome else {
-            return XCTFail("expected .compressed, got \(outcome)")
+        guard case let .compressed(before, after) = outcome.compress else {
+            return XCTFail("expected a compressed leg, got \(outcome)")
         }
         XCTAssertLessThan(after, before, "Rung 2 must shrink the OCR'd scan")
         let delivered = try Data(contentsOf: output)
@@ -494,7 +478,9 @@ extension CompressEngineTests {
         let loseOut = scan.deletingLastPathComponent().appendingPathComponent("race-lose.pdf")
         let loseEngine = CompressEngine(runner: TestSupport.BytesRunner(bytes: gsCandidate))
         let outcome = try await loseEngine.compress(scan, preset: .balanced, to: loseOut) { _ in }
-        guard case let .compressed(_, after) = outcome else { return XCTFail("expected .compressed, got \(outcome)") }
+        guard case let .compressed(_, after) = outcome.compress else {
+            return XCTFail("expected a compressed leg, got \(outcome)")
+        }
         let delivered = try Data(contentsOf: loseOut)
         XCTAssertNil(delivered.range(of: ccitt),
                      "the gs candidate is smaller; the CCITT rebuild must lose the race and not ship")
@@ -650,11 +636,11 @@ extension CompressEngineTests {
 
         let outcome = try await engine.compress(input, preset: .balanced, to: output) { _ in }
 
-        switch outcome {
+        switch outcome.compress {
         case .compressed, .noGain: break
         default: XCTFail("expected a normal Rung-1 outcome, got \(outcome)")
         }
-        if case .compressed = outcome {
+        if case .compressed = outcome.compress {
             let outDoc = try XCTUnwrap(PDFDocument(url: output))
             let page = try XCTUnwrap(outDoc.page(at: 0))
             // A binarised photo would collapse to two tones; a real one keeps a range of greys.

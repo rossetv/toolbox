@@ -12,28 +12,31 @@ check name: `scripts/kb-gate-lib.sh` (`review_key()`). Verify the anchor with gr
 
 ## Purpose
 
-The shell: app entry point, the sidebar + detail layout, the `Tool` enum that
-enumerates sidebar entries (only tools that actually exist — no placeholders), the
-window-minimum-size fix-up, and a headless self-test hook.
+The shell: app entry point, the single-pane `RootView` that mounts `QueueView`
+(`Sources/Toolbox/Queue/QueueView.swift` — see [Queue](queue.md)), the
+window-minimum-size and stray-focus fix-ups,
+the self-update pipeline (check → user-initiated download/verify/install/relaunch),
+and two headless self-test hooks (compress, update).
 
 ## Key files
 
 | File | Role |
 |------|------|
-| `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `CompressSmoke.runIfRequested()` then `yieldToExistingInstance()` before any window opens; `AppDelegate` (`applicationWillTerminate`) empties the Rung-3 runner-up cache on quit |
-| `Sources/Toolbox/App/UpdateChecker.swift` | Notify-only GitHub Releases version check on launch — the app's only network request; never downloads or self-replaces |
-| `Sources/Toolbox/App/RootView.swift` | An explicit `HStack`/`VStack` split — update banner, sidebar + per-tool detail (`CompressView`/`OCRView`) |
-| `Sources/Toolbox/App/SidebarView.swift` | One collapsible-rail entry per built `Tool`, each a coloured tile (`Tool.tint`) plus its name; header uses `NSApp.applicationIconImage` for the real bundle icon; a bottom info button opens `AboutView` as a sheet |
-| `Sources/Toolbox/App/AboutView.swift` | The About sheet: bundle icon/name/version (read from `Bundle.main.infoDictionary`, never hard-coded), GitHub/licence/contact links, copyright |
-| `Sources/Toolbox/App/Tool.swift` | `enum Tool` — `compress`/`ocr`, each with `title`/`systemImage`/`tint` |
-| `Sources/Toolbox/App/WindowConfigurator.swift` | `WindowSetup.applyMinimumSize(_:)` — enforces the window's minimum size, title and titlebar style directly on `NSWindow` |
+| `Sources/Toolbox/App/ToolboxApp.swift` | `@main` entry point; runs `UpdateSmoke.checkRelaunchIfMarked()` (DEBUG) then `CompressSmoke.runIfRequested()` then `UpdateSmoke.runIfRequested()` (DEBUG) then `yieldToExistingInstance()` before any window opens; declares the single `Window("Toolbox", id: "main")` and a `CommandGroup(replacing: .appInfo)` that sets `showAbout`; `AppDelegate` (`applicationWillTerminate`) empties the Rung-3 runner-up cache on quit |
+| `Sources/Toolbox/App/RootView.swift` | The window's single pane: owns `QueueViewModel`, `SelfUpdater` and `UpdateChecker`, shows `UpdateBannerView` when an update is available, and constructs `QueueView(model:history:showAbout:)` — `QueueView` builds all of its own popovers/sheets directly, `RootView` only threads the model, history and the externally-owned `showAbout` binding through |
+| `Sources/Toolbox/App/WindowConfigurator.swift` | `WindowSetup.applyMinimumSize(_:)` — enforces the window's minimum size (`preferredSize`, 900×640), title and titlebar style on `NSWindow`, restores/saves the remembered frame, and arms the stray-focus-clear net |
+| `Sources/Toolbox/App/UpdateChecker.swift` | Fetches the latest GitHub release on launch and compares versions — the app's only unprompted network request; parses and host-pins the release page and `.dmg` asset URLs (`https`/`github.com` only), with a DEBUG-only `TOOLBOX_UPDATE_FEED` fixture-feed override |
+| `Sources/Toolbox/App/SelfUpdater.swift` | The user-initiated self-update: download the release DMG, verify its published `.sha256`, mount it, aside-swap the running app bundle, relaunch — mirrors `scripts/install.sh` step for step; every failure leg leaves a working install on disk |
+| `Sources/Toolbox/App/UpdateBannerView.swift` | The strip shown under the titlebar when `UpdateChecker.available` is set: version, release-notes link, Update button (drives `SelfUpdater`), and a per-version dismiss (`bannerDismissed` in `UserDefaults`) |
+| `Sources/Toolbox/App/AboutView.swift` | The About content: bundle icon/name/version (read from `Bundle.main.infoDictionary`, never hard-coded), GitHub/licence/contact links, copyright; presented by `QueueView` itself, driven by the `showAbout` binding |
 | `Sources/Toolbox/App/CompressSmoke.swift` | `TOOLBOX_SMOKE=compress` — runs the real compress path from the app process, exits with a pass/fail line; the CI packaged-app smoke test |
+| `Sources/Toolbox/App/UpdateSmoke.swift` | `TOOLBOX_SMOKE=update` (DEBUG only) — drives a real update against a `TOOLBOX_UPDATE_FEED` fixture feed and proves the relaunch actually swaps to the new bundle, via a marker file (`checkRelaunchIfMarked()`) that crosses the process boundary `open` does not carry env vars across |
 
 ## Invariants
 
 - **`ToolboxApp.body` declares a single `Window("Toolbox", id: "main")`, not a
   `WindowGroup`**: a group hands out File ▸ New Window (⌘N), and a second window would
-  construct a second `CompressViewModel`/`OCRViewModel` — `RunnerUpStore.sweepStale()`
+  construct a second `QueueViewModel` — `RunnerUpStore.sweepStale()`
   (see [Compress](compress.md)) is written to run exactly once per app run, which only
   holds because `RootView`'s `@StateObject` view models are built exactly once. `WindowSetup.applyMinimumSize`'s frame-autosave-name check (`WindowConfigurator.swift`)
   also relies on there being only ever one such window.
@@ -43,50 +46,62 @@ window-minimum-size fix-up, and a headless self-test hook.
   current event is not `.keyDown`; a `didBecomeKeyNotification` observer misses a
   POPOVER closing (it never takes key status itself). See
   `.claude/memory/20260725-stray-focus-ring-invariant.md` for the full invariant.
-- **`RootView` is a plain `HStack`, not `NavigationSplitView`**: that container laid
-  the sidebar out a titlebar's height too high (drawing over the traffic lights, the
-  first entries scrolled out of view) and, on a slightly-too-small window, collapsed
-  the sidebar to zero width — how the app first shipped looking as though it had no
-  sidebar at all.
+- **`RootView` is a plain `VStack`** carrying the optional update banner above
+  `QueueView` — there is no sidebar or per-tool detail split any more; the whole
+  window is `QueueView`'s single pane.
 - **`WindowSetup.applyMinimumSize` must run** (`RootView`'s `.onAppear`) because
   SwiftUI's `.frame(minWidth:minHeight:)` only constrains the *content*, not the
-  window — a window opened or restored smaller than that simply clips the content,
-  with the sidebar as the casualty. Setting `NSWindow.minSize` directly makes the
-  constraint real and grows an already-too-small restored frame on launch.
-- **`Tool` lists only built tools** — `compress`/`ocr` are the only cases; the spec's
-  dimmed "Soon" `merge`/`split` placeholders were removed on the maintainer's
-  instruction (`.claude/DECISIONS.md`, 2026-07-23). Adding a tool means adding a case,
-  no `isAvailable`/disabled-state plumbing exists any more.
-- **`Tool.tint` gives each sidebar tile its own colour** — a deliberate divergence
-  from `DESIGN.md`'s single-accent rule, recorded in `.claude/DECISIONS.md`
-  (2026-07-23); not something to "fix" without the design doc's owner amending it.
+  window — a window opened or restored smaller than that simply clips the content.
+  Setting `NSWindow.minSize` directly makes the constraint real and grows an
+  already-too-small restored frame on launch.
 - `CompressSmoke` must run and exit **before** the `Window` scene renders — it drives the
   real bundled-gs-under-sandbox path from the actual app process (xctest launches gs
   from a different context, which doesn't exercise the same `Bundle.main` resolution).
-- **`yieldToExistingInstance()` skips under XCTest** (`XCTestConfigurationFilePath` env
-  var check) — the hosted test runner launches the app as its test host while a real
-  user copy may legitimately be open; killing the host would kill the suite. Otherwise
-  it finds another running process with the same bundle ID, activates it, and calls
-  `exit(0)` — guards against two *copies* of the bundle (e.g. an old build plus a fresh
-  one) running concurrently and racing on the same output files, a case LaunchServices'
-  own single-launch dedup doesn't cover.
-- **`UpdateChecker` is the app's only network request** — a GET to
-  `api.github.com/repos/rossetv/toolbox/releases/latest`, notify-only: any failure
-  (offline, rate-limited, malformed) resolves to "no update", and the banner's button
-  only opens the release page in the browser — the app never downloads or replaces its
-  own binary.
+- **`yieldToExistingInstance()` skips under XCTest** (any `XCTest*`-prefixed env var, not
+  `XCTestConfigurationFilePath` alone — a parallel-testing worker clone launches without
+  that specific key) — the hosted test runner launches the app as its test host while a
+  real user copy may legitimately be open; killing the host would kill the suite.
+  Otherwise it finds another running process with the same bundle ID and
+  `.activationPolicy == .regular` (excludes XCTest-host accessory instances),
+  activates it, and calls `exit(0)` — guards against two *copies* of the bundle
+  (e.g. an old build plus a fresh one) running concurrently and racing on the same
+  output files, a case LaunchServices' own single-launch dedup doesn't cover.
+- **`UpdateChecker` is notify-and-let-the-user-decide, not download-on-launch** — a GET to
+  `api.github.com/repos/rossetv/toolbox/releases/latest`; any failure (offline,
+  rate-limited, malformed) resolves to "no update". The banner's Update button is what
+  triggers `SelfUpdater`'s real download/verify/install/relaunch (spec §6.10) — the
+  check itself never downloads or replaces the running binary.
+- **Both the release-page URL and the `.dmg` asset URL are host-pinned to `https` +
+  `github.com` exactly** (`UpdateChecker.parseRelease`, `pinnedDMGURL`) — the DMG is
+  self-signed, so HTTPS-to-GitHub is the only trust anchor; a hostile API response
+  must not be able to redirect the user or the downloader elsewhere.
+- **`TOOLBOX_UPDATE_FEED` is a DEBUG-only fixture-feed override** (`UpdateChecker`'s
+  `fetchLatest` init, `pinnedDMGURL`'s `feedOverrideActive`) — compiled out of every
+  Release build, gated three ways when active (compile flag, override actually set,
+  literal `127.0.0.1` host, never a suffix/prefix match), and exists solely so
+  `UpdateSmoke` can drive the whole pipeline against a local fixture server.
 - **`AppDelegate.applicationWillTerminate` calls `RunnerUpStore.removeAllOnDisk()`**
   (nonisolated static, no instance needed) — the quit-time half of Rung 3's runner-up
   cache lifecycle; `RunnerUpStore.sweepStale()` is the launch-time half. See
   [Compress](compress.md).
+- **`showAbout` is owned by `ToolboxApp`, not `RootView` or `QueueView`** — the app
+  menu's `CommandGroup(replacing: .appInfo)` and `QueueView`'s `⋯` menu both need to
+  toggle the same presentation state, so it is threaded down as a `Binding` through
+  `RootView` into `QueueView`, which owns the single `.sheet(item:)`/`.popover` surface
+  it presents against.
 
 ## Gotchas
 
 - `CompressSmoke`'s synthetic fixture is generated in-process (CoreGraphics gradient +
   deterministic pseudo-random grain) into the system temp dir — never a TCC-scoped
   folder, so the headless run never blocks on a permission prompt.
+- `UpdateSmoke`'s marker file is anchored under the home directory
+  (`Library/Caches/com.toolbox.app`), not `FileManager.default.temporaryDirectory`:
+  the latter honours `$TMPDIR`, which the old process and the LaunchServices-relaunched
+  new process are not guaranteed to agree on — both must compute the identical path for
+  the marker to cross the process boundary at all.
 
 ## Related
 
-- Modules: [Compress](compress.md), [OCR](ocr.md), [Services](services.md)
+- Modules: [Queue](queue.md), [Compress](compress.md), [OCR](ocr.md), [Services](services.md)
 - Specs: `.claude/specs/20260722-pdf-toolbox-v1.md`

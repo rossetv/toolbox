@@ -9,22 +9,6 @@ import Combine
 import XCTest
 @testable import Toolbox
 
-/// Deterministic handshake for tests: lets a job body suspend until the test opens the gate,
-/// with no ordering race (open-before-wait returns immediately).
-private actor Gate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private var opened = false
-    func wait() async {
-        if opened { return }
-        await withCheckedContinuation { continuation = $0 }
-    }
-    func open() {
-        opened = true
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
 @MainActor
 final class ToolQueueTests: XCTestCase {
 
@@ -249,14 +233,19 @@ final class ToolQueueTests: XCTestCase {
         }
     }
 
-    /// m1 — `add` while a batch is live must be a no-op, matching `run`'s own re-entrancy guard:
-    /// a job appended after `execute`'s `queuedIDs` snapshot is taken would never be picked up by
-    /// this batch and would sit `.queued` forever with no UI signal.
-    func testAddWhileRunningIsRefused() async {
+    /// SUPERSEDES the old m1 `testAddWhileRunningIsRefused`. That guard existed because
+    /// `execute`'s queued snapshot was taken once, so a job appended mid-batch would sit `.queued`
+    /// for ever with no UI signal. `execute` now re-polls the queue as each job finishes (spec
+    /// §6.5's drag-during-run), so the row joins the live batch instead — this is the queue-level
+    /// half of `QueueAdmissionTests.testAddDuringRunJoinsBatch`. The sibling second-`run` guard is
+    /// untouched: see `testSecondRunIsRefusedSoTheLiveBatchStaysCancellable` above.
+    func testAddDuringRunJoinsTheLiveBatch() async {
         let queue = ToolQueue()
-        queue.add(urls(1, "add-while-running"))
+        queue.add(urls(1, "add-during-run"))
+        let gate = Gate()
 
         let started = XCTestExpectation(description: "a job started running")
+        started.assertForOverFulfill = false
         let watcher = queue.$jobs.sink { jobs in
             if jobs.contains(where: { if case .running = $0.state { return true } else { return false } }) {
                 started.fulfill()
@@ -265,18 +254,44 @@ final class ToolQueueTests: XCTestCase {
 
         let handle = Task {
             await queue.run({ _, _ in
-                while !Task.isCancelled { await Task.yield() }
-                throw CancellationError()
+                await gate.wait()
+                return JobResult(.compressed(before: 10, after: 5))
             }, maxConcurrent: 1)
         }
 
         await fulfillment(of: [started], timeout: 5)
-        queue.add(urls(1, "should-be-refused"))
-        XCTAssertEqual(queue.jobs.count, 1, "an add while the batch is live must not enqueue anything")
+        // The window is genuinely occupied: the only launched job is suspended on the gate, so the
+        // latecomer can only run if the launch loop re-polls after that job completes.
+        queue.add(urls(1, "latecomer"))
+        XCTAssertEqual(queue.jobs.count, 2, "an add while the batch is live must be admitted")
 
-        queue.cancel()
+        await gate.open()
         await handle.value
+
+        for job in queue.jobs {
+            XCTAssertEqual(job.state, .done(.compressed(before: 10, after: 5)),
+                           "every row, latecomer included, must be run by the live batch")
+        }
         watcher.cancel()
+    }
+
+    /// A skipped row is excluded from the run by the type that owns the state: it is never
+    /// launched, so it never flashes `.running` and stays exactly as the user left it.
+    func testSkippedJobsAreNeverLaunched() async {
+        let queue = ToolQueue()
+        queue.add(urls(3, "skipping"))
+        let skipped = queue.jobs[1].id
+
+        var observed: [UUID] = []
+        await queue.run({ job, _ in
+            observed.append(job.id)
+            return JobResult(.compressed(before: 10, after: 5))
+        }, maxConcurrent: 1, skipping: [skipped])
+
+        XCTAssertFalse(observed.contains(skipped), "a skipped job must never reach the body")
+        XCTAssertEqual(observed.count, 2)
+        XCTAssertEqual(queue.jobs.first(where: { $0.id == skipped })?.state, .queued,
+                       "and it is left untouched, not failed and not cancelled")
     }
 
     /// T9 — the empty-batch path through `execute` (`queuedIDs.isEmpty`, `launchNext()` no-ops

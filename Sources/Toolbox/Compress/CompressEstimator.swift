@@ -32,8 +32,9 @@ enum CompressEstimatorError: Error {
 /// above that baseline is attributed to embedded images. Time-boxed (default 500 ms — real
 /// per-file analysis is milliseconds; the box only guards a pathological/huge input or a
 /// slow classifier): on overrun, or on any analysis failure, returns a **typical-range
-/// fallback** instead, flagged `isFallback`. The reduction figures are
-/// a concrete provisional baseline (mirrors `CompressPreset`'s own baseline) — not corpus-tuned.
+/// fallback** instead, flagged `isFallback`. The reduction figures are a concrete provisional
+/// baseline (mirrors `CompressPreset`'s own baseline) except `.scanColour` on the scan-rebuild
+/// path, which is measured against the real pipeline (see `scanColourRebuildReduction`).
 struct CompressEstimator {
     private let analyser: PDFAnalysing
     private let timeBudget: TimeInterval
@@ -59,7 +60,15 @@ struct CompressEstimator {
     /// dictionary lookup rather than a fresh analysis — previously each switch re-analysed every
     /// queued file, blanking the rows into their "analysing" state and making the list appear to
     /// reload on every click.
-    func analyse(_ input: URL) async -> Analysis {
+    ///
+    /// - Parameter mrcEligible: the caller's half of `CompressEngine`'s own `wantsMRC` rule —
+    ///   the row's `rebuildScan` override, defaulted to `true` where the user has expressed no
+    ///   preference. The other two conjuncts (`.scanColour`, and a preset other than
+    ///   `.maximumQuality`) are this type's own to apply, because it is the one that classifies
+    ///   the document and it prices every preset in a single pass. Deliberately has NO default:
+    ///   the opt-out is only honest if every call site states it, and a defaulted parameter is
+    ///   how this input silently stops being passed.
+    func analyse(_ input: URL, mrcEligible: Bool) async -> Analysis {
         let inputSize = Self.fileSize(input)
         let analyser = self.analyser
         let measured = await Self.timeBoxed(seconds: timeBudget) {
@@ -68,7 +77,8 @@ struct CompressEstimator {
         var out: [CompressPreset: SizeEstimate] = [:]
         for preset in CompressPreset.allCases {
             if let measured {
-                out[preset] = Self.predict(measured, inputSize: inputSize, preset: preset)
+                out[preset] = Self.predict(measured, inputSize: inputSize, preset: preset,
+                                           mrcEligible: mrcEligible)
             } else {
                 out[preset] = Self.fallbackEstimate(inputSize: inputSize, preset: preset)
             }
@@ -96,8 +106,13 @@ struct CompressEstimator {
     }
 
     private static func predict(_ m: Measurement, inputSize: Int,
-                                preset: CompressPreset) -> SizeEstimate {
-        let base = baseReduction[m.contentType]?[preset] ?? typicalReduction[preset] ?? 0.2
+                                preset: CompressPreset, mrcEligible: Bool) -> SizeEstimate {
+        // `CompressEngine.compress`'s own `wantsMRC` conjunction, re-derived from the inputs this
+        // type has: the row's opt-out, the classification, and the preset (MRC never runs at
+        // `.maximumQuality` — MRC D3). All three, or the document is priced on the gs-only path.
+        let rebuilds = mrcEligible && m.contentType == .scanColour && preset != .maximumQuality
+        let table = rebuilds ? scanColourRebuildReduction : baseReduction[m.contentType]
+        let base = table?[preset] ?? typicalReduction[preset] ?? 0.2
         let reduction = m.contentType == .bornDigital ? base : base * (0.3 + 0.7 * m.payloadRatio)
         let predicted = max(1, Int(Double(inputSize) * (1 - reduction)))
         return SizeEstimate(predictedBytes: predicted, isFallback: false)
@@ -114,6 +129,28 @@ struct CompressEstimator {
         .maximumQuality: 0.10,
         .balanced: 0.35,
         .smallestSize: 0.55,
+    ]
+
+    /// `.scanColour` on the scan-rebuild path (spec §6.7) — the ONE table here MEASURED against
+    /// the engine rather than assumed. `baseReduction`'s `.scanColour` row prices the gs-only
+    /// path a rebuild opt-out leaves and stays where it was; pricing a rebuilt scan from it made
+    /// the design's own figures unreachable, which is the defect §6.7 names.
+    ///
+    /// Derived by running the real pipeline (bundled gs + the Rung-3 race and its D7 gate) over
+    /// the repo's `.scanColour` fixtures and the private corpus, then fitting one untempered
+    /// constant per preset to each set's median delivered reduction. The tempered prediction
+    /// (`base * (0.3 + 0.7 * payloadRatio)`) lands within ±25% of the measured median for
+    /// `.balanced` and within ±15% for `.smallestSize`, relative — no single `.balanced` constant
+    /// reaches ±15% on both sets, because the fixtures are raw bitmaps that gs alone crushes ~99%
+    /// while a real scan delivers less. `.balanced` is within 1% of the median of the documents
+    /// where the hybrid ACTUALLY shipped.
+    ///
+    /// No `.maximumQuality` entry, and the branch above cannot ask for one: the rebuild never
+    /// runs at that preset (MRC D3), so its figure stays the gs-only 0.12 in `baseReduction` —
+    /// one home for that number, not two that can drift apart.
+    private static let scanColourRebuildReduction: [CompressPreset: Double] = [
+        .balanced: 0.82,
+        .smallestSize: 0.90,
     ]
 
     private static let baseReduction: [PDFContentType: [CompressPreset: Double]] = [
@@ -141,7 +178,7 @@ struct CompressEstimator {
     static let maxConcurrentEstimates = SystemInfo.performanceCoreCount
 
     /// The bounded pool every analysis runs on. Static so the bound holds across estimator
-    /// instances (each `CompressViewModel` builds its own).
+    /// instances (each `QueueViewModel` builds its own).
     private static let analysisQueue: OperationQueue = {
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = maxConcurrentEstimates

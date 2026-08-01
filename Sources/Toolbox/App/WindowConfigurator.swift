@@ -10,11 +10,12 @@ import AppKit
 /// Enforces the window's minimum size on the `NSWindow` itself.
 ///
 /// SwiftUI's `.frame(minWidth:minHeight:)` constrains the CONTENT, not the window: a window that
-/// opens (or is restored from a previous session) smaller than that simply clips. In a
-/// `NavigationSplitView` the casualty is the sidebar — it collapses to zero width and the detail
-/// pane is pushed up under the titlebar. That is exactly how this app shipped: an apparently
-/// empty sidebar on a window a few hundred points too small. Setting `NSWindow.minSize` makes the
-/// constraint real, and growing an already-too-small frame repairs a bad restored size on launch.
+/// opens (or is restored from a previous session) smaller than that simply clips. That is exactly
+/// how this app shipped when it still had a `NavigationSplitView`: the sidebar collapsed to zero
+/// width and the detail pane was pushed up under the titlebar, an apparently empty sidebar on a
+/// window a few hundred points too small. Setting `NSWindow.minSize` makes the constraint real,
+/// and growing an already-too-small frame repairs a bad restored size on launch — still needed
+/// today even though `RootView` is now a plain `VStack` with no sidebar to collapse.
 ///
 /// Deliberately a plain function rather than an `NSViewRepresentable` placed in `.background`:
 /// a representable participates in SwiftUI's layout and displaced the sidebar list upwards by a
@@ -116,17 +117,17 @@ enum WindowSetup {
                 // Name the window for the app, not the selected tool: the detail views used to
                 // set it and it read "Compress"/"OCR", which says nothing about what is running.
                 window.title = "Toolbox"
-                // The sidebar list does not inset itself for the titlebar, so with a
-                // full-size content view its rows draw a titlebar's height too high — over the
-                // traffic lights, with the first entries scrolled out of sight entirely.
+                // The unified queue's header (`QueueHeaderView`) does not inset itself for the
+                // titlebar, so with a full-size content view it draws a titlebar's height too
+                // high — over the traffic lights, with its top row obscured.
                 window.styleMask.remove(.fullSizeContentView)
                 window.titlebarAppearsTransparent = false
 
-                // Start with nothing focused. The first focusable control is the sidebar's
-                // collapse toggle, whose hit area is the whole header row, so auto-focusing it on
-                // launch draws a keyboard focus ring around the "Toolbox" title — which reads
-                // as a stray selected box, not as focus. Keyboard users are unaffected: Tab still
-                // moves focus and every control still shows its ring, per DESIGN.md.
+                // Start with nothing focused. On a cold launch the window opens on the empty
+                // state, whose only control is the "Choose Files…" button — auto-focusing it
+                // would draw an unrequested keyboard focus ring the instant the window appears.
+                // Keyboard users are unaffected: Tab still moves focus and every control still
+                // shows its ring, per DESIGN.md.
                 window.makeFirstResponder(nil)
 
                 var frame = window.frame

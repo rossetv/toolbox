@@ -304,7 +304,7 @@ enum Fixtures {
 
     /// `pages` empty white pages. Two uses: the `OutputValidator` blank-page check, and the
     /// no-gain path — gs's `pdfwrite` structure/metadata makes a blank page *larger* than the
-    /// compact CoreGraphics original (verified), so compressing it yields `.noGain`.
+    /// compact CoreGraphics original (verified), so compressing it yields a `.noGain` compress leg.
     /// An 8-bit GREYSCALE page whose content is visually black-and-white — the case Ghostscript
     /// cannot serve, because its mono settings only apply to images that are already 1-bit.
     static func greyscaleBilevelScanPDF() throws -> URL {
@@ -861,6 +861,104 @@ enum Fixtures {
         return ctx.makeImage()!
     }
 
+    /// `pages` pages that all SHARE one JPEG image XObject, so the FILE stays essentially flat in
+    /// `pages` (measured: 1 page 27 KB, 3 pages 32 KB) while any per-page rebuild pays its full cost
+    /// on every page. That asymmetry is the only dependable way to build a colour scan whose MRC
+    /// hybrid comes out LARGER than its own input — the shape spec §6.3's withhold rule exists for
+    /// (measured, 3 pages, balanced: hybrid ≈ 52 KB against a 32 KB input).
+    ///
+    /// The image is a smooth two-colour gradient — cheap for JPEG, so the input stays small. Pages
+    /// are `.simpleSingleImage` and the document classifies `.scanColour`, but a gradient is
+    /// photo-class, so an MRC attempt on it needs `CompressEngine`'s `forceEligible` /
+    /// `verifierOverride` test seams. 1100 × 1400 px on a 396 × 504 pt page renders at ~200 dpi —
+    /// clear of the Rung-3 DPI floor.
+    static func sharedImageColourScanPDF(pages: Int = 3) throws -> URL {
+        let page = try jpegPagePDF([(image: try gradientBitmap(width: 1100, height: 1400),
+                                     quality: 0.4, size: CGSize(width: 396, height: 504))],
+                                   name: "shared-image-scan-page.pdf")
+        guard let document = PDFDocument(url: page), let first = document.page(at: 0) else {
+            throw FixtureError.imageRender
+        }
+        for _ in 1..<max(1, pages) {
+            guard let copy = first.copy() as? PDFPage else { throw FixtureError.imageRender }
+            document.insert(copy, at: document.pageCount)
+        }
+        let url = try uniqueURL("shared-image-scan.pdf")
+        guard document.write(to: url) else { throw FixtureError.imageRender }
+        return url.canonical
+    }
+
+    /// Two pages: an ordinary colour-scan page, and a **5 × 5 pt** page carrying hairline rules.
+    /// A Rung-3 rebuild renders that second page about 20 px across (the preset's DPI applied to a
+    /// 5 pt page — still clear of the DPI floor, which is a ratio), and the rules do not survive it.
+    /// The composed hybrid is therefore a genuine content-loss case that the REAL `OutputValidator`
+    /// rejects, which is what the "validate the loser before retaining it" gate needs to be tested
+    /// against something other than a stub.
+    static func microPageColourScanPDF() throws -> URL {
+        try jpegPagePDF([(image: try gradientBitmap(width: 1100, height: 1400),
+                          quality: 0.4, size: CGSize(width: 396, height: 504)),
+                         (image: try hairlineBitmap(width: 400, height: 400),
+                          quality: 0.6, size: CGSize(width: 5, height: 5))],
+                        name: "micro-page-scan.pdf")
+    }
+
+    /// A PDF whose pages are single JPEG images, composed through the production `MRCComposer` —
+    /// the one route to a JPEG-encoded page here (a `CGPDFContext` re-encodes what it is drawn,
+    /// losslessly, which would make every such fixture megabytes wide).
+    private static func jpegPagePDF(_ pages: [(image: CGImage, quality: Double, size: CGSize)],
+                                    name: String) throws -> URL {
+        var composed: [MRCComposer.Page] = []
+        for page in pages {
+            guard let jpeg = MRCPageEncoder.encodeJPEG(page.image, quality: page.quality) else {
+                throw FixtureError.imageRender
+            }
+            composed.append(MRCComposer.Page(content: .jpeg(jpeg), size: page.size))
+        }
+        let url = try uniqueURL(name)
+        try MRCComposer.compose(pages: composed).write(to: url)
+        return url.canonical
+    }
+
+    /// A smooth two-colour diagonal gradient: continuous-tone, so JPEG encodes it in a few tens of
+    /// kilobytes, and chromatic, so the document classifies `.scanColour` rather than bilevel.
+    private static func gradientBitmap(width: Int, height: Int) throws -> CGImage {
+        let space = CGColorSpaceCreateDeviceRGB()
+        guard let bmp = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
+              let gradient = CGGradient(colorsSpace: space,
+                                        colors: [CGColor(red: 0.55, green: 0.62, blue: 0.86, alpha: 1),
+                                                 CGColor(red: 0.92, green: 0.88, blue: 0.72, alpha: 1)] as CFArray,
+                                        locations: [0, 1]) else {
+            throw FixtureError.contextCreation
+        }
+        bmp.drawLinearGradient(gradient, start: .zero,
+                               end: CGPoint(x: width, y: height), options: [])
+        guard let image = bmp.makeImage() else { throw FixtureError.imageRender }
+        return image
+    }
+
+    /// Widely spaced one-pixel rules on white — content that survives a full-size render and is
+    /// erased by a heavily downsampled one.
+    private static func hairlineBitmap(width: Int, height: Int) throws -> CGImage {
+        let space = CGColorSpaceCreateDeviceRGB()
+        guard let bmp = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            throw FixtureError.contextCreation
+        }
+        bmp.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        bmp.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        bmp.setFillColor(CGColor(red: 0.05, green: 0.08, blue: 0.35, alpha: 1))
+        var y = 8
+        while y < height {
+            bmp.fill(CGRect(x: 8, y: y, width: width - 16, height: 1))
+            y += 24
+        }
+        guard let image = bmp.makeImage() else { throw FixtureError.imageRender }
+        return image
+    }
+
     private static func embedImagePDF(_ image: CGImage, name: String) throws -> URL {
         let url = try uniqueURL(name)
         var media = letter
@@ -872,5 +970,31 @@ enum Fixtures {
         ctx.endPDFPage()
         ctx.closePDF()
         return url.canonical
+    }
+}
+
+/// Test-only shorthand for the flat outcome cases this suite predates `RowOutcome` with. These are
+/// NOT engine cases — a row's result is compound now (spec §6.3) — and each helper builds the exact
+/// compound value the old case stood for, so a stubbed job body and the assertion that checks it
+/// can never drift apart. Tests that pin the compound SHAPE construct their values field by field
+/// instead (see `RowOutcomeTests`).
+extension RowOutcome {
+    static func compressed(before: Int, after: Int) -> RowOutcome {
+        RowOutcome(originalBytes: before, finalBytes: after,
+                   compress: .compressed(before: before, after: after))
+    }
+
+    static func noGain(bytes: Int) -> RowOutcome {
+        RowOutcome(originalBytes: bytes, finalBytes: bytes, compress: .noGain(bytes: bytes))
+    }
+
+    /// The heavy pair: an MRC winner with the losing variant parked beside it — the plain-gs output,
+    /// or the untouched input when gs bloated (`runnerUpBytes == before`, the R6/R7 marker).
+    static func compressedHeavy(before: Int, after: Int, runnerUpBytes: Int) -> RowOutcome {
+        RowOutcome(originalBytes: before, finalBytes: after,
+                   compress: .compressed(before: before, after: after),
+                   shippedVariant: .mrc,
+                   runnerUp: RetainedVariant(kind: runnerUpBytes == before ? .original : .plain,
+                                             bytes: runnerUpBytes, searchable: false))
     }
 }

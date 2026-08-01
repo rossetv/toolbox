@@ -27,12 +27,12 @@ and drives the batch UI.
 | `Sources/Toolbox/Compress/BilevelScan.swift` | `BilevelScan.binarise(_:)` — near-bilevel gate (`isNearBilevel`) + Otsu-threshold reduction to 1-bit `/DeviceGray` |
 | `Sources/Toolbox/Compress/CCITTEncoder.swift` | `CCITTEncoder.encode(_:)` — CCITT Group 4 via an in-memory TIFF (ImageIO), strip lifted back out for `/CCITTFaxDecode` |
 | `Sources/Toolbox/Compress/BilevelPDFComposer.swift` | `BilevelPDFComposer.compose(pages:)` — builds a fresh classic-xref PDF whose pages are CCITT image XObjects |
-| `Sources/Toolbox/Compress/CompressEstimator.swift` | `CompressEstimator.estimate(_:preset:)` (single preset) and `.analyse(_:)` (every preset from one analysis pass, feeds R16's recompress prediction) — time-boxed, parse-only pre-run size prediction |
-| `Sources/Toolbox/Compress/CompressViewModel.swift` | `@MainActor` state: queue, preset, output folder, per-job estimate overlay, the recompress/arm flow (`recompressState(for:)`, `armedJobs`, `recompressPrediction(for:at:)`, `runRecompressPhase`) and the version switch (`versions(for:)`, `switchVersion(for:)`, `useVersion(_:for:)`) — both drive `VersionStore` |
-| `Sources/Toolbox/Compress/CompressView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel, the armed-recompress `SuccessBanner` (`.accent` tone) |
+| `Sources/Toolbox/Compress/CompressEstimator.swift` | `CompressEstimator.estimate(_:preset:)` (single preset) and `.analyse(_:mrcEligible:)` (every preset from one analysis pass, feeds `recompressPrediction`) — time-boxed, parse-only pre-run size prediction |
+| `Sources/Toolbox/Queue/QueueViewModel.swift` | `@MainActor` state for the **whole queue** — Compress and OCR share one view model and one job list, one instance per `RootView` (see [App](app.md)); this doc covers only its Compress-specific surface (OCR's is in [OCR](ocr.md)): the recompress/arm flow (`recompressState(for:)`, `armedJobs`, `recompressPrediction(for:at:)`, `runRecompressPhase`) and the version switch (`versions(for:)`, `useVersion(_:for:)`) — both drive `VersionStore`. Formerly `Compress/CompressViewModel.swift`, folded in when Compress and OCR became one queue |
+| `Sources/Toolbox/Queue/QueueView.swift`, `QueueRowsView.swift`, `QueueHeaderView.swift`, `QueueFooterView.swift` | Drop zone, file rows, preset picker, output-folder row, run/cancel — the unified queue UI that replaced `Compress/CompressView.swift` |
 | `Sources/Toolbox/Compress/VersionStore.swift` | `VersionStore` — `@MainActor` display authority for every row's versions (R14); `RowVersions` (shipped/runnerUp/previous + `cards`, `capsuleTitle`), `FileVersion`, `EngineVariant` (`.mrc`/`.plain`/`.original`); the only path that discards a parked file (`setSlot`, `discardRow`, `retain(only:)`) |
-| `Sources/Toolbox/Compress/VersionsPopover.swift` | The capsule's popover: every version of a row (shipped/runner-up/previous) as thumbnail cards, "Use this" drives `CompressViewModel.useVersion(_:for:)` |
-| `Sources/Toolbox/Compress/RunnerUpStore.swift` | `RunnerUpStore` — `@MainActor` cache of parked (runner-up and previous) versions on disk (spec R15, documented exception to "no persisted app state"); `sweepStale()` runs once from `CompressViewModel.init` (see [App](app.md) — `RootView` owns the view model as a `@StateObject` under the app's single `Window` scene, so this fires exactly once per run), `removeAllOnDisk()` on quit (`AppDelegate.applicationWillTerminate`, see [App](app.md)) |
+| `Sources/Toolbox/Queue/VersionsPopoverContent.swift` | The capsule's popover: every version of a row (shipped/runner-up/previous) as thumbnail cards, "Use this" drives `QueueViewModel.useVersion(_:for:)` — replaced the deleted `Compress/VersionsPopover.swift` |
+| `Sources/Toolbox/Compress/RunnerUpStore.swift` | `RunnerUpStore` — `@MainActor` cache of parked (runner-up and previous) versions on disk (spec R15, documented exception to "no persisted app state"); `sweepStale()` runs once from `QueueViewModel.init` (see [App](app.md) — `RootView` owns the view model as a `@StateObject` under the app's single `Window` scene, so this fires exactly once per run), `removeAllOnDisk()` on quit (`AppDelegate.applicationWillTerminate`, see [App](app.md)) |
 | `Sources/Toolbox/Compress/MRC/MRCClassifier.swift` | `MRCClassifier.structure(of:)` (R2 structural sweep), `.features(of:)` + `.verdict(features:)` (R3 eligibility envelope), `.sourceImageLongEdge(of:)` (the scan's native pixel resolution — caps the MRC render DPI) |
 | `Sources/Toolbox/Compress/MRC/MRCSegmenter.swift` | `MRCSegmenter.binarise(_:)` (Sauvola-class local-threshold text mask) + `.segment(_:)` (fg/bg colour-layer split; `colourLayer(…flatFill:)` fills the other class — spread-fill for the paper background, flat global-mean fill for the ink foreground) |
 | `Sources/Toolbox/Compress/MRC/MRCPageEncoder.swift` | `MRCPageEncoder.encode(_:preset:)` — CCITT mask + JPEG fg/bg layers; **re-emits the foreground at `MRCSegmenter.foregroundLayerScale` of the mask resolution** (`resample`) so the mask soft-mask stays sharp; `.recompose(_:)` rebuilds a page for the verifier |
@@ -114,10 +114,13 @@ and drives the batch UI.
   cancelled or failed job leaves no partial output at the destination.
 - **A gs exit 0 with zero-byte output is a hard failure**, never treated as
   "already optimised" (`CompressEngine.compress`, step 4).
-- Output names for a whole batch are **pre-allocated serially, before the concurrent
-  run starts** (`CompressViewModel.compress` — see `FileNaming.output(for:suffix:folder:reserving:)`
-  in [Shared](shared.md)): a purely on-disk existence check races when two queued
-  inputs share a basename, so allocation must happen on one thread first.
+- Output names are **reserved serially, one row at a time, as each file is added to
+  the queue** (`QueueViewModel.add(_:)` → `reserve(for:)`, see
+  `FileNaming.output(for:suffix:folder:reserving:)` in [Shared](shared.md)): a purely
+  on-disk existence check races when two queued inputs share a basename, so allocation
+  must happen on one thread first, against the reservation ledger already handed out
+  to every row ahead of it — not merely a batch-start snapshot, since a row can be
+  added mid-run (spec §6.5).
 - **Rung 3 routes on `wantsMRC`** (`CompressEngine.compress`): a `.scanColour`
   document at any preset except `.maximumQuality` runs the gs pass first (unchanged —
   it is the D7 baseline), then attempts `mrcCompress`. Any MRC failure other than
@@ -126,6 +129,21 @@ and drives the batch UI.
   runs over every page before any rendering: one non-`.simpleSingleImage` page kills
   the whole attempt, because the fallback path rasterises and rasterising real text is
   destructive.
+- **`wantsMRC`'s per-file opt-out only ever narrows, never widens** (`CompressEngine.compress`'s
+  `rebuildScan: Bool?` parameter, spec §7): `nil` derives the decision exactly as if the row had
+  never been touched; `false` forces the hybrid leg off regardless of classification; `true` still
+  has to clear `.scanColour` and non-`.maximumQuality` — opting in can never reach a document or
+  preset the classifier/D3 would otherwise refuse. `QueueViewModel` stores the row's choice in
+  `overrides[id]?.rebuildScan` and threads it through every call site that needs the same
+  three-way answer — the live compress, `CompressEstimator.analyse(_:mrcEligible:)`'s pricing, and
+  `recompressPrediction(for:at:)`.
+- **The estimator prices a rebuild-eligible `.scanColour` document off its own table, not the
+  general one** (`CompressEstimator.predict`): `scanColourRebuildReduction` applies only when
+  `mrcEligible && contentType == .scanColour && preset != .maximumQuality` — the same three-way
+  test `CompressEngine.compress` runs for `wantsMRC` — else the estimate falls back to
+  `baseReduction[contentType]` (or `typicalReduction` when analysis failed, flagged `isFallback`).
+  Opting a row out of the rebuild (`rebuildScan == false`) therefore also switches which table
+  prices it, not just what the engine ships.
 - **MRC renders at the scan's native resolution, never above** (`CompressEngine.mrcCompress`
   and `fallbackJPEG` cap `maxDimension` at `MRCClassifier.sourceImageLongEdge`): the presets'
   `bilevelDPI` (300 balanced) over-renders a typical ~200-dpi scan, upsampling for no real
@@ -133,16 +151,19 @@ and drives the batch UI.
   Capping at the source keeps text as crisp as the scan and is what lets the sharp
   (native-emitted) foreground fit the size budget. A sub-`minBilevelDPI` scan (its source
   below the floor) declines to gs rather than shipping a blocky rebuild.
-- **D7 document gate**: the hybrid ships only when it is smaller than *both* the gs
-  output and the input, and passes `OutputValidator`. A winning hybrid always ships
-  `.compressedHeavy(before:after:runnerUpBytes:)` with a runner-up parked in
-  `alternateOutput` (R7): normally the gs output; when gs itself was not smaller than
-  the input, a copy of the untouched original instead (`runnerUpBytes == before` is
-  the marker — R6 forbids offering a larger-than-input file, and the UI labels that
-  card "Original"; `CompressViewModel` maps this to `EngineVariant.original`, see
-  `VersionStore.swift`).
+- **D7 document gate, and R7's reversal: the LOSER is retained too** (`CompressEngine.compress`,
+  `RowOutcome` in `Models/JobOutcome.swift`): a legitimate, validated hybrid (smaller than the
+  input) is parked as a `RetainedVariant` regardless of which side of the gs comparison it lands
+  on — not just when it wins. If it beats the gs output too, it ships (`shippedVariant: .mrc`) and
+  the gs output (or, when gs itself was not smaller than the input, a copy of the untouched
+  original — `RetainedVariant.kind == .original` is the marker; R6 forbids offering a
+  larger-than-input file, and the UI labels that card "Original") is parked as the `runnerUp`. If
+  gs still wins the size gate, the hybrid itself is retained instead and offered beside the gs
+  winner — spec §5's R7-asymmetry reversal, because the consent sheet is about the *look* of the
+  page, not only bytes. `VersionStore` (`RowVersions`, `EngineVariant`) is what turns that retained
+  variant into the switch UI.
 - **A finished row can be recompressed at a different preset without re-adding the
-  file** (`CompressViewModel.recompressState(for:)`): switching the batch preset arms
+  file** (`QueueViewModel.recompressState(for:)`): switching the batch preset arms
   every finished row whose own preset differs — `.futile` if that preset already came
   back no-gain, `.instantSwitch` if a parked `previous` version already matches it
   (no re-run), else `.armed`. Pressing run serialises the armed rows through the
@@ -155,14 +176,14 @@ and drives the batch UI.
 - **`RunnerUpStore` is the one documented exception to "no persisted app state"**
   (spec R15): it caches the losing gs version on disk (`caches/Toolbox/runner-ups`) so
   the heavy-capsule popover's switch is instant. `sweepStale()` runs once, from
-  `CompressViewModel.init` — effectively at launch because `RootView` constructs the
+  `QueueViewModel.init` — effectively at launch because `RootView` constructs the
   `@StateObject` view model exactly once under the app's single `Window` scene (see
   [App](app.md)) — `removeAllOnDisk()` at quit (`AppDelegate.applicationWillTerminate`) — a crash
   between the two just leaves stale cache files, cleaned on the next launch.
   `switchVersions(shipped:runnerUp:)` exchanges file *content* via three moves (park →
   promote → demote), never rewriting either path, so a mid-switch crash restores the
   shipped file rather than losing it. If the cached runner-up has vanished by the time
-  the user switches, `CompressViewModel.rerunForSwitch` honestly re-runs the job (R10)
+  the user switches, `QueueViewModel.rerunForSwitch` honestly re-runs the job (R10)
   rather than failing silently.
 - **MRC text sharpness is set by the foreground's *emitted* resolution, not the mask**
   (field-blur fix, 2026-07-24): the CCITT text mask is the foreground JPEG's PDF
@@ -206,5 +227,6 @@ and drives the batch UI.
 
 ## Related
 
-- Modules: [Services](services.md), [Shared](shared.md), [Models](models.md), [App](app.md)
+- Modules: [Services](services.md), [Shared](shared.md), [Models](models.md), [App](app.md),
+  [OCR](ocr.md) (shared `QueueViewModel`/queue)
 - Specs: `.claude/specs/20260722-pdf-toolbox-v1.md` §5, `.claude/specs/20260723-mrc-rung3.md`

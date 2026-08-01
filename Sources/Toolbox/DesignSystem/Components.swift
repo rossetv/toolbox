@@ -11,57 +11,138 @@ import SwiftUI
 
 /// Reusable components built on `Theme`, rebuilt from the Claude Design mockup
 /// (kept outside this repository) — matching its feel, not its pixels.
-/// Presentation-only: none of these depend on `ToolJob`/`CompressPreset`/view-model state, so
-/// they stay reusable across Compress, OCR and future tools. Application to the real views
-/// (`CompressView`, `OCRView`, `RootView`, `SidebarView`) is the S.1 polish pass, not this task.
+/// Both this file and `QueueComponents.swift` are presentation-only: neither depends on
+/// `ToolJob`/`CompressPreset`/view-model state. The real split is size: the app's small, generic
+/// controls (buttons, thumbnails, section labels) live here; the larger, queue-specific rows and
+/// cards (`QueueRow`, `VerbChip`, `OptionCard`, etc.) live in `QueueComponents.swift`. Consumed by
+/// the unified queue's views (`QueueComponents.swift`, `Queue/*`) and the app chrome (`App/*`).
+
+// MARK: - Hover tracking
+
+/// The app's one hover-tracking mechanism — every view whose hover state drives on-screen chrome
+/// (a fill, an opacity, a colour swap) uses this, never `.onHover` directly. EMPIRICAL basis (not
+/// documented by Apple, traced live in this app): a synthetic/warped pointer — assistive input,
+/// UI automation — moves via `mouseMoved` events but never crosses an AppKit tracking area, so
+/// `.onHover`'s `mouseEntered`/`mouseExited` never fire for it and hover chrome stays dead.
+/// `onContinuousHover`'s `.active`/`.ended` phases key off `mouseMoved` instead, so they still
+/// fire. Same visual semantics as `.onHover`, strictly more robust input coverage.
+extension View {
+    func continuousHover(_ isHovering: Binding<Bool>) -> some View {
+        continuousHover { isHovering.wrappedValue = $0 }
+    }
+
+    /// Closure variant, for the (rarer) site that needs to react to the transition rather than
+    /// just store a `Bool` — e.g. only acting on hover-in, never on hover-out.
+    func continuousHover(perform action: @escaping (Bool) -> Void) -> some View {
+        onContinuousHover { phase in
+            if case .active = phase { action(true) } else { action(false) }
+        }
+    }
+}
+
+// MARK: - MotionButtonStyle
+
+/// The app's one press/hover motion, used in place of `.buttonStyle(.plain)` on every button in
+/// the design system (DESIGN.md §8, DECISIONS 2026-08-01): press scales to `Theme.Motion.pressScale`
+/// and, on the controls that ask for it, hover lifts 1pt and fades to `hoverOpacity`. Rendering is
+/// otherwise `.plain`'s — the style draws no chrome of its own, so each component keeps its own
+/// fill, ring and shadow.
+///
+/// **A component styled with this must draw its chrome INSIDE its `Button` label**, not on the
+/// `Button` from outside: a `ButtonStyle` can only reach `configuration.label`, so background
+/// applied outside would stay stubbornly still while the text alone shrank.
+///
+/// Hover/enabled state and the Reduce Motion gate live in a nested `View`, deliberately: a
+/// `ButtonStyle` is not a `View`, so `@Environment` read directly in `makeBody` is not reliably
+/// populated or updated — and the one thing that must never silently fail here is Reduce Motion.
+struct MotionButtonStyle: ButtonStyle {
+    /// Filled call-to-action behaviour — the handoff's `translateY(-1px)` hover rise. Off for
+    /// every other control: rows, cards and secondary buttons hover by changing fill, not by
+    /// moving.
+    var lifts: Bool = false
+    /// Opacity while hovered or pressed. `1` (no fade) for controls whose hover is a fill change;
+    /// `Theme.Motion.hoverOpacity` for filled CTAs, `Theme.Motion.linkHoverOpacity` for links.
+    var hoverOpacity: Double = 1
+
+    func makeBody(configuration: Configuration) -> some View {
+        PressBody(configuration: configuration, lifts: lifts, hoverOpacity: hoverOpacity)
+    }
+
+    private struct PressBody: View {
+        let configuration: ButtonStyleConfiguration
+        let lifts: Bool
+        let hoverOpacity: Double
+
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        /// A disabled control must not react to the pointer at all — its own component draws the
+        /// disabled treatment.
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .scaleEffect(Theme.Motion.scale(isPressed: isPressed, reduceMotion: reduceMotion))
+                .offset(y: lifts ? Theme.Motion.lift(isHovering: isHovering && isEnabled,
+                                                     isPressed: isPressed,
+                                                     reduceMotion: reduceMotion) : 0)
+                .opacity(isEnabled && (isHovering || isPressed) ? hoverOpacity : 1)
+                .animation(Theme.Motion.pressCurve(reduceMotion: reduceMotion), value: isPressed)
+                .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
+                .continuousHover($isHovering)
+        }
+
+        private var isPressed: Bool { configuration.isPressed && isEnabled }
+    }
+}
 
 // MARK: - PrimaryButton
 
 /// The primary call-to-action. Filled with `Theme.Colors.accent`, white label, disabled/hover
 /// states.
 ///
-/// Radius is DESIGN.md §4's 8px "Primary Blue (CTA)" button, not the 980px pill: the pill
-/// radius is reserved for *link* CTAs ("Learn more"/"Shop") and compact badges, and the Claude
+/// Radius is DESIGN.md §5's `control` token (8px), not the `pill` token (980px): pill radius
+/// is reserved for *link* CTAs ("Learn more"/"Shop") and compact badges, and the Claude
 /// Design mockup draws both of its primary actions ("Choose Files…", "Compress N PDFs") as
 /// small-radius buttons too. The design system's earlier pill reading of "CTA radius" was the
-/// wrong half of §4.
+/// wrong half of §5.
 struct PrimaryButton: View {
     let title: String
     var isEnabled: Bool = true
     let action: () -> Void
 
-    @State private var isHovering = false
-
     var body: some View {
         Button(action: action) {
+            // 14/600: the handoff's "Choose Files…"/"Start" buttons — `.button`
+            // (17/regular) predates the redesign and is a different, larger role.
             Text(title)
-                .themeFont(.button)
-                .fontWeight(.medium)
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
                 .padding(.vertical, 10)
                 .padding(.horizontal, 22)
-                // `.plain` hit-tests only opaque content, so without an explicit shape the
-                // padding (and the background applied outside the Button) is dead to clicks.
+                // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §2's
+                // `accent` token is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) —
+                // the one system shadow is the card's. The gradient (with its raw #0A84FF
+                // literal) and the accent-tinted glow this replaces were an unrecorded
+                // divergence: DECISIONS.md holds no entry for either. Drawn inside the label so
+                // `MotionButtonStyle`'s press scale carries the pill, not just the text.
+                .background(
+                    Theme.Colors.accent,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                )
+                // A plain-rendering style hit-tests only opaque content, so without an explicit
+                // shape the padding is dead to clicks. Stays AFTER the padding.
                 .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
-        .buttonStyle(.plain)
+        // Hover: fade to `hoverOpacity` and rise 1pt; press: back to rest, scaled to .97
+        // (handoff `style-hover="opacity:.9;transform:translateY(-1px)"`,
+        // `style-active="transform:translateY(0) scale(.97)"`).
+        .buttonStyle(MotionButtonStyle(lifts: true, hoverOpacity: Theme.Motion.hoverOpacity))
         .clearsClickFocus()
-        // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §4's "Primary
-        // Blue (CTA)" is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) — the one
-        // system shadow is the card's. The gradient (with its raw #0A84FF literal) and the
-        // accent-tinted glow this replaces were an unrecorded divergence: DECISIONS.md holds no
-        // entry for either.
-        .background(
-            Theme.Colors.accent,
-            in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-        )
-        .opacity(isEnabled ? (isHovering ? 0.9 : 1) : 0.4)
-        .onHover { isHovering = $0 }
+        .opacity(isEnabled ? 1 : 0.4)
         .disabled(!isEnabled)
         // Only offer the "clickable" cursor when the button can actually be pressed — a hand
         // over a disabled control promises something that will not happen.
         .modifier(HandCursorWhen(isEnabled: isEnabled))
-        .animation(.easeOut(duration: 0.1), value: isHovering)
     }
 }
 
@@ -97,7 +178,10 @@ struct LinkButton: View {
                 .foregroundStyle(Theme.Colors.link)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        // A link has no fill to hover, so it fades instead — the handoff's own treatment for
+        // these spans (`transition:opacity .15s`, `style-hover="opacity:.6"`). No lift: they sit
+        // in text runs, and a line of type that jumps on hover reads as a glitch.
+        .buttonStyle(MotionButtonStyle(hoverOpacity: Theme.Motion.linkHoverOpacity))
         .clearsClickFocus()
         .pointingHandCursor()
     }
@@ -125,564 +209,62 @@ struct LinkButton: View {
     .preferredColorScheme(.dark)
 }
 
-// MARK: - Card
+// MARK: - SecondaryButton
 
-/// A flat, borderless container on `Theme.Colors.surface` (DESIGN.md §4: "no border, ...
-/// elevation comes from background color contrast"). Set `elevated` to opt into the one soft
-/// DESIGN.md shadow for a container that genuinely needs to lift off the page — most don't.
-struct Card<Content: View>: View {
-    var elevated: Bool = false
-    @ViewBuilder var content: Content
+/// A neutral filled button — "Show in Finder", "Enter password…", "Compare versions…". Dark
+/// mode's `#3a3a3c` is a component-local pair, not a `Theme` token: it is NOT the same as
+/// `Theme.Colors.surface`'s dark value (`#242426`) — the handoff genuinely uses a lighter grey
+/// for these buttons than the window surface.
+struct SecondaryButton: View {
+    private static let background = Color(light: NSColor(hex: 0xFFFFFF), dark: NSColor(hex: 0x3A3A3C))
 
-    var body: some View {
-        content
-            .padding(Theme.Spacing.medium)
-            .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
-            .shadow(
-                color: elevated ? Theme.Shadow.color : .clear,
-                radius: elevated ? Theme.Shadow.radius : 0,
-                x: elevated ? Theme.Shadow.x : 0,
-                y: elevated ? Theme.Shadow.y : 0
-            )
-    }
-}
-
-#Preview("Card – Light") {
-    Card {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Balanced").themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
-            Text("Great size, near-original look.").themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
-        }
-    }
-    .padding(40)
-    .background(Theme.Colors.background)
-    .preferredColorScheme(.light)
-}
-
-#Preview("Card – Dark") {
-    Card(elevated: true) {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Balanced").themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
-            Text("Great size, near-original look.").themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
-        }
-    }
-    .padding(40)
-    .background(Theme.Colors.background)
-    .preferredColorScheme(.dark)
-}
-
-// MARK: - DropZone
-
-/// The empty-state drag target. `isTargeted` is driven by the consuming view's own
-/// `.onDrop(..., isTargeted:)` binding — this component is purely presentational.
-struct DropZone: View {
-    var isTargeted: Bool = false
-    var title: String = "Drop PDFs here"
-    var subtitle: String = "or add them manually · batch supported"
-    var buttonTitle: String = "Choose Files…"
+    let title: String
+    var icon: Image? = nil
     let action: () -> Void
 
-    var body: some View {
-        VStack(spacing: Theme.Spacing.medium) {
-            ZStack {
-                Circle()
-                    .fill(Theme.Colors.surface)
-                    .frame(width: 66, height: 66)
-                    // The disc is `surface`, and so is the pane it sits on — in dark mode the
-                    // shadow alone doesn't separate them. The hairline accent ring is the
-                    // mockup's own inset border and is what makes the disc read in both modes.
-                    .overlay(Circle().strokeBorder(Theme.Colors.accent.opacity(0.22), lineWidth: 1))
-                    .shadow(color: Theme.Colors.accent.opacity(0.18), radius: 10, x: 0, y: 6)
-                Image(systemName: "arrow.down.doc")
-                    .font(.system(size: 26, weight: .medium))
-                    .foregroundStyle(Theme.Colors.accent)
-            }
-            VStack(spacing: 4) {
-                Text(title).themeFont(.tileHeading).foregroundStyle(Theme.Colors.text)
-                Text(subtitle).themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
-            }
-            PrimaryButton(title: buttonTitle, action: action)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(Theme.Spacing.large)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .fill(Theme.Colors.accent.opacity(isTargeted ? 0.08 : 0.03))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .strokeBorder(style: StrokeStyle(lineWidth: 2, dash: [8]))
-                .foregroundStyle(isTargeted ? Theme.Colors.accent : Theme.Colors.textTertiary)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(perform: action)
-        .animation(.easeOut(duration: 0.15), value: isTargeted)
-    }
-}
-
-#Preview("DropZone – Light") {
-    DropZone(action: {})
-        .frame(width: 480, height: 280)
-        .padding(24)
-        .background(Theme.Colors.surface)
-        .preferredColorScheme(.light)
-}
-
-#Preview("DropZone – Dark (hover)") {
-    DropZone(isTargeted: true, action: {})
-        .frame(width: 480, height: 280)
-        .padding(24)
-        .background(Theme.Colors.surface)
-        .preferredColorScheme(.dark)
-}
-
-// MARK: - StatPill
-
-/// A small rounded badge for a short stat, e.g. a "−74%" size-reduction figure (DESIGN.md's
-/// 980px pill radius applied to a compact label rather than a button).
-struct StatPill: View {
-    enum Tone {
-        case success, neutral, accent
-
-        var color: Color {
-            switch self {
-            case .success: return Theme.Colors.success
-            case .neutral: return Theme.Colors.textTertiary
-            case .accent: return Theme.Colors.accent
-            }
-        }
-    }
-
-    let text: String
-    var tone: Tone = .success
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
 
     var body: some View {
-        Text(text)
-            .themeFont(.microBold)
-            .foregroundStyle(tone.color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(tone.color.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.Radius.pill, style: .continuous))
-    }
-}
-
-#Preview("StatPill – Light") {
-    HStack(spacing: 8) {
-        StatPill(text: "−74%")
-        StatPill(text: "Queued", tone: .neutral)
-        StatPill(text: "New", tone: .accent)
-    }
-    .padding(40)
-    .background(Theme.Colors.surface)
-    .preferredColorScheme(.light)
-}
-
-#Preview("StatPill – Dark") {
-    HStack(spacing: 8) {
-        StatPill(text: "−74%")
-        StatPill(text: "Queued", tone: .neutral)
-        StatPill(text: "New", tone: .accent)
-    }
-    .padding(40)
-    .background(Theme.Colors.surface)
-    .preferredColorScheme(.dark)
-}
-
-// MARK: - SegmentedPreset
-
-/// One option in a `SegmentedPreset` — a title, one-line descriptor and a short hint (DESIGN.md's
-/// card-vs-segmented preset picker; `id` deliberately matches `CompressPreset.id`'s `String` type
-/// so the S.1 polish pass can map `CompressPreset.allCases` straight across).
-struct SegmentedPresetOption: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let subtitle: String
-    let hint: String
-}
-
-/// The 3-way quality preset selector. Every card carries a hairline stroke — accent on the
-/// selected card, faint neutral on the rest — a recorded divergence from DESIGN.md §7's
-/// no-borders rule (see DECISIONS.md 2026-07-25): without the neutral stroke the unselected
-/// cards dissolve into the pane in dark mode.
-struct SegmentedPreset: View {
-    let options: [SegmentedPresetOption]
-    @Binding var selection: String
-    var isEnabled: Bool = true
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.small) {
-            ForEach(options) { option in
-                optionCard(option)
-            }
-        }
-    }
-
-    private func optionCard(_ option: SegmentedPresetOption) -> some View {
-        let isSelected = option.id == selection
-        return VStack(alignment: .leading, spacing: 4) {
-            Text(option.title).themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
-            Text(option.subtitle)
-                .themeFont(.micro)
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(option.hint).themeFont(.nano).foregroundStyle(Theme.Colors.textTertiary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Theme.Spacing.small + 4)
-        .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.input, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Radius.input, style: .continuous)
-                .strokeBorder(
-                    isSelected ? Theme.Colors.accent : Theme.Colors.textTertiary.opacity(0.35),
-                    lineWidth: isSelected ? 1.5 : 1
-                )
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { if isEnabled { selection = option.id } }
-        .opacity(isEnabled ? 1 : 0.5)
-        .pointingHandCursor()
-    }
-}
-
-private let previewPresetOptions = [
-    SegmentedPresetOption(id: "smallest", title: "Smallest", subtitle: "Maximum shrink for email & upload.", hint: "~96 DPI images"),
-    SegmentedPresetOption(id: "balanced", title: "Balanced", subtitle: "Great size, near-original look.", hint: "~150 DPI images"),
-    SegmentedPresetOption(id: "high", title: "High quality", subtitle: "Light touch, keeps fine detail.", hint: "~225 DPI images"),
-]
-
-#Preview("SegmentedPreset – Light") {
-    SegmentedPreset(options: previewPresetOptions, selection: .constant("balanced"))
-        .padding(40)
-        .background(Theme.Colors.background)
-        .preferredColorScheme(.light)
-}
-
-#Preview("SegmentedPreset – Dark") {
-    SegmentedPreset(options: previewPresetOptions, selection: .constant("smallest"))
-        .padding(40)
-        .background(Theme.Colors.background)
-        .preferredColorScheme(.dark)
-}
-
-// MARK: - FileRow
-
-/// One file in a batch queue (DESIGN.md handover §5 "File-queue row"). Covers every state
-/// `JobState`/`JobOutcome` can reach in either tool — inline, so a failing file in a batch
-/// doesn't disrupt the rest of the list. Purely presentational: the consuming view maps its
-/// job state onto a `Status` and supplies any wording that varies by tool.
-struct FileRow: View {
-    enum Status {
-        /// Waiting to start. `detail` is the trailing note — Compress puts its size estimate
-        /// there, OCR (which has nothing to predict) just says "Queued".
-        case queued(detail: String?, savedPercent: Int?)
-        /// Pre-flight analysis in flight (Compress's per-file size estimate).
-        case analysing
-        case inProgress(fraction: Double?)
-        /// Finished with a real size delta: original → new, plus a saved-percentage pill.
-        case done(originalBytes: Int, newBytes: Int)
-        /// Finished with a real size delta, plus a capsule offering heavier re-compression.
-        case doneHeavy(originalBytes: Int, newBytes: Int)
-        /// Finished with a message rather than a size delta (OCR's "Searchable — 12 pages").
-        case succeeded(String)
-        /// Finished with nothing to do — "Already optimised" / "Already searchable".
-        case unchanged(String)
-        case error(String)
-    }
-
-    let name: String
-    let meta: String
-    /// The file this row represents, used to draw a preview of its first page. Nil falls back to
-    /// a plain document mark, which is what the previews and any non-file row get.
-    var fileURL: URL?
-    var status: Status = .queued(detail: nil, savedPercent: nil)
-    var onRemove: (() -> Void)?
-    /// Opening the file the row represents. Nil leaves the row inert.
-    var onOpen: (() -> Void)?
-    /// Opening the heavy-compression options for this file. Nil leaves the capsule inert.
-    var onHeavyTap: (() -> Void)?
-    /// The capsule's label. FileRow is tool-agnostic, so callers own the vocabulary (e.g.
-    /// "Heavy compression" vs. "Normal compression" vs. "Original" after a switch) — the design
-    /// system just draws whatever string it's given.
-    var heavyCapsuleTitle: String = "Heavy compression"
-    /// Presentation + content for the popover the heavy capsule anchors. It must attach to the
-    /// capsule itself — attached to the row, the arrow points at the row's centre and the popover
-    /// reads as disconnected from the control that opened it.
-    var heavyPopoverPresented: Binding<Bool>?
-    var heavyPopoverContent: (() -> AnyView)?
-
-    /// The leading item of a finished row's trailing cluster: the armed prediction, a
-    /// known-futile note, an instant-switch link, or a per-row error. Additive — the row keeps its
-    /// whole done cluster behind it, so nothing ever reads as lost (R2).
-    enum Lead: Equatable {
-        case accentPill(String)
-        case neutralPill(String)
-        case link(String)
-        case error(String)
-    }
-
-    var lead: Lead?
-    /// Action for a `.link` lead. Ignored by every other shape.
-    var onLeadTap: (() -> Void)?
-    /// A second, accent-toned clause appended to the meta line ("· will recompress at Balanced").
-    var metaAccent: String?
-
-    @State private var isHoveringCapsule = false
-
-    var body: some View {
-        HStack(spacing: 13) {
-            // Only the badge and the filename open the file. Making the whole row clickable turns
-            // it into one large hit target that also swallows clicks meant for the trailing
-            // controls, and gives no hint about what the click will do.
-            HStack(spacing: 13) {
-                fileBadge
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .themeFont(.bodyEmphasis)
-                        .foregroundStyle(Theme.Colors.text)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    HStack(spacing: 4) {
-                        Text(meta).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
-                        if let metaAccent {
-                            Text("· \(metaAccent)").themeFont(.micro)
-                                .foregroundStyle(Theme.Colors.accent)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            .contentShape(Rectangle())
-            .modifier(RowOpenModifier(onOpen: onOpen))
-
-            Spacer(minLength: Theme.Spacing.small)
-            trailing
-        }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 14)
-        .background(Theme.Colors.background, in: RoundedRectangle(cornerRadius: Theme.Radius.control + 2, style: .continuous))
-    }
-
-    private var fileBadge: some View {
-        // Decorative here: the row already announces the filename, so an unlabelled image
-        // beside it only adds noise to VoiceOver.
-        PDFThumbnail(url: fileURL).accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private var trailing: some View {
-        switch status {
-        case .queued(let detail, let savedPercent):
-            HStack(spacing: 11) {
-                if let detail {
-                    Text(detail).themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
-                }
-                if let savedPercent, savedPercent > 0 {
-                    StatPill(text: "−\(savedPercent)%", tone: .success)
-                }
-                if let onRemove {
-                    removeButton(onRemove)
-                }
-            }
-        case .analysing:
-            HStack(spacing: Theme.Spacing.small) {
-                ProgressView().controlSize(.small)
-                Text("Analysing…").themeFont(.micro).foregroundStyle(Theme.Colors.textTertiary)
-            }
-        case .inProgress(let fraction):
-            if let fraction {
-                ProgressView(value: fraction).frame(width: 110).tint(Theme.Colors.accent)
-            } else {
-                ProgressView().controlSize(.small)
-            }
-        case .done(let originalBytes, let newBytes):
-            HStack(spacing: 11) {
-                leadView
-                Text(byteString(originalBytes))
-                    .themeFont(.micro)
-                    .foregroundStyle(Theme.Colors.textTertiary)
-                    .strikethrough()
-                Text(byteString(newBytes)).themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
-                StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
-            }
-            // A lead makes this the widest this cluster has ever been; without fixedSize, width
-            // pressure wraps the pill onto two lines and grows the row (R8's single-line height).
-            // The name column absorbs the squeeze instead (lineLimit + middle truncation).
-            .fixedSize()
-        case .doneHeavy(let originalBytes, let newBytes):
-            HStack(spacing: 11) {
-                // Lead first, then the capsule, then the sizes and the pill — the lead leads the
-                // whole trailing cluster and the capsule, where the row has one, follows it.
-                leadView
-                // Capsule leads the cluster so the sizes and the pill appear in the same order,
-                // the same distance from the trailing edge, as on a plain `.done` row. There is
-                // no column mechanism: widths still follow the byte strings, so this is
-                // consistent ordering, not a fixed grid.
-                heavyCapsule
-                Text(byteString(originalBytes)).themeFont(.micro)
-                    .foregroundStyle(Theme.Colors.textTertiary).strikethrough()
-                Text(byteString(newBytes)).themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
-                // A heavy row can legitimately show no saving (switched to the parked original,
-                // R6/R7) — a "−0%" success pill there is nonsense. Hidden rather than removed:
-                // dropping it shifted the size figures into the slot every neighbouring row
-                // draws its pill in.
-                if newBytes < originalBytes {
-                    StatPill(text: savedPercentText(originalBytes, newBytes), tone: .success)
-                } else {
-                    StatPill(text: "\u{2212}0%", tone: .success).hidden()
-                }
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.Colors.success)
-            }
-            // The capsule makes this the widest trailing cluster; without fixedSize, width
-            // pressure wraps the pill onto two lines and grows the row (R8's single-line
-            // height). The name column absorbs the squeeze instead (lineLimit + middle
-            // truncation).
-            .fixedSize()
-        case .succeeded(let message):
-            Label {
-                Text(message).themeFont(.micro).lineLimit(1)
-            } icon: {
-                Image(systemName: "checkmark.circle.fill")
-            }
-            .foregroundStyle(Theme.Colors.success)
-        case .unchanged(let message):
-            // Lead first, then today's muted check and note — a no-gain row is armable (R1) and
-            // futile-markable (R6), so it must be able to carry a lead like any finished row.
-            HStack(spacing: 11) {
-                leadView
-                Label {
-                    Text(message).themeFont(.micro).lineLimit(1)
-                } icon: {
-                    Image(systemName: "checkmark.circle")
-                }
-                .foregroundStyle(Theme.Colors.textSecondary)
-            }
-            // A lead makes this the widest this cluster has ever been; without fixedSize, width
-            // pressure wraps the pill onto two lines and grows the row (R8's single-line height).
-            // The name column absorbs the squeeze instead (lineLimit + middle truncation).
-            .fixedSize()
-        case .error(let message):
-            errorLabel(message)
-        }
-    }
-
-    @ViewBuilder
-    private var leadView: some View {
-        switch lead {
-        case .accentPill(let text):
-            StatPill(text: text, tone: .accent)
-        case .neutralPill(let text):
-            StatPill(text: text, tone: .neutral)
-        case .link(let title):
-            LinkButton(title: title) { onLeadTap?() }
-        case .error(let message):
-            // Bounded, not just line-limited: this lead sits inside a `.fixedSize()` cluster
-            // (.done/.doneHeavy/.unchanged), which proposes the text its full untruncated width
-            // — lineLimit(1) caps line COUNT, not width — so an 83-char recompress message would
-            // otherwise claim the whole row instead of yielding it to the name column.
-            errorLabel(message).frame(maxWidth: 220, alignment: .leading)
-        case nil:
-            EmptyView()
-        }
-    }
-
-    private func errorLabel(_ message: String) -> some View {
-        Label {
-            Text(message).themeFont(.micro).lineLimit(1)
-        } icon: {
-            Image(systemName: "exclamationmark.triangle.fill")
-        }
-        .foregroundStyle(.red)
-    }
-
-    /// "Heavy compression ⌄" — neutral tag + affordance that it opens something (spec R8).
-    private var heavyCapsule: some View {
-        Button { onHeavyTap?() } label: {
-            HStack(spacing: 4) {
-                Text(heavyCapsuleTitle).themeFont(.microBold)
-                Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
-            }
-            .foregroundStyle(isHoveringCapsule ? Theme.Colors.link : Theme.Colors.textSecondary)
-            .fixedSize()
-            .padding(.vertical, 2).padding(.horizontal, 8)
-            .background(Capsule().fill(Theme.Colors.surface))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .clearsClickFocus()
-        .pointingHandCursor()
-        .onHover { isHoveringCapsule = $0 }
-        .popover(isPresented: heavyPopoverPresented ?? .constant(false), arrowEdge: .bottom) {
-            if let heavyPopoverContent {
-                heavyPopoverContent()
-            }
-        }
-    }
-
-    private func removeButton(_ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Theme.Colors.textTertiary)
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(Theme.Colors.surface))
+            HStack(spacing: 7) {
+                icon?.font(.system(size: 12, weight: .medium))
+                Text(title).themeFont(.bodyStrong)
+            }
+            .foregroundStyle(Theme.Colors.text)
+            .padding(.vertical, 9)
+            .padding(.horizontal, 14)
+            // Fill, ring and shadow inside the label so the press scale carries all three (see
+            // `MotionButtonStyle`); `contentShape` stays after the padding.
+            .background(
+                isHovering ? Theme.Colors.background : Self.background,
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 1.5, x: 0, y: 0.5)
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MotionButtonStyle())
         .clearsClickFocus()
-        .accessibilityLabel("Remove \(name) from the queue")
-    }
-
-    private func byteString(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-    }
-
-    private func savedPercentText(_ original: Int, _ new: Int) -> String {
-        guard original > 0 else { return "0%" }
-        let pct = Int((1 - Double(new) / Double(original)) * 100)
-        return "\u{2212}\(pct)%"
+        .continuousHover($isHovering)
+        .pointingHandCursor()
+        // Handoff: `transition:background .15s`, hovering to `bg`. No lift — the handoff reserves
+        // that for the filled accent CTAs.
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
     }
 }
 
-/// Every `Status` in one stack — the states the two tools actually reach.
-private var fileRowStateGallery: some View {
-    VStack(spacing: 8) {
-        FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted", savedPercent: 74))
-        FileRow(name: "Board-Minutes.pdf", meta: "3.2 MB", status: .analysing)
-        FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .inProgress(fraction: 0.62))
-        FileRow(name: "User-Manual.pdf", meta: "19.3 MB", status: .inProgress(fraction: nil))
-        FileRow(name: "Product-Brochure.pdf", meta: "5.4 MB", status: .done(originalBytes: 5_400_000, newBytes: 1_400_000))
-        FileRow(name: "Receipts.pdf", meta: "2.1 MB", status: .succeeded("Searchable — 12 pages"))
-        FileRow(name: "Already-Tiny.pdf", meta: "184 KB", status: .unchanged("Already optimised"))
-        FileRow(name: "Encrypted.pdf", meta: "—", status: .error("Password protected"))
-        FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB · 32 pages",
-                status: .doneHeavy(originalBytes: 18_700_000, newBytes: 1_600_000),
-                lead: .accentPill("→ ≈0.9 MB"), metaAccent: "will recompress at Smallest")
-        FileRow(name: "Board-Minutes.pdf", meta: "3.2 MB · 8 pages",
-                status: .done(originalBytes: 3_200_000, newBytes: 1_400_000),
-                lead: .error("Recompress failed — kept your Balanced version"))
-        // The `.unchanged` lead, which is where the armed and futile pills actually live for a
-        // no-gain row — the case the mockup's screens 2 and 5 both show.
-        FileRow(name: "Already-Tiny.pdf", meta: "184 KB",
-                status: .unchanged("Already optimised"),
-                lead: .accentPill("→ may not shrink"), metaAccent: "will try Smallest")
-        FileRow(name: "Dense-Scan.pdf", meta: "2.1 MB · 4 pages",
-                status: .unchanged("Already optimised"),
-                lead: .neutralPill("No saving at Smallest"))
+#Preview("SecondaryButton") {
+    HStack(spacing: 10) {
+        SecondaryButton(title: "Show in Finder", icon: Image(systemName: "folder"), action: {})
+        SecondaryButton(title: "Change quality", action: {})
+        SecondaryButton(title: "Cancel", action: {})
     }
-    .padding(24)
-}
-
-#Preview("FileRow – Light") {
-    fileRowStateGallery
-        .background(Theme.Colors.surface)
-        .preferredColorScheme(.light)
-}
-
-#Preview("FileRow – Dark") {
-    fileRowStateGallery
-        .background(Theme.Colors.surface)
-        .preferredColorScheme(.dark)
+    .padding(40)
+    .background(Theme.Colors.surface)
 }
 
 // MARK: - PDFThumbnail
@@ -696,13 +278,18 @@ private var fileRowStateGallery: some View {
 struct PDFThumbnail: View {
     let url: URL?
     var width: CGFloat = 30
+    /// Suppresses the red "PDF" label band, leaving a bare page render — `QueueComponents`'
+    /// `VariantCard` (the scan-choice page-preview panel) wants the page itself with no
+    /// file-type badge competing with it.
+    var plain: Bool = false
 
     @State private var preview: NSImage?
 
     private var height: CGFloat { (width * 1.3).rounded() }         // roughly A4/Letter proportions
     /// A fifth of the card. Deep enough to hold the label comfortably, shallow enough that the
     /// thumbnail still reads as a page with a footer rather than a label with a picture above it.
-    private var bandHeight: CGFloat { (height * 0.21).rounded() }
+    /// Zero in `plain` mode — there is no label band to reserve space for.
+    private var bandHeight: CGFloat { plain ? 0 : (height * 0.21).rounded() }
     private let radius: CGFloat = 4.5
 
     var body: some View {
@@ -710,12 +297,14 @@ struct PDFThumbnail: View {
             page
             // Flush to the card's edges and centred by its own frame, so the label sits in the
             // base of the document rather than floating under it.
-            Text("PDF")
-                .font(.system(size: 6, weight: .heavy))
-                .kerning(0.35)
-                .foregroundStyle(.white)
-                .frame(width: width, height: bandHeight)
-                .background(Theme.Colors.documentBadge)
+            if !plain {
+                Text("PDF")
+                    .font(.system(size: 6, weight: .heavy))
+                    .kerning(0.35)
+                    .foregroundStyle(.white)
+                    .frame(width: width, height: bandHeight)
+                    .background(Theme.Colors.documentBadge)
+            }
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
@@ -775,29 +364,6 @@ struct PDFThumbnail: View {
     }
 }
 
-// MARK: - ToolIconTile
-
-/// A tool's identity glyph: an SF Symbol on a rounded, accent-filled square (the mockup's
-/// sidebar and header tile). The mockup gives each tool its own colour; this stays on the one
-/// `Theme.Colors.accent` because DESIGN.md §7 spends the entire chromatic budget on that blue —
-/// DESIGN.md wins the conflict. Unavailable tools are dimmed by their row, not re-coloured.
-struct ToolIconTile: View {
-    let systemImage: String
-    var size: CGFloat = 22
-    var tint: Color = Theme.Colors.accent
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.25, style: .continuous)
-            .fill(tint)
-            .frame(width: size, height: size)
-            .overlay(
-                Image(systemName: systemImage)
-                    .font(.system(size: size * 0.52, weight: .semibold))
-                    .foregroundStyle(.white)
-            )
-    }
-}
-
 // MARK: - SectionLabel
 
 /// A small uppercase group label above a cluster of controls ("QUALITY", "ACCURACY"). The
@@ -817,111 +383,6 @@ struct SectionLabel: View {
     }
 }
 
-// MARK: - ToolHeader
-
-/// The detail pane's header strip: tool glyph, name and a one-line descriptor above a hairline
-/// rule — the mockup's content toolbar. Takes plain strings rather than a `Tool` so the design
-/// system stays independent of the app's model layer.
-struct ToolHeader: View {
-    let systemImage: String
-    let title: String
-    let subtitle: String
-    /// The owning tool's tint. Required in practice: leaving it to `ToolIconTile`'s default drew
-    /// the header tile in the accent blue while the sidebar drew the same glyph in the tool's own
-    /// colour, so one tool appeared in two colours on screen at once.
-    var tint: Color = Theme.Colors.accent
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 9) {
-                ToolIconTile(systemImage: systemImage, tint: tint)
-                Text(title).themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
-            }
-            Text(subtitle)
-                .themeFont(.caption)
-                .foregroundStyle(Theme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Theme.Spacing.large)
-        .padding(.vertical, Theme.Spacing.medium)
-        .background(Theme.Colors.surface)
-        // An explicit hairline rather than `Divider()`: a bare Divider outside a stack takes its
-        // orientation from context, and this one lives in an overlay. The mockup's rule is
-        // 0.5px at ~9% ink, which reads the same in both appearances off `textTertiary`.
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Theme.Colors.textTertiary.opacity(0.2))
-                .frame(height: 0.5)
-        }
-    }
-}
-
-private var toolChromeGallery: some View {
-    VStack(alignment: .leading, spacing: 0) {
-        ToolHeader(
-            systemImage: "arrow.down.right.and.arrow.up.left",
-            title: "Compress",
-            subtitle: "Shrink large PDFs. Text and vectors stay sharp; images are re-encoded."
-        )
-        VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-            SectionLabel("Quality")
-            HStack(spacing: Theme.Spacing.small) {
-                ToolIconTile(systemImage: "text.viewfinder")
-                ToolIconTile(systemImage: "square.stack.3d.up.fill")
-                ToolIconTile(systemImage: "text.viewfinder", size: 34)
-            }
-        }
-        .padding(Theme.Spacing.large)
-    }
-    .frame(width: 520, alignment: .leading)
-    .background(Theme.Colors.surface)
-}
-
-#Preview("Tool chrome – Light") {
-    toolChromeGallery.preferredColorScheme(.light)
-}
-
-#Preview("Tool chrome – Dark") {
-    toolChromeGallery.preferredColorScheme(.dark)
-}
-
-// MARK: - Composite preview (integration check)
-
-#Preview("Compress — Ready (Light)") {
-    VStack(alignment: .leading, spacing: Theme.Spacing.medium) {
-        HStack {
-            Text("3 files · 48.2 MB").themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
-            Spacer()
-            Text("+ Add").themeFont(.link).foregroundStyle(Theme.Colors.link)
-            Text("Clear").themeFont(.link).foregroundStyle(Theme.Colors.link)
-        }
-        VStack(spacing: 8) {
-            FileRow(name: "Annual-Report-2025.pdf", meta: "24.1 MB", status: .queued(detail: "≈6.3 MB predicted", savedPercent: 74))
-            FileRow(name: "Scanned-Contract.pdf", meta: "18.7 MB", status: .queued(detail: "≈4.9 MB predicted", savedPercent: 78))
-            FileRow(name: "Product-Brochure.pdf", meta: "5.4 MB", status: .queued(detail: "~1.4 MB predicted", savedPercent: 61))
-        }
-        SegmentedPreset(options: previewPresetOptions, selection: .constant("balanced"))
-        HStack {
-            Text("Save to").themeFont(.body).foregroundStyle(Theme.Colors.textSecondary)
-            Text("Alongside originals").themeFont(.bodyEmphasis).foregroundStyle(Theme.Colors.text)
-            Spacer()
-            Text("Change…").themeFont(.link).foregroundStyle(Theme.Colors.link)
-        }
-        .padding(Theme.Spacing.small + 2)
-        .background(Theme.Colors.background, in: RoundedRectangle(cornerRadius: Theme.Radius.input, style: .continuous))
-        HStack {
-            Text("Originals are never modified.").themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
-            Spacer()
-            PrimaryButton(title: "Compress 3 PDFs") {}
-        }
-    }
-    .padding(Theme.Spacing.large)
-    .frame(width: 560)
-    .background(Theme.Colors.surface)
-    .preferredColorScheme(.light)
-}
-
 extension View {
     /// Keep a mouse click from leaving this control keyboard-focused — the recurring "stray blue
     /// square" defect. On modern macOS a click on any focusable SwiftUI control (plain-style
@@ -929,7 +390,7 @@ extension View {
     /// ring around it even though the user never touched the keyboard. Tab/arrow-key navigation
     /// is untouched: it assigns focus without a click, so its ring still shows, per DESIGN.md.
     ///
-    /// House rule (see .claude/memory): EVERY `.buttonStyle(.plain)` control gets this modifier
+    /// House rule (see .claude/memory): EVERY `MotionButtonStyle` control gets this modifier
     /// unless it deliberately keeps click focus. Pair with `WindowSetup`'s key-window
     /// first-responder clear, which handles the rings AppKit assigns without any click.
     func clearsClickFocus() -> some View {
@@ -952,8 +413,8 @@ extension View {
 /// Known gap: `TapGesture` ends only on a press and release *inside* the control, while AppKit
 /// takes first responder on mouse-DOWN — so pressing a control, dragging off it and releasing
 /// leaves the ring behind. A zero-distance `DragGesture` would catch that, but this modifier is
-/// attached to every plain-style control in the app, and a drag recogniser on all of them has
-/// far more blast radius (scrolling, the queue list) than the case it closes.
+/// attached to every `MotionButtonStyle` control in the app, and a drag recogniser on all of them
+/// has far more blast radius (scrolling, the queue list) than the case it closes.
 private struct ClearsClickFocusModifier: ViewModifier {
     @FocusState private var isFocused: Bool
 
@@ -972,6 +433,11 @@ private struct ClearsClickFocusModifier: ViewModifier {
 /// control becomes disabled, an `onOpen` going non-nil to nil) — leaking the hand cursor for the
 /// rest of the session. `set()` has no stack to unbalance, and the `@State` flag plus
 /// `onDisappear` make sure a torn-down view still restores the arrow.
+///
+/// Deliberately stays on `.onHover`, not `.continuousHover`: `onContinuousHover`'s `.active`
+/// fires per mouse-move, so converting would call `NSCursor.set()` on every pointer motion
+/// inside the control; the hand cursor is therefore still dead for a warped/synthetic pointer,
+/// unaddressed here.
 private struct PointingHandCursorModifier: ViewModifier {
     @State private var isShowingHandCursor = false
 
@@ -987,104 +453,6 @@ private struct PointingHandCursorModifier: ViewModifier {
                     NSCursor.arrow.set()
                 }
             }
-    }
-}
-
-/// The mockup's completion banner: a green tick beside the headline saving and a detail line.
-struct SuccessBanner: View {
-    /// The banner's colour story: `.success` for a finished batch, `.accent` for the armed state,
-    /// where nothing has happened yet and a green tick would claim otherwise (R4).
-    enum Tone {
-        case success, accent
-
-        var color: Color {
-            switch self {
-            case .success: return Theme.Colors.success
-            case .accent: return Theme.Colors.accent
-            }
-        }
-
-        var symbol: String {
-            switch self {
-            case .success: return "checkmark"
-            case .accent: return "arrow.triangle.2.circlepath"
-            }
-        }
-    }
-
-    let headline: String
-    /// Optional: the armed banner has no detail line when no armed row has a confident prediction
-    /// (R4), and an empty `Text` would leave a blank line where the caller means "say nothing".
-    let detail: String?
-    var tone: Tone = .success
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.medium) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(tone.color)
-                    .frame(width: 48, height: 48)
-                Image(systemName: tone.symbol)
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(headline).themeFont(.cardTitle).foregroundStyle(Theme.Colors.text)
-                if let detail {
-                    Text(detail).themeFont(.caption).foregroundStyle(Theme.Colors.textSecondary)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(Theme.Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                .fill(tone.color.opacity(0.12))
-        )
-    }
-}
-
-/// A thin determinate bar. Width animates linearly, matching the mockup's `width .18s linear`.
-struct LinearProgress: View {
-    let fraction: Double
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Theme.Colors.text.opacity(0.12))
-                Capsule()
-                    .fill(Theme.Colors.accent)
-                    .frame(width: max(0, min(1, fraction)) * geo.size.width)
-                    .animation(.linear(duration: 0.18), value: fraction)
-            }
-        }
-        .frame(height: 6)
-    }
-}
-
-/// The counted label that accompanies `LinearProgress` — "Compressing 3 of 5…", "Reading 2 of 4…".
-///
-/// The clamp is the point: the last file in a batch reaches `.done` a MainActor hop before the
-/// tool clears its running flag, and an unclamped `finished + 1` reads "Compressing 4 of 3…" in
-/// that window. Shared by both tools so the two places that show this line cannot disagree.
-func batchProgressText(_ verb: String, finished: Int, total: Int) -> String {
-    "\(verb) \(min(finished + 1, total)) of \(total)…"
-}
-
-/// Makes a row open its file on click, and shows the hand cursor, only when an action exists.
-private struct RowOpenModifier: ViewModifier {
-    let onOpen: (() -> Void)?
-
-    func body(content: Content) -> some View {
-        if let onOpen {
-            content
-                .onTapGesture(perform: onOpen)
-                .pointingHandCursor()
-                .help("Open this PDF")
-        } else {
-            content
-        }
     }
 }
 

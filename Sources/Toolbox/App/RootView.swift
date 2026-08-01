@@ -8,93 +8,77 @@
 import AppKit
 import SwiftUI
 
-/// The shell: a sidebar of tools beside the selected tool's detail view, with an
-/// update banner across the top whenever a newer release exists.
+/// The window's single pane (handoff: "the window is one thing"): the update banner, when a
+/// newer release exists, above the unified queue.
+///
+/// This is where the app's long-lived objects are owned — the queue view model, the update
+/// checker and the self-updater. `QueueView` constructs its own popovers and sheets against
+/// `model` directly; `showAbout` is owned higher still, by `ToolboxApp`, because the app menu's
+/// About command toggles the same presentation state as the `⋯` menu's.
 struct RootView: View {
-    @State private var selectedTool: Tool? = .compress
-    @State private var sidebarCollapsed = false
+    @Binding private var showAbout: Bool
+    @StateObject private var model: QueueViewModel
+    @StateObject private var updater: SelfUpdater
     @StateObject private var updateChecker = UpdateChecker()
-    // The tools' state lives HERE, above the switch that rebuilds the detail pane, so
-    // switching tools never destroys a queue, a finished batch, or a running job's cancel
-    // handle (review M9, reproduced live: switch to OCR and back emptied the Compress list).
-    @StateObject private var compressModel = CompressViewModel()
-    @StateObject private var ocrModel = OCRViewModel()
+
+    /// Weak boxes carry the forward reference without a strong retain cycle: `model`'s
+    /// `isUpdating` closure reads `updaterBox.value` and `updater`'s `isBusy` closure reads
+    /// `modelBox.value`. Neither closure captures the sibling object itself — only this box,
+    /// which holds it weakly — so `model` and `updater` don't keep each other alive.
+    private let modelBox = WeakBox<QueueViewModel>()
+    private let updaterBox = WeakBox<SelfUpdater>()
+
+    /// `_model`/`_updater` must be assigned from an expression that constructs the object
+    /// directly inline, not from a local `let` evaluated first: `StateObject`'s `wrappedValue:`
+    /// parameter is `@autoclosure`, so only an unevaluated construction expression there is
+    /// deferred and run exactly once (on first materialisation of this view's identity). A local
+    /// `let m = QueueViewModel(...)` runs the constructor immediately and unconditionally, every
+    /// time `RootView.init` runs — i.e. on every `ToolboxApp.body` re-evaluation — re-triggering
+    /// `QueueViewModel.init`'s disk side effects (`RunnerUpStore()`, `sweepStale()`) against the
+    /// live session and throwing the freshly built object away. Each IIFE below stays inside its
+    /// `StateObject`'s autoclosure end to end: it builds the object AND populates that object's
+    /// own weak box in the same deferred call, so the box is guaranteed populated by the time
+    /// anything on the other side reads it.
+    init(showAbout: Binding<Bool>) {
+        _showAbout = showAbout
+        let modelBox = self.modelBox
+        let updaterBox = self.updaterBox
+        _model = StateObject(wrappedValue: {
+            // `?? true`: a nil box means the interlock isn't wired up yet (only possible during
+            // construction) — refuse the racing action rather than silently allow it. Fails
+            // closed, never open.
+            let m = QueueViewModel(isUpdating: { updaterBox.value?.phase.isActiveUpdate ?? true })
+            modelBox.value = m
+            return m
+        }())
+        _updater = StateObject(wrappedValue: {
+            let u = SelfUpdater(isBusy: { modelBox.value?.isRunning ?? true })
+            updaterBox.value = u
+            return u
+        }())
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             if let release = updateChecker.available {
-                UpdateBanner(release: release)
+                // `isRunning` is passed as a value, not read through the updater's `isBusy`
+                // closure: a closure call registers no SwiftUI dependency, so the button would
+                // keep looking live until something unrelated redrew the banner.
+                UpdateBannerView(release: release, updater: updater, isRunning: model.isRunning)
             }
-            // An explicit split rather than NavigationSplitView: that container laid the sidebar
-            // out a titlebar's height too high and, on a slightly-too-small window, collapsed it
-            // to zero width — the app shipped looking as though it had no sidebar.
-            HStack(spacing: 0) {
-                SidebarView(selection: $selectedTool, isCollapsed: $sidebarCollapsed)
-                    .frame(width: sidebarCollapsed ? 56 : 220)
-                Divider()
-                detail(for: selectedTool ?? .compress)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            QueueView(model: model, history: model.history, showAbout: $showAbout)
         }
-        // A constant, not a narrower hint while collapsed: the binding constraint is the
-        // `NSWindow.minSize` set below, which is applied once and never revisited, so a 660
-        // content hint could never actually let the window shrink to it.
-        .frame(minWidth: 820, minHeight: 560)
-        .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 820, height: 560)) }
+        // The content hint alone cannot hold the window open at this size — `.frame` constrains
+        // the CONTENT, so a window restored smaller simply clips. `applyMinimumSize` below is
+        // the binding constraint: it is the only code that assigns `NSWindow.minSize`.
+        .frame(minWidth: 900, minHeight: 640)
+        .onAppear { WindowSetup.applyMinimumSize(NSSize(width: 900, height: 640)) }
         .task { await updateChecker.check() }
-    }
-
-    @ViewBuilder
-    private func detail(for tool: Tool) -> some View {
-        switch tool {
-        case .compress:
-            CompressView(model: compressModel)
-        case .ocr:
-            OCRView(model: ocrModel)
-        }
     }
 }
 
-/// Full-width accent strip — deliberately unmissable (the owner's requirement: users must
-/// not overlook updates). Notify-only: the button opens the release page; the app never
-/// downloads or replaces its own binary (see `UpdateChecker`).
-///
-/// The solid accent background is a recorded DESIGN.md §7 exception (accent is otherwise
-/// reserved for interactive elements): unmissability is the point, and the whole strip is
-/// in service of one interaction. It appears at most once per release cycle.
-private struct UpdateBanner: View {
-    let release: UpdateChecker.Release
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.medium) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 16, weight: .semibold))
-            Text("Toolbox \(release.version) is available.")
-                .themeFont(.captionBold)
-            Spacer(minLength: Theme.Spacing.small)
-            Button {
-                NSWorkspace.shared.open(release.pageURL)
-            } label: {
-                Text("Update")
-                    .themeFont(.captionBold)
-                    .foregroundStyle(Theme.Colors.accent)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(.white))
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            // Not `.focusEffectDisabled()`: the banner lives in the main window, whose
-            // `WindowSetup` key-window clear already removes the auto-assigned ring that
-            // justified it — and hiding the ring outright blinds keyboard users (DESIGN.md §6).
-            .clearsClickFocus()
-            .pointingHandCursor()
-            .help("Open the release page")
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, Theme.Spacing.medium)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
-        .background(Theme.Colors.accent)
-    }
+/// A weak, single-slot holder used to pass a not-yet-constructed sibling's eventual reference
+/// into a closure without that closure retaining the sibling strongly (see `RootView.init`).
+private final class WeakBox<T: AnyObject> {
+    weak var value: T?
 }

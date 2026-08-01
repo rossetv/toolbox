@@ -112,3 +112,28 @@ apply as a checklist during review.
 - **Verify the launched artefact is the build you think it is.** `ls | head -1` over DerivedData
   handed the self-test a pre-feature binary; resolve `BUILT_PRODUCTS_DIR` from the project instead.
   (The "re-build from the final tree" lesson, one rung earlier: also re-LAUNCH the right product.)
+
+## From the UI-redesign gate run (2026-07-30 → 08-01)
+
+- **Pin the findings-file enum verbatim in every lens prompt.** Two lenses wrote prose
+  `fixComplexity` values and the decision core's strict validation silently dropped 17
+  findings. After every merge, compare raw line counts against merged counts — a big gap is
+  a dropped-findings incident, not convergence.
+- **Gate plumbing uses absolute paths only.** One `cd` for a build made a later relative-path
+  merge read empty findings files and emit a fake near-SHIP plan. Caught only by the
+  count audit above.
+- **Re-verify fixer receipts before recording them.** A round-3 receipt claimed "ready-flip
+  covers failed batches" when the commit covered only *skipped* failures; the ladder then
+  deduped the reopened finding as dispositioned. Reviewers must treat ladder receipts as
+  claims; the orchestrator corrects the record the moment a receipt is disproven.
+- **Run test suites synchronously in subagents — never behind background monitors.** The
+  strand pattern recurred until every fixer prompt carried the instruction.
+- **SwiftUI motion ports:** `autoreverses: true` doubles a CSS keyframe's round trip — map
+  `@keyframes` durations to half; `repeatForever` animations must start in a view whose
+  *existence* tracks the animated state (extract the overlay), or rows that turn active
+  after first appearance never animate; hover chrome must use moved-based tracking
+  (`onContinuousHover`) — entered/exited events never fire for warped/assistive pointers.
+- **Tests that anchor "today" pin a reference date.** The suite failed at the stroke of
+  midnight on a live-clock calendar grouping.
+- **Long gates exhaust the subagent pool (200/session).** Batch the SHIP minors pass per
+  module and keep an inline-completion fallback ready.

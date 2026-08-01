@@ -129,9 +129,9 @@ final class VersionStoreTests: XCTestCase {
         XCTAssertEqual(row.rowPreset, .balanced, "the row's preset follows the shipped version")
     }
 
-    /// R15's capsule vocabulary: today's dynamic family survives while only the runner-up is
-    /// parked, and the title becomes "Versions" once a previous version exists.
-    func testCapsuleTitleKeepsTodaysFamilyUntilAPreviousVersionExists() throws {
+    /// The capsule's label counts the popover's rows (handoff screens 06/07) — it no longer names a
+    /// variant, so a switch cannot make it stale.
+    func testCapsuleTitleCountsEveryCard() throws {
         let (store, _, root) = try makeStore()
         let id = UUID()
         let shipped = try file(root, "out.pdf", bytes: 100)
@@ -143,14 +143,205 @@ final class VersionStoreTests: XCTestCase {
                                                        preset: .balanced, variant: .plain),
                                  previous: nil),
                      for: id)
-        XCTAssertEqual(store.versions(for: id)?.capsuleTitle, "Heavy compression")
+        XCTAssertEqual(store.versions(for: id)?.capsuleTitle, "2 versions")
 
         store.swapShipped(with: .runnerUp, for: id)
-        XCTAssertEqual(store.versions(for: id)?.capsuleTitle, "Normal compression")
+        XCTAssertEqual(store.versions(for: id)?.capsuleTitle, "2 versions",
+                       "a switch moves descriptions between rows; it never adds or removes one")
 
         store.setSlot(.previous, to: FileVersion(url: try file(root, "p.pdf", bytes: 5), bytes: 5,
                                                  preset: .maximumQuality, variant: .plain), for: id)
-        XCTAssertEqual(store.versions(for: id)?.capsuleTitle, "Versions")
+        XCTAssertEqual(store.versions(for: id)?.capsuleTitle, "3 versions")
         XCTAssertEqual(store.versions(for: id)?.count, 3)
+    }
+
+    /// The searchability flags describe the FILES, not the slots, so an instant switch must permute
+    /// them along with the descriptions it moves — leaving the old flag on the new bytes is exactly
+    /// the misrepresentation §6.4 forbids.
+    func testSwapShippedPermutesSearchableFlags() throws {
+        let (store, _, root) = try makeStore()
+        let id = UUID()
+        let shipped = try file(root, "out.pdf", bytes: 100)
+        let runnerUp = try file(root, "out-runner-up.pdf", bytes: 250)
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: shipped, bytes: 100, preset: .balanced,
+                                                      variant: .mrc),
+                                 runnerUp: FileVersion(url: runnerUp, bytes: 250,
+                                                       preset: .balanced, variant: .plain),
+                                 previous: nil),
+                     for: id)
+        store.setSearchable(true, card: .shipped, for: id)
+        store.setSearchable(false, card: .runnerUp, for: id)
+
+        store.swapShipped(with: .runnerUp, for: id)
+
+        var row = try XCTUnwrap(store.versions(for: id))
+        XCTAssertEqual(row.searchableByCard[.shipped], false,
+                       "the flag follows the bytes: the file now in use carries no text layer")
+        XCTAssertEqual(row.searchableByCard[.runnerUp], true)
+
+        // A row whose OCR leg never ran carries no claim in either direction, and the swap must not
+        // manufacture one — a `?? false` default anywhere in the permutation would.
+        let bare = UUID()
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: try file(root, "b.pdf", bytes: 100),
+                                                      bytes: 100, preset: .balanced, variant: .mrc),
+                                 runnerUp: FileVersion(url: try file(root, "b-runner-up.pdf",
+                                                                     bytes: 250),
+                                                       bytes: 250, preset: .balanced,
+                                                       variant: .plain),
+                                 previous: nil),
+                     for: bare)
+
+        store.swapShipped(with: .runnerUp, for: bare)
+
+        row = try XCTUnwrap(store.versions(for: bare))
+        XCTAssertTrue(row.searchableByCard.isEmpty,
+                      "an empty map means the OCR leg never ran; the swap must leave it empty")
+    }
+
+    /// The popover's last row is the untouched input, synthesised from `originalURL` rather than
+    /// parked: the original is referenced where it already lives, so the parked cap stays at two.
+    func testCardsIncludeOriginalReference() throws {
+        let (store, _, root) = try makeStore()
+        let id = UUID()
+        let original = try file(root, "in.pdf", bytes: 900)
+        let shipped = try file(root, "out.pdf", bytes: 100)
+        let runnerUp = try file(root, "out-runner-up.pdf", bytes: 250)
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: shipped, bytes: 100, preset: .balanced,
+                                                      variant: .mrc),
+                                 runnerUp: FileVersion(url: runnerUp, bytes: 250,
+                                                       preset: .balanced, variant: .plain),
+                                 previous: nil),
+                     for: id)
+        XCTAssertEqual(store.versions(for: id)?.cards.map(\.key), [.shipped, .runnerUp],
+                       "no original recorded yet, so there is nothing to reference")
+
+        store.setOriginalURL(original, for: id)
+
+        let row = try XCTUnwrap(store.versions(for: id))
+        XCTAssertEqual(row.cards.map(\.key), [.shipped, .runnerUp, .originalReference])
+        let reference = try XCTUnwrap(row.cards.last?.version)
+        XCTAssertEqual(reference.url, original)
+        XCTAssertEqual(reference.bytes, 900, "the reference row states the input's own size")
+        XCTAssertEqual(reference.variant, .original)
+        XCTAssertEqual(reference.preset, row.rowPreset)
+    }
+
+    /// When a parked slot already holds the untouched input (the gs leg bloated, R6/R7), the
+    /// reference row is suppressed — one file, one row, never listed twice.
+    func testNoDuplicateRowWhenParkedVariantIsOriginal() throws {
+        let (store, _, root) = try makeStore()
+        let id = UUID()
+        let original = try file(root, "in.pdf", bytes: 900)
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: try file(root, "out.pdf", bytes: 100),
+                                                      bytes: 100, preset: .balanced, variant: .mrc),
+                                 runnerUp: FileVersion(url: try file(root, "parked.pdf", bytes: 900),
+                                                       bytes: 900, preset: .balanced,
+                                                       variant: .original),
+                                 previous: FileVersion(url: try file(root, "p.pdf", bytes: 400),
+                                                       bytes: 400, preset: .maximumQuality,
+                                                       variant: .plain)),
+                     for: id)
+        store.setOriginalURL(original, for: id)
+
+        let row = try XCTUnwrap(store.versions(for: id))
+        XCTAssertEqual(row.cards.map(\.key), [.shipped, .runnerUp, .previous])
+        XCTAssertEqual(row.capsuleTitle, "3 versions")
+    }
+
+    /// After a switch to the original, the shipped file IS the input — the reference row would be
+    /// the same file a second time, so it is suppressed there too.
+    func testOriginalReferenceHiddenWhenShippedIsOriginalDirect() throws {
+        let (store, _, root) = try makeStore()
+        let id = UUID()
+        let original = try file(root, "in.pdf", bytes: 900)
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: try file(root, "out.pdf", bytes: 900),
+                                                      bytes: 900, preset: .balanced,
+                                                      variant: .original),
+                                 runnerUp: nil,
+                                 previous: FileVersion(url: try file(root, "p.pdf", bytes: 100),
+                                                       bytes: 100, preset: .balanced,
+                                                       variant: .mrc)),
+                     for: id)
+        store.setOriginalURL(original, for: id)
+
+        let row = try XCTUnwrap(store.versions(for: id))
+        XCTAssertEqual(row.cards.map(\.key), [.shipped, .previous])
+        XCTAssertEqual(row.capsuleTitle, "2 versions")
+    }
+
+    /// Both parked slots occupied (a consent-retained loser plus a recompress park) is the widest
+    /// the popover ever gets: four rows including the reference, never five — the cap is on the
+    /// SLOTS, and the display identity does not add one.
+    func testConsentRetentionPlusPreviousParkStaysWithinCap() throws {
+        let (store, _, root) = try makeStore()
+        let id = UUID()
+        let original = try file(root, "in.pdf", bytes: 900)
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: try file(root, "out.pdf", bytes: 100),
+                                                      bytes: 100, preset: .balanced, variant: .mrc),
+                                 runnerUp: FileVersion(url: try file(root, "r.pdf", bytes: 250),
+                                                       bytes: 250, preset: .balanced,
+                                                       variant: .plain),
+                                 previous: FileVersion(url: try file(root, "p.pdf", bytes: 400),
+                                                       bytes: 400, preset: .maximumQuality,
+                                                       variant: .plain)),
+                     for: id)
+        store.setOriginalURL(original, for: id)
+
+        let row = try XCTUnwrap(store.versions(for: id))
+        XCTAssertEqual(row.cards.map(\.key),
+                       [.shipped, .runnerUp, .previous, .originalReference])
+        XCTAssertEqual(row.capsuleTitle, "4 versions")
+    }
+
+    /// An empty `searchableByCard` is the honest state of a row whose OCR leg never ran: no mutator
+    /// other than `setSearchable` may put a claim in it (spec §6.4 — no subtitle in either
+    /// direction on a compress-only row).
+    func testSearchableByCardEmptyMeansNoLabels() throws {
+        let (store, _, root) = try makeStore()
+        let id = UUID()
+        let shipped = try file(root, "out.pdf", bytes: 100)
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: shipped, bytes: 100, preset: .balanced,
+                                                      variant: .plain),
+                                 runnerUp: nil, previous: nil),
+                     for: id)
+        XCTAssertTrue(try XCTUnwrap(store.versions(for: id)).searchableByCard.isEmpty)
+
+        store.setSlot(.previous, to: FileVersion(url: try file(root, "p.pdf", bytes: 400),
+                                                 bytes: 400, preset: .maximumQuality,
+                                                 variant: .plain), for: id)
+        store.setShipped(FileVersion(url: shipped, bytes: 80, preset: .smallestSize,
+                                     variant: .plain), for: id)
+        store.setOriginalURL(try file(root, "in.pdf", bytes: 900), for: id)
+
+        XCTAssertTrue(try XCTUnwrap(store.versions(for: id)).searchableByCard.isEmpty,
+                      "only the OCR leg's own results may write a searchability claim")
+    }
+
+    /// `setSearchable` records one card's result at a time — the OCR leg appends per file, so each
+    /// card's claim is written from that file's own append outcome.
+    func testSetSearchablePerCard() throws {
+        let (store, _, root) = try makeStore()
+        let id = UUID()
+        store.record(RowVersions(originalBytes: 900, lastAttemptPreset: .balanced,
+                                 shipped: FileVersion(url: try file(root, "out.pdf", bytes: 100),
+                                                      bytes: 100, preset: .balanced, variant: .mrc),
+                                 runnerUp: nil, previous: nil),
+                     for: id)
+
+        store.setSearchable(true, card: .shipped, for: id)
+        store.setSearchable(false, card: .originalReference, for: id)
+        store.setSearchable(true, card: .previous, for: UUID())
+
+        let row = try XCTUnwrap(store.versions(for: id))
+        XCTAssertEqual(row.searchableByCard,
+                       [.shipped: true, .originalReference: false],
+                       "an unknown row is a no-op and no card is written by implication")
     }
 }
