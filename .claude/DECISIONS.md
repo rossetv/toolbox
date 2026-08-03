@@ -880,3 +880,33 @@ entry is the record that the human superseded it.
 `Sources/Toolbox/Queue/PerFileSettingsPopover.swift`, `Sources/Toolbox/Queue/QueueRowsView.swift`
 (`RowPoof`), `Sources/Toolbox/DesignSystem/Theme.swift` (`rowPoof`), DESIGN.md (§4.1, §8, §9 04c,
 §10, §11)
+
+## 2026-08-03 — Addendum: a per-row field is judged by the batch's VALUES, never by its current verb set
+
+**Correction to the entry above.** That entry recorded the collapse as "drop every field that says
+what the batch already says". Two further rules were added on top during the pre-push review
+loop — drop an `ocr: false` the verb floor would refuse, and drop a preset while Compress is off —
+and both are now **removed**. They were wrong twice over:
+
+1. **They destroyed user settings.** Every control in the per-file popover writes the whole
+   `RowOverride` back (`PerFileSettingsPopover.setOverride`), so with Compress off one tap on the
+   OCR toggle took the row's stored quality with it, and `ChangeQualitySheet.restoreOverrides` —
+   which re-writes every key on cancel — did the same across every row. The sheet's own contract
+   ("every exit that does not start work puts the snapshot back") was false while they stood.
+2. **Their premise was false.** `recompressState(for:)` and `publishJobs()` both read
+   `effectivePreset(for:)` with no compress-verb guard, so a row can be armed to re-run at its own
+   quality, and show its own estimate, on a batch whose Compress verb is off.
+
+**The rule that stands:** `collapsingBatchMatches` drops a field only when it equals the batch's own
+VALUE (`preset == preset`, `ocr == ocrOn`, `rebuildScan == true`). Whether a field is worth MARKING
+the row for is a separate question, asked at read time by `differsFromBatch` — where the OCR leg
+consults `effectiveVerbs` so the verb floor is accounted for, and being wrong costs nothing but a
+redraw.
+
+**Why it is recorded:** the mis-rule survived two review rounds because each round fixed the
+previous round's symptom rather than asking what the collapse is for. Write-time state is the
+user's; read-time presentation is ours.
+
+**Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift` (`collapsingBatchMatches`,
+`differsFromBatch`), `Tests/ToolboxTests/QueueViewStateTests.swift`,
+`Tests/ToolboxTests/QueueAdmissionTests.swift`

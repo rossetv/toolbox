@@ -36,7 +36,7 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
 | `Sources/Toolbox/Queue/BatchProgress.swift` | `BatchProgress` — the run's `fraction`, `etaSeconds` and `savedSoFarBytes`, the one figure the rows cannot cheaply re-derive per render |
 | `Sources/Toolbox/Queue/HistoryStore.swift` | `HistoryBatch` + `HistoryStore` — the schema-versioned recent-batches JSON and the lifetime savings counter |
 | `Sources/Toolbox/Queue/QualityPopover.swift`, `OCRPopover.swift` | The batch-level Quality (three priced presets) and OCR (language + accuracy) popovers |
-| `Sources/Toolbox/Queue/PerFileSettingsPopover.swift` | One row's Quality/Rebuild/OCR override, committed immediately through `QueueViewModel.setOverride(_:for:)` — no OK/Cancel, only "Match the batch" |
+| `Sources/Toolbox/Queue/PerFileSettingsPopover.swift` | One row's Quality/Rebuild/OCR override, committed immediately through `QueueViewModel.setOverride(_:for:)` — no OK/Cancel, only "Reset override" (shown only while the row differs from the batch) |
 | `Sources/Toolbox/Queue/ChangeQualitySheet.swift` | Change quality on the Finished screen: preset cards priced from the current rows, previewing by moving `model.preset` itself |
 | `Sources/Toolbox/Queue/ScanConsentSheet.swift` | The scan-rebuild choice (Keep rebuilt / Keep photographs), one row at a time |
 | `Sources/Toolbox/Queue/VersionsPopoverContent.swift` | A finished row's versions capsule: in-use/alternative/previous/original as radio rows, each switchable in one tap |

@@ -355,10 +355,10 @@ final class QueueAdmissionTests: XCTestCase {
     // MARK: verb floors and the Start gate (spec §6.1)
 
     /// No row can reach "nothing to do" through overrides: on a Compress-off batch the row's OCR
-    /// toggle is its LAST verb, so turning it off is refused — and, since `setOverride` collapses
-    /// a field the floor would refuse, not even stored. The floor branch itself (an override that
-    /// was legal when written and is floored by a LATER Compress toggle) is proved by
-    /// `QueueViewStateTests.testOverrideFlooredByALaterCompressToggleStopsMarkingTheRow`.
+    /// toggle is its LAST verb, and turning it off is refused by `effectiveVerbs`' floor. The
+    /// override itself is KEPT (dropping it destroyed neighbouring fields — see
+    /// `QueueViewStateTests.testQualityOverrideSurvivesACompressOffBatchAndALaterWriteToAnotherField`);
+    /// what the floor governs is what RUNS.
     func testOverrideVerbFloorBlocksLastVerbOff() async throws {
         let env = try HeavyEnv()
         let model = env.model
@@ -368,8 +368,6 @@ final class QueueAdmissionTests: XCTestCase {
 
         model.setOverride(RowOverride(ocr: false), for: id)
 
-        XCTAssertNil(model.overrides[id],
-                     "a field the floor would refuse changes nothing and is not stored")
         let verbs = model.effectiveVerbs(for: id)
         XCTAssertFalse(verbs.compress)
         XCTAssertTrue(verbs.ocr, "and the row keeps its last verb (spec §6.1)")

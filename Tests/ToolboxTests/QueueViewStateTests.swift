@@ -806,11 +806,11 @@ final class QueueViewStateTests: XCTestCase {
                        "only the field that differs from the batch survives")
     }
 
-    /// The verb floor's own instance of the same rule: on a Compress-off batch `effectiveVerbs`
-    /// refuses an `ocr: false` (it would leave the row with nothing to do), so storing that field
-    /// would mark the row while changing nothing about what runs — and leave the toggle sitting
-    /// off while OCR ran anyway.
-    func testOCROverrideTheVerbFloorRefusesIsNotStored() throws {
+    /// An override the verb floor refuses is KEPT — throwing it away destroyed neighbouring fields,
+    /// since every control writes the whole `RowOverride` back — but it must not mark the row: the
+    /// floor means the row runs exactly what the batch runs, and the toggle reads the effective
+    /// verb, so the switch shows OCR on rather than lying about a refusal.
+    func testOverrideTheVerbFloorRefusesIsKeptButDoesNotMarkTheRow() throws {
         let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
         model.ocrOn = true
         model.compressOn = false
@@ -819,10 +819,10 @@ final class QueueViewStateTests: XCTestCase {
 
         model.setOverride(RowOverride(ocr: false), for: job.id)
 
-        XCTAssertNil(model.overrides[job.id], "a floored override changes nothing and is not stored")
+        XCTAssertEqual(model.overrides[job.id], RowOverride(ocr: false), "kept, not silently dropped")
         XCTAssertTrue(model.effectiveVerbs(for: job.id).ocr, "the floor keeps the row's last verb on")
         XCTAssertNil(QueueRowsView.describe(job: job, model: model, state: .ready).metaAccent,
-                     "and the row must not claim settings of its own")
+                     "and a row running the batch's settings must not claim its own")
     }
 
     /// The floor's own path, which the write-time collapse no longer reaches: store a genuine
@@ -853,22 +853,32 @@ final class QueueViewStateTests: XCTestCase {
                        "and the footer must not announce a divergence that no longer exists")
     }
 
-    /// The preset twin of the floored-OCR case: with Compress off, nothing reads the row's
-    /// effective preset — no estimate, no delivered name keyed on it — so a quality override
-    /// changes nothing that runs and must not mark the row.
-    func testQualityOverrideOnACompressOffBatchDoesNotMarkTheRow() throws {
+    /// A stored quality survives the batch turning Compress off, and survives a later write to a
+    /// DIFFERENT field. Both legs matter: `recompressState`/`publishJobs` read the row's effective
+    /// preset with no compress guard, so the row genuinely has settings of its own — and every
+    /// control in the per-file popover writes the whole `RowOverride` back, so a rule that judged
+    /// the preset by the batch's current verb set took the user's quality with the next tap.
+    func testQualityOverrideSurvivesACompressOffBatchAndALaterWriteToAnotherField() throws {
         let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
-        model.compressOn = false
+        model.compressOn = true
         model.ocrOn = true
         model.add([try Fixtures.bornDigitalPDF()])
         let job = try XCTUnwrap(model.jobs.first)
 
         model.setOverride(RowOverride(preset: .smallestSize), for: job.id)
+        model.compressOn = false
 
-        XCTAssertNil(QueueRowsView.describe(job: job, model: model, state: .ready).metaAccent,
-                     "a quality nobody reads is not settings of the row's own")
-        XCTAssertEqual(QueueFooterView.readySubline(model: model),
-                       "Your originals stay exactly where they are.")
+        XCTAssertEqual(model.overrides[job.id]?.preset, .smallestSize, "Compress off does not erase it")
+        XCTAssertEqual(QueueRowsView.describe(job: job, model: model, state: .ready).metaAccent?.text,
+                       "Its own settings")
+
+        // The repro: one tap on the popover's OCR toggle, which writes the whole struct back.
+        var current = try XCTUnwrap(model.overrides[job.id])
+        current.ocr = false
+        model.setOverride(current, for: job.id)
+
+        XCTAssertEqual(model.overrides[job.id]?.preset, .smallestSize,
+                       "a write to another field must not take the row's quality with it")
     }
 
     /// The ready footer's subline notes the divergence iff any row has its own settings — singular

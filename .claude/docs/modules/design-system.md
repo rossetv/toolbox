@@ -47,9 +47,11 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
   modifier is what stops a figure jittering as it counts.
 - **`EscapeResponders` is the one owner of "Escape closes the frontmost dismissable thing"**
   (`CODE_GUIDELINES.md` §8.2): a single app-wide `NSEvent` key-down monitor over a stack of dismiss
-  actions (innermost last), installed on the first `escapeToDismiss(_:)` registration and torn down
-  when the stack empties. Registration order — not window identity — resolves nesting (a popover
-  opened from a sheet registers after it, so it answers first); a per-view monitor scoped by
+  actions, installed on the first `escapeToDismiss(depth:_:)` registration and torn down when the
+  stack empties. An explicit `EscapeDepth` (sheet 0, popover 1) resolves nesting — the last-
+  registered popover wins, else the last-registered anything — because registration order alone
+  diverges from nesting when a consent sheet arrives mid-run behind an open popover; a per-view
+  monitor scoped by
   comparing `event.window` was tried and abandoned because whether an `NSPopover`'s window is the
   one a key-down is posted to is unsettled in this repo. No close button anywhere carries its own
   `.keyboardShortcut(.cancelAction)` any more — that would be a second, ambiguous Escape owner.

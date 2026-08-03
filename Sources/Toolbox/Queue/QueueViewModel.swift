@@ -909,14 +909,17 @@ final class QueueViewModel: ObservableObject {
     /// the state was reached.
     func differsFromBatch(_ id: ToolJob.ID) -> Bool {
         let settings = activeSettings
-        let verbs = effectiveVerbs(for: id)
-        // Each leg gated on the verb that gives it effect. A quality override on a Compress-off
-        // batch is the preset twin of the floored `ocr` case below it: nothing reads
-        // `effectivePreset` outside `if verbs.compress`, the delivered name keys on the verb set
-        // rather than the preset, and the row shows no estimate — so marking the row would again
-        // announce a divergence that changes nothing.
-        return (verbs.compress && effectivePreset(for: id) != settings.preset)
-            || verbs.ocr != settings.ocrOn
+        // The preset leg is NOT gated on the compress verb, though it briefly was: `recompressState`
+        // and `publishJobs` both read `effectivePreset(for:)` with no such guard, so a row can be
+        // armed to re-run at its own quality — and show its own estimate — on a batch whose
+        // Compress verb is off. A row carrying a quality the batch does not have has settings of
+        // its own whether or not this run consumes them.
+        //
+        // The OCR leg asks `effectiveVerbs`, not the stored field, so the verb floor is accounted
+        // for: an override the floor refuses leaves the row running exactly what the batch runs,
+        // and an unmarked row is then the truth.
+        return effectivePreset(for: id) != settings.preset
+            || effectiveVerbs(for: id).ocr != settings.ocrOn
             || (overrides[id]?.rebuildScan ?? true) != true
     }
 
@@ -939,16 +942,14 @@ final class QueueViewModel: ObservableObject {
         if collapsed.preset == settings.preset { collapsed.preset = nil }
         if collapsed.ocr == settings.ocrOn { collapsed.ocr = nil }
         if collapsed.rebuildScan == true { collapsed.rebuildScan = nil }
-        // The same rule one step further out: `effectiveVerbs` floors an `ocr: false` that would
-        // empty the row's verb set, so on a Compress-off batch that field changes nothing about
-        // what runs. Stored, it would mark the row "Its own settings" — with an accent gear and a
-        // footer line announcing a divergence — while its effective settings are the batch's, and
-        // the toggle would sit off while OCR ran anyway.
-        if collapsed.ocr == false, !settings.compressOn { collapsed.ocr = nil }
-        // Same treatment for the preset: with Compress off it is never read, so storing it would
-        // leave a field that does nothing waiting to matter if the verb ever comes back on — and
-        // the row wearing a mark for it in the meantime.
-        if !settings.compressOn { collapsed.preset = nil }
+        // Nothing here judges a field by whether the batch's CURRENT verb set happens to consume
+        // it. Two such rules were tried — drop an `ocr: false` the verb floor would refuse, drop a
+        // preset while Compress is off — and both destroyed user settings, because every control
+        // in the per-file popover writes the WHOLE `RowOverride` back: with Compress off, one tap
+        // on the OCR toggle silently took the row's stored quality with it, and
+        // `ChangeQualitySheet`'s cancel path did the same to every row it restored. Whether a
+        // field is worth MARKING the row for is `differsFromBatch`'s question, asked at read time
+        // where it costs nothing to be wrong.
         return collapsed
     }
 

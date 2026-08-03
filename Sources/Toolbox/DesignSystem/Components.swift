@@ -577,11 +577,9 @@ private struct ParallaxStageModifier: ViewModifier {
 /// there. The mechanism is ordinary AppKit; it wants a check by hand.
 /// How far in front a dismissable presentation sits. Two real values, no more: everything this app
 /// presents is one or the other.
-enum EscapeDepth: Int, Comparable {
-    case sheet = 0
-    case popover = 1
-
-    static func < (lhs: EscapeDepth, rhs: EscapeDepth) -> Bool { lhs.rawValue < rhs.rawValue }
+enum EscapeDepth {
+    case sheet
+    case popover
 }
 
 @MainActor
@@ -589,33 +587,30 @@ private enum EscapeResponders {
     private struct Entry {
         let id: UUID
         let depth: EscapeDepth
-        /// Ties within a depth go to whoever registered last.
-        let sequence: Int
         let action: () -> Void
     }
 
     private static var stack: [Entry] = []
     private static var monitor: Any?
-    private static var nextSequence = 0
 
     static func push(_ id: UUID, depth: EscapeDepth, action: @escaping () -> Void) {
-        nextSequence += 1
-        stack.append(Entry(id: id, depth: depth, sequence: nextSequence, action: action))
+        stack.append(Entry(id: id, depth: depth, action: action))
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard event.keyCode == 53 else { return event }   // Escape
-            // AppKit documents no queue for a local monitor's handler; it delivers on the main
-            // thread in practice, and this asserts that rather than assuming it silently.
-            return MainActor.assumeIsolated {
-                guard let top = frontmost else { return event }
-                top.action()
-                return nil                                    // handled: stop dispatch
-            }
+            guard let top = frontmost else { return event }
+            top.action()
+            return nil                                        // handled: stop dispatch
         }
     }
 
+    /// The last-registered popover if any is open, else the last-registered anything. `stack` is
+    /// append-ordered, so "last" IS registration order — no sequence number needed. Deliberately
+    /// not `MainActor.assumeIsolated`: AppKit documents no queue for a monitor handler, so the
+    /// assertion would trade an undocumented-but-observed invariant for a hard crash, and it
+    /// demands `NSEvent: Sendable`, which is an error in the Swift 6 language mode.
     private static var frontmost: Entry? {
-        stack.max { ($0.depth, $0.sequence) < ($1.depth, $1.sequence) }
+        stack.last { $0.depth == .popover } ?? stack.last
     }
 
     static func pop(_ id: UUID) {
