@@ -48,7 +48,7 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
 - **`EscapeResponders` is the one owner of "Escape closes the frontmost dismissable thing"**
   (`CODE_GUIDELINES.md` §8.2): a single app-wide `NSEvent` key-down monitor over a stack of dismiss
   actions, installed on the first `escapeToDismiss(depth:_:)` registration and torn down when the
-  stack empties. An explicit `EscapeDepth` (sheet 0, popover 1) resolves nesting — the last-
+  stack empties. An explicit `EscapeDepth` (`.sheet`, `.popover`) resolves nesting — the last-
   registered popover wins, else the last-registered anything — because registration order alone
   diverges from nesting when a consent sheet arrives mid-run behind an open popover; a per-view
   monitor scoped by

@@ -146,6 +146,14 @@ struct QueueFooterView: View {
         // divergence that no longer exists is the same lie the row's mark used to tell.
         let overridden = model.jobs.filter { model.differsFromBatch($0.id) }.count
         guard overridden > 0 else { return "Your originals stay exactly where they are." }
+        // The second clause is verb-aware: with Compress off, `describeQueued` renders no estimate
+        // on any row (it shows the same size either side), so promising that one "differs from the
+        // batch" points at a figure that is not on screen. The divergence itself is still real —
+        // the row carries settings of its own — so the first clause stands either way.
+        guard model.compressOn else {
+            return overridden == 1 ? "One file has its own settings."
+                                   : "\(overridden) files have their own settings."
+        }
         if overridden == 1 {
             return "One file has its own settings, so its estimate differs from the batch."
         }

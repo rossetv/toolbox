@@ -213,10 +213,12 @@ final class QueuePassTests: XCTestCase {
     /// SUPERSEDES `testShippedUnsearchableOriginalSearchableCorollary`, which asserted `false` here
     /// on this same fixture from a premise no engine can produce ("the compress leg rasterised the
     /// pages" — every rebuild rung declines a page that carries text, so an `.alreadySearchable`
-    /// document is never rebuilt). Spec §6.4's corollary — a shipped card reading "not searchable"
-    /// beside a searchable neighbour — keeps the paths that genuinely produce it: an append that
-    /// failed (`testSearchableByCardReflectsAppendOutcomes`) and the switch to Original, which
-    /// moves each flag onto the bytes it describes (`testUseOriginalReferenceMovesSearchableFlags`).
+    /// document is never rebuilt). Spec §6.4's corollary as originally written — a shipped card
+    /// reading "not searchable" beside an ORIGINAL card reading searchable — is unreachable after
+    /// this change and was struck from the spec on 2026-08-03 (an append runs only on `.added`,
+    /// which labels the Original unsearchable by the same outcome-keyed rule). What survives is
+    /// the honest-labelling rule it protected: a variant that could not carry the layer says so
+    /// beside whichever variant did — `testSearchableByCardReflectsAppendOutcomes`.
     func testAlreadySearchableLabelsTheDeliveredFileSearchableToo() async throws {
         let (env, ocr) = try env(alreadySearchable)
         let model = env.model

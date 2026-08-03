@@ -895,7 +895,7 @@ and both are now **removed**. They were wrong twice over:
    ("every exit that does not start work puts the snapshot back") was false while they stood.
 2. **Their premise was false.** `recompressState(for:)` and `publishJobs()` both read
    `effectivePreset(for:)` with no compress-verb guard, so a row can be armed to re-run at its own
-   quality, and show its own estimate, on a batch whose Compress verb is off.
+   quality on a batch whose Compress verb is off.
 
 **The rule that stands:** `collapsingBatchMatches` drops a field only when it equals the batch's own
 VALUE (`preset == preset`, `ocr == ocrOn`, `rebuildScan == true`). Whether a field is worth MARKING
@@ -910,3 +910,36 @@ user's; read-time presentation is ours.
 **Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift` (`collapsingBatchMatches`,
 `differsFromBatch`), `Tests/ToolboxTests/QueueViewStateTests.swift`,
 `Tests/ToolboxTests/QueueAdmissionTests.swift`
+
+## 2026-08-03 — Spec §6.4 amended: the shipped-unsearchable/Original-searchable corollary is struck
+
+**Decision (human-directed during hands-on testing):** `.alreadySearchable` no longer forces the
+delivered file's card to read "not searchable".
+
+`ocrLeg` hard-coded `flags[.shipped] = false` for every outcome that appended nothing, including
+`.alreadySearchable` — which the engine returns only when EVERY page already carried extractable
+text. The delivered file keeps that text: `CompressPreset.gsArguments()` carries no text-stripping
+flag, `CompressEngine.bilevelCompress` re-embeds an extracted layer and verifies it or declines to
+gs, and `MRCClassifier.structure(of:)` refuses any text-bearing page so Rung 3 never runs on such a
+document (the reviewer additionally ran the bundled gs at all three presets and extracted the text
+back out of every output). Denying it was the criterion-3 lie the 2026-07-30 panel killed for the
+Original row, surviving one card over.
+
+**What this costs the spec:** §6.4 pinned "a shipped variant labelled 'not searchable' (append
+failed) beside an Original labelled searchable" as legal, with its own mandated test in §11. That
+state is now unreachable — an append runs only on `.added`, which by the same outcome-keyed rule
+labels the Original unsearchable — so the corollary is struck from §6.4 and §11's inventory names
+the surviving rule instead: a variant that could not carry the layer is labelled honestly beside
+whichever variant did (`testSearchableByCardReflectsAppendOutcomes`).
+
+**And what it does NOT change:** "N files are now searchable" and the history's "made searchable"
+claim an ACTION, so a document that arrived searchable is labelled searchable on its card and
+counts toward neither figure (`QueueViewModel.madeSearchable`). The card answers "is this file
+searchable"; the count answers "did this run make it so".
+
+**Supersedes:** the 2026-07-30 panel entry's scope, on the shipped card only — the Original row's
+outcome-keyed rule that entry established is untouched and is what makes the corollary unreachable.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§6.4, §11 — amended in this branch)
+**Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift` (`ocrLeg`, `madeSearchable`),
+`Tests/ToolboxTests/QueuePassTests.swift`

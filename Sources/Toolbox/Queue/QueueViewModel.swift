@@ -911,8 +911,7 @@ final class QueueViewModel: ObservableObject {
         let settings = activeSettings
         // The preset leg is NOT gated on the compress verb, though it briefly was: `recompressState`
         // and `publishJobs` both read `effectivePreset(for:)` with no such guard, so a row can be
-        // armed to re-run at its own quality — and show its own estimate — on a batch whose
-        // Compress verb is off. A row carrying a quality the batch does not have has settings of
+        // armed to re-run at its own quality on a batch whose Compress verb is off. A row carrying a quality the batch does not have has settings of
         // its own whether or not this run consumes them.
         //
         // The OCR leg asks `effectiveVerbs`, not the stored field, so the verb floor is accounted
@@ -2485,10 +2484,11 @@ final class QueueViewModel: ObservableObject {
     /// count however searchable the delivered file is. Still the STORE's flags, never
     /// `job.state`'s outcome, which is stale after a re-run and disagrees by design on the
     /// all-lossy path; the original's own flag is what separates "we did this" from "it was
-    /// already so". One figure for the header and the footer, so the two halves of the window
-    /// cannot drift apart.
+    /// already so". The header and the footer read THIS figure, so those two cannot disagree; the
+    /// banked history record derives itself from the same `madeSearchable` predicate but reads the
+    /// store directly, since a row mid-switch-failure is deliberately invisible to `versions(for:)`.
     var searchableRowCount: Int {
-        jobs.filter { madeSearchable(versions(for: $0)) }.count
+        jobs.filter { Self.madeSearchable(versions(for: $0)) }.count
     }
 
     /// Shared by `searchableRowCount` and the history record, so the live figure and the banked one
@@ -2498,7 +2498,6 @@ final class QueueViewModel: ObservableObject {
         return row.searchableByCard[.shipped] == true && row.searchableByCard[.originalReference] != true
     }
 
-    private func madeSearchable(_ row: RowVersions?) -> Bool { Self.madeSearchable(row) }
 
     /// The before/after byte pair `job` contributes to the batch totals, or nil when the row has
     /// shipped nothing (queued/running/failed/no-gain/OCR). `after` is always the SHIPPED version's
