@@ -106,15 +106,19 @@ struct PerFileSettingsPopover: View {
     // MARK: OCR toggle
 
     private var ocrStateLine: String {
-        guard model.overrides[jobID]?.ocr ?? model.ocrOn else { return "Off" }
+        guard model.effectiveVerbs(for: jobID).ocr else { return "Off" }
         let code = model.ocrOptions.languages.first
         let language = OCROptions.curatedLanguages.first { $0.code == code }?.display ?? "Automatic"
         return "\(language) · \(model.ocrOptions.accuracy.title)"
     }
 
+    /// Reads the row's EFFECTIVE verb, not its stored override: the verb floor
+    /// (`QueueViewModel.effectiveVerbs`) refuses an OCR-off that would leave the row with nothing
+    /// to do, and a switch sitting off while OCR runs anyway is the control lying about what it
+    /// did. Off-then-on under the floor therefore reads as "it snapped back", which is the truth.
     private var ocrBinding: Binding<Bool> {
         Binding(
-            get: { model.overrides[jobID]?.ocr ?? model.ocrOn },
+            get: { model.effectiveVerbs(for: jobID).ocr },
             set: { newValue in setOverride { $0.ocr = newValue } }
         )
     }
@@ -224,7 +228,10 @@ struct PopoverCloseButton: View {
         }
         .buttonStyle(MotionButtonStyle())
         .pointingHandCursor()
-        .keyboardShortcut(.cancelAction)
+        // No `.keyboardShortcut(.cancelAction)`: `escapeToDismiss`'s responder stack is the ONE
+        // owner of Escape (`CODE_GUIDELINES.md` §8.2). A cancel shortcut here was a second one —
+        // and the ambiguous one, since every popover and sheet draws this same button, so which
+        // of them a stray Escape reached depended on which window happened to route it.
         .help("Close")
         .continuousHover($isHovering)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)

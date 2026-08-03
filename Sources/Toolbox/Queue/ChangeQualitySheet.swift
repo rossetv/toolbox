@@ -240,20 +240,26 @@ struct ChangeQualitySheet: View {
         }
     }
 
+    /// Wrapped in `PopoverChrome` like every other popover in the app, not left a bare `VStack`:
+    /// the chrome is what registers this popover's own Escape responder (so Escape closes THIS and
+    /// not the sheet underneath, which would roll back everything the sheet is previewing), and it
+    /// carries the surface, radius, shadow and non-vibrant appearance pin the other four already
+    /// have (`CODE_GUIDELINES.md` §8.2 — one owner, one treatment).
     private var fileChoicePopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(eligibleJobs) { job in
-                CheckRow(title: job.url.lastPathComponent,
-                        isChecked: Binding(
-                            get: { !model.armedExclusions.contains(job.id) },
-                            set: {
-                                model.setArmedExclusion(!$0, for: job.id)
-                                applySelectionToIncludedRows()
-                            }))
+        PopoverChrome(width: 260) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(eligibleJobs) { job in
+                    CheckRow(title: job.url.lastPathComponent,
+                            isChecked: Binding(
+                                get: { !model.armedExclusions.contains(job.id) },
+                                set: {
+                                    model.setArmedExclusion(!$0, for: job.id)
+                                    applySelectionToIncludedRows()
+                                }))
+                }
             }
+            .padding(7)
         }
-        .padding(14)
-        .frame(minWidth: 240)
     }
 
     // MARK: pure logic (PopoverLogicTests)

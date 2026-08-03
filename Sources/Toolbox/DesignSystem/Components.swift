@@ -543,71 +543,67 @@ private struct ParallaxStageModifier: ViewModifier {
     .background(Theme.Colors.surface)
 }
 
-/// Backs `escapeToDismiss(_:)`. A local key-down monitor, installed only while the view is on
-/// screen, rather than a `.keyboardShortcut(.cancelAction)` button: the in-window sheets are not
-/// real presentations, and every control in them clears its own click focus (DESIGN.md §6's
-/// stray-ring rule), so the window frequently has no first responder for SwiftUI to route a
-/// shortcut through. A monitor sees the key regardless of who holds focus, and consuming the event
-/// stops it reaching anything behind.
+/// The one owner of "Escape closes the frontmost dismissable thing" (`CODE_GUIDELINES.md` §8.2).
+///
+/// A single app-wide key-down monitor over a STACK of dismiss actions, innermost last. Escape
+/// calls the top of the stack and nobody else. The stack — not window identity — is what makes a
+/// nested presentation work: a popover opened from a sheet registers after the sheet, so it
+/// answers first, and the sheet answers again only once the popover has gone. An earlier attempt
+/// scoped a per-view monitor by comparing `event.window` against the view's host window; whether
+/// an `NSPopover`'s window is the one a key-down is posted to is not something this repo can
+/// settle (this project's own memory records that a popover never takes key status), and a fix
+/// resting on an unsettled runtime fact is a guess. Registration order is plain SwiftUI lifecycle,
+/// which is settled.
+///
+/// A monitor rather than `.keyboardShortcut(.cancelAction)` on a close button: the in-window
+/// sheets are not real presentations, and every control in them clears its own click focus
+/// (DESIGN.md §6's stray-ring rule), so the window frequently has no first responder for SwiftUI
+/// to route a shortcut through. A monitor sees the key regardless of who holds focus, and
+/// consuming the event stops it reaching anything behind.
 ///
 /// NOT verified in the UI-automation environment this was written in: a key-code probe showed
-/// ordinary keys reaching this monitor while keyCode 53 never arrived from EITHER a CGEvent-based
-/// driver or `System Events`, so something upstream of the app swallows Escape there. The
-/// mechanism is ordinary AppKit; it wants a check by hand.
-private struct EscapeToDismiss: ViewModifier {
-    let action: () -> Void
+/// ordinary keys reaching a monitor of this kind while keyCode 53 never arrived from EITHER a
+/// CGEvent-based driver or `System Events`, so something upstream of the app swallows Escape
+/// there. The mechanism is ordinary AppKit; it wants a check by hand.
+@MainActor
+private enum EscapeResponders {
+    private struct Entry {
+        let id: UUID
+        let action: () -> Void
+    }
 
-    @State private var monitor: Any?
-    @State private var host: NSWindow?
+    private static var stack: [Entry] = []
+    private static var monitor: Any?
 
-    func body(content: Content) -> some View {
-        content
-            .background(HostWindowReader { host = $0 })
-            .onAppear {
-                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                    guard event.keyCode == 53 else { return event }   // Escape
-                    // Only the presentation the key actually went to answers it. The monitor is
-                    // APP-wide and consumes what it handles (`return nil` stops dispatch), so an
-                    // unscoped one let a sheet swallow the Escape meant for a popover opened FROM
-                    // that sheet — closing the sheet and rolling its preview state back instead of
-                    // closing the popover. `event.window` is the window the key was posted to;
-                    // a popover has its own. A synthesised event can carry no window at all, so
-                    // fall back to the key window rather than dropping Escape on the floor.
-                    guard let host, (event.window ?? NSApp.keyWindow) === host else { return event }
-                    action()
-                    return nil
-                }
-            }
-            .onDisappear {
-                if let monitor { NSEvent.removeMonitor(monitor) }
-                monitor = nil
-            }
+    static func push(_ id: UUID, action: @escaping () -> Void) {
+        stack.append(Entry(id: id, action: action))
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53 else { return event }   // Escape
+            guard let top = stack.last else { return event }
+            top.action()
+            return nil                                        // handled: stop dispatch
+        }
+    }
+
+    static func pop(_ id: UUID) {
+        stack.removeAll { $0.id == id }
+        guard stack.isEmpty, let installed = monitor else { return }
+        NSEvent.removeMonitor(installed)
+        monitor = nil
     }
 }
 
-/// Hands back the `NSWindow` hosting this view, once it has one. The callback fires again if the
-/// view is re-hosted (a popover's content is torn down and rebuilt on every presentation).
-private struct HostWindowReader: NSViewRepresentable {
-    let onWindow: (NSWindow?) -> Void
+private struct EscapeToDismiss: ViewModifier {
+    let action: () -> Void
 
-    func makeNSView(context: Context) -> NSView { ReaderView(onWindow: onWindow) }
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    /// Identity for this registration, stable across body passes.
+    @State private var id = UUID()
 
-    private final class ReaderView: NSView {
-        let onWindow: (NSWindow?) -> Void
-
-        init(onWindow: @escaping (NSWindow?) -> Void) {
-            self.onWindow = onWindow
-            super.init(frame: .zero)
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            onWindow(window)
-        }
+    func body(content: Content) -> some View {
+        content
+            .onAppear { EscapeResponders.push(id, action: action) }
+            .onDisappear { EscapeResponders.pop(id) }
     }
 }
 
