@@ -464,7 +464,9 @@ your Mac's fastest cores." (`textTertiary` — see §11, D2 divergence); a `Seco
 
 Header: a 30pt green check (via `StatusIndicator(.finished, size: 30)`) + "{total} lighter"
 (`windowHeadline`) + "{before} → {after} across {n} files. One is now searchable."
-(`textSecondary`). Rows: outcome meta lines — "Rebuilt and searchable · 78% smaller",
+(`textSecondary`); trailing, the Ready screen's own "⊗ Clear" `LinkButton` (same copy, same
+place, same `canClearFinished` condition) beside the `⋯` menu. Rows: outcome meta lines —
+"Rebuilt and searchable · 78% smaller",
 "75% smaller · saved as {name}-compressed.pdf", "Already optimised". Trailing: a versions
 `CapsuleBadge` where a second variant exists, old size → new size (`rowName`) + a
 `StatusIndicator(.finished)`; a no-op row shows grey sizes + `StatusIndicator(.unchanged)`.
@@ -515,7 +517,9 @@ above is fixed (§11).
 ### 10 — Problems
 
 Header: a 30pt warn glyph (`StatusIndicator(.warn, size: 30)`) + "{n} of {m} files done" +
-"{total} saved. Two files need something from you." Problem rows: `QueueRow` with
+"{total} saved. Two files need something from you."; trailing, "⊗ Clear" + `⋯`, exactly as
+screen 06 — clearing takes the finished and failed rows (`ToolQueue.removeCompleted`) and
+leaves the unresolved ones. Problem rows: `QueueRow` with
 `.emphasis(.problemDanger)` (danger tint 7%) or `.problemWarn` (warn tint 10%) — meta
 states the condition ("Needs a password to open" / "Moved or renamed since you added it")
 with the fix beside it: a `SecondaryButton` ("Find it…" — password entry does not ship,

@@ -183,6 +183,12 @@ struct QueueHeaderView: View {
                 Text(subtitle).themeFont(.body13).foregroundStyle(Theme.Colors.textSecondary)
             }
             Spacer(minLength: Theme.Spacing.small)
+            // The same link the Ready header carries, on the same condition: a finished batch had
+            // no way to empty the list at all — the only Clear lived on a screen you could reach
+            // only by adding MORE files to the batch you wanted rid of.
+            if model.canClearFinished {
+                LinkButton(title: "⊗ Clear", action: onClear)
+            }
             ellipsisMenu
         }
     }
