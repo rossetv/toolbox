@@ -14,18 +14,30 @@ import SwiftUI
 /// popover writes — which is what makes the row list below re-arm live: `recompressState`/
 /// `recompressPrediction` already key off `effectivePreset(for:)`, so this sheet previews by
 /// genuinely (if reversibly) moving the batch preset, never a second, parallel "candidate" of
-/// its own. The restore is structural, not per-button: `onDisappear` puts `model.preset` AND
-/// `model.armedExclusions` back to whatever they were before the sheet opened on EVERY exit —
-/// Cancel, Escape, the window closing, anything else — unless the confirm action has already
-/// handed off to `Self.confirm`.
+/// its own. Picking a card also clears the per-row PRESET override on every included row, because
+/// `effectivePreset` — not the batch preset — is what a row actually arms against, so without that
+/// an overridden row silently ignored the whole sheet. The restore is structural, not per-button:
+/// `onDisappear` puts `model.preset`, `model.armedExclusions` AND `model.overrides` back to
+/// whatever they were before the sheet opened on EVERY exit — Cancel, Escape, the window closing,
+/// anything else — unless the confirm action has already handed off to `Self.confirm`.
 struct ChangeQualitySheet: View {
     @ObservedObject var model: QueueViewModel
-    @Environment(\.dismiss) private var dismiss
+    /// Presented as an in-window overlay (see `QueueView`'s overlay call site), so closing is a
+    /// caller-supplied closure — `@Environment(\.dismiss)` has no presentation to dismiss here.
+    let onClose: () -> Void
     @State private var initialPreset: CompressPreset
     /// Snapshot of `model.armedExclusions` at sheet open — the sibling of `initialPreset`: "Choose
     /// which files…" writes exclusions onto the SAME view-model the preset preview lives on, so it
     /// needs the identical structural restore (spec §7 scopes the checked subset to THE RE-RUN).
     @State private var initialExclusions: Set<ToolJob.ID>
+    /// Snapshot of `model.overrides` at sheet open — the third member of the restore set, and the
+    /// one that makes the sheet's promise true: a row carrying its OWN preset override arms against
+    /// that preset (`recompressState` reads `effectivePreset`), so moving the batch preset alone
+    /// left such a row reading "Already optimised — nothing to change" and the CTA disabled, while
+    /// the cards above it priced a saving. Applying a quality here clears the per-row PRESET (its
+    /// OCR/rebuild fields survive) for every included row, which is what "Applies to all {n} files"
+    /// says on the tin; every exit that does not start work puts the snapshot back.
+    @State private var initialOverrides: [ToolJob.ID: RowOverride]
     @State private var showingFileChoice = false
     /// Set the moment the confirm action hands off to `Self.confirm` — the ONLY thing that stops
     /// `onDisappear` restoring `initialPreset`/`initialExclusions`. Every other exit (Cancel,
@@ -33,10 +45,12 @@ struct ChangeQualitySheet: View {
     /// structurally rather than depending on which button happened to be pressed.
     @State private var confirmed = false
 
-    init(model: QueueViewModel) {
+    init(model: QueueViewModel, onClose: @escaping () -> Void) {
         self.model = model
+        self.onClose = onClose
         _initialPreset = State(initialValue: model.preset)
         _initialExclusions = State(initialValue: model.armedExclusions)
+        _initialOverrides = State(initialValue: model.overrides)
     }
 
     var body: some View {
@@ -49,12 +63,39 @@ struct ChangeQualitySheet: View {
             }
             .padding(20)
         }
-        .popover(isPresented: $showingFileChoice) { fileChoicePopover }
+        // Also on open, not only when a card is tapped: the sheet opens with the batch preset
+        // already selected, so a row whose override points elsewhere would sit there reading
+        // "Already optimised — nothing to change" against a card that says it saves 145 KB, and
+        // only start telling the truth once some card was clicked.
+        .onAppear { applySelectionToIncludedRows() }
         .onDisappear {
             if !confirmed {
                 model.preset = initialPreset
                 model.setArmedExclusions(initialExclusions)
+                Self.restoreOverrides(initialOverrides, model: model)
             }
+        }
+    }
+
+    /// Drop the per-row PRESET override on every row this sheet's selection applies to, so the
+    /// chosen quality actually reaches them. Called from the cards and from "Choose which files…"
+    /// — ticking a row back in has to clear its override too, or that row alone would keep
+    /// quietly ignoring the batch. Rows left unticked keep their overrides untouched.
+    private func applySelectionToIncludedRows() {
+        for job in eligibleJobs where !model.armedExclusions.contains(job.id) {
+            guard var override = model.overrides[job.id], override.preset != nil else { continue }
+            override.preset = nil
+            model.setOverride(override, for: job.id)
+        }
+    }
+
+    /// Put a snapshot of the overrides back, key by key — `setOverride` is the only writer, so the
+    /// reservations and re-pricing it owns follow the restore exactly as they followed the change.
+    /// Rows added while the sheet was open are covered: a key present now but absent from the
+    /// snapshot restores to `nil`.
+    static func restoreOverrides(_ snapshot: [ToolJob.ID: RowOverride], model: QueueViewModel) {
+        for id in Set(snapshot.keys).union(model.overrides.keys) {
+            model.setOverride(snapshot[id], for: id)
         }
     }
 
@@ -100,7 +141,11 @@ struct ChangeQualitySheet: View {
         return HStack(alignment: .firstTextBaseline) {
             SheetTitleRow(title: "Different quality for these \(QueueByteFormat.count(eligibleJobs.count, "file"))",
                          caption: "Applies to all \(QueueByteFormat.count(includedCount, "file"))")
+            // Anchored to the link itself, never to the sheet: a `.popover` tails whichever view
+            // carries the modifier, and on the sheet's root (a window-filling ZStack) it opened
+            // centred in nowhere — the same defect the row gear had.
             LinkButton(title: "Choose which files…") { showingFileChoice = true }
+                .popover(isPresented: $showingFileChoice) { fileChoicePopover }
         }
     }
 
@@ -120,7 +165,10 @@ struct ChangeQualitySheet: View {
                     caption: delta.text,
                     captionTone: delta.tone.optionCardTone,
                     isSelected: model.preset == preset,
-                    action: { model.preset = preset }
+                    action: {
+                        model.preset = preset
+                        applySelectionToIncludedRows()
+                    }
                 )
             }
         }
@@ -175,19 +223,19 @@ struct ChangeQualitySheet: View {
                     .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
             }
             Spacer(minLength: Theme.Spacing.small)
-            SecondaryButton(title: "Cancel") {
-                dismiss()
-            }
+            SecondaryButton(title: "Cancel", action: onClose)
             PrimaryButton(title: "Switch to \(model.preset.title)", isEnabled: canSwitch) {
                 let rows = eligibleJobs
                 let fallback = initialPreset
                 let fallbackExclusions = initialExclusions
+                let fallbackOverrides = initialOverrides
                 confirmed = true
                 Task {
                     await Self.confirm(rows: rows, model: model, fallback: fallback,
-                                       fallbackExclusions: fallbackExclusions)
+                                       fallbackExclusions: fallbackExclusions,
+                                       fallbackOverrides: fallbackOverrides)
                 }
-                dismiss()
+                onClose()
             }
         }
     }
@@ -198,7 +246,10 @@ struct ChangeQualitySheet: View {
                 CheckRow(title: job.url.lastPathComponent,
                         isChecked: Binding(
                             get: { !model.armedExclusions.contains(job.id) },
-                            set: { model.setArmedExclusion(!$0, for: job.id) }))
+                            set: {
+                                model.setArmedExclusion(!$0, for: job.id)
+                                applySelectionToIncludedRows()
+                            }))
             }
         }
         .padding(14)
@@ -333,7 +384,8 @@ struct ChangeQualitySheet: View {
     /// matches its own target), and a row left untouched (excluded, or refused alongside it) is
     /// free to arm again next time the sheet opens, unexcluded, exactly like a fresh preview.
     static func confirm(rows: [ToolJob], model: QueueViewModel, fallback: CompressPreset,
-                        fallbackExclusions: Set<ToolJob.ID>) async {
+                        fallbackExclusions: Set<ToolJob.ID>,
+                        fallbackOverrides: [ToolJob.ID: RowOverride]) async {
         var switchLanded = false
         for job in rows {
             if case .instantSwitch = model.recompressState(for: job) {
@@ -351,13 +403,16 @@ struct ChangeQualitySheet: View {
         } else {
             model.preset = fallback
             model.setArmedExclusions(fallbackExclusions)
+            // The third member of the restore set (`initialOverrides`): a refused press must not
+            // leave the per-row presets this sheet cleared for its preview stripped for good.
+            restoreOverrides(fallbackOverrides, model: model)
         }
     }
 
 }
 
 #Preview("ChangeQualitySheet") {
-    ChangeQualitySheet(model: QueueViewModel(engine: nil))
+    ChangeQualitySheet(model: QueueViewModel(engine: nil), onClose: {})
         .frame(width: 900, height: 600)
         .background(Theme.Colors.background)
 }

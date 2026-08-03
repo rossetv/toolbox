@@ -1413,7 +1413,7 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced))
         let shippedURL = try XCTUnwrap(model.versions(for: job)?.shipped?.url)
 
-        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [], fallbackOverrides: [:])
 
         let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
         XCTAssertEqual(row.shipped?.preset, .balanced, "the switch, not a recompute, must have landed")
@@ -1441,7 +1441,7 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertFalse(model.canStart, "the updater being busy must refuse the start")
 
         model.preset = .smallestSize  // the sheet's live preview
-        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [], fallbackOverrides: [:])
 
         XCTAssertEqual(model.preset, .balanced,
                        "nothing started — the previewed preset must not stick")
@@ -1490,7 +1490,7 @@ final class QueueViewModelTests: XCTestCase {
         env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 900),
                                           shippedBytes: 900, runnerUpBytes: nil) }
         await ChangeQualitySheet.confirm(rows: [instantJob, unchangedJob, armedJob], model: model,
-                                         fallback: .balanced, fallbackExclusions: [])
+                                         fallback: .balanced, fallbackExclusions: [], fallbackOverrides: [:])
         try await waitUntil(timeout: 5) { !model.isRunning }
 
         let switchedRow = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first { $0.id == instantID })))
@@ -1547,7 +1547,7 @@ final class QueueViewModelTests: XCTestCase {
         try Fixtures.denyingNewEntries(true, at: outputFolder)
 
         await ChangeQualitySheet.confirm(rows: [instantJob, armedJob], model: model,
-                                         fallback: .balanced, fallbackExclusions: [])
+                                         fallback: .balanced, fallbackExclusions: [], fallbackOverrides: [:])
 
         // `recompressState` reads `.none` for every row while `isRunning` (arming is suppressed
         // for the run's duration, R9) — the load-bearing check here is `recompressErrors` itself,
@@ -1623,7 +1623,7 @@ final class QueueViewModelTests: XCTestCase {
         let fallbackExclusions: Set<ToolJob.ID> = [UUID()]  // the sheet's snapshot at open
         model.setArmedExclusions([UUID()])                 // the sheet's live preview, since changed
         await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced,
-                                         fallbackExclusions: fallbackExclusions)
+                                         fallbackExclusions: fallbackExclusions, fallbackOverrides: [:])
 
         XCTAssertNotNil(model.recompressErrors[job.id], "the failed switch's note must be visible")
         XCTAssertEqual(model.preset, .balanced, "nothing landed — the previewed preset must not stick")
@@ -1669,7 +1669,7 @@ final class QueueViewModelTests: XCTestCase {
         // the preset assertion vacuous (r7 finding): restored-to-fallback and stuck-preview were
         // the same value. `.smallestSize` makes the two outcomes distinguishable.
         await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .smallestSize,
-                                         fallbackExclusions: fallbackExclusions)
+                                         fallbackExclusions: fallbackExclusions, fallbackOverrides: [:])
 
         XCTAssertNil(model.recompressErrors[job.id],
                      "this arm never touches recompressErrors — the old nil-inference bug's blind spot")
@@ -1700,10 +1700,48 @@ final class QueueViewModelTests: XCTestCase {
         let excludedID = try await env.addRow()
         model.setArmedExclusion(true, for: excludedID)
 
-        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [])
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced, fallbackExclusions: [], fallbackOverrides: [:])
 
         XCTAssertTrue(model.armedExclusions.isEmpty,
                       "a landed switch consumes the exclusion set exactly for this run")
+    }
+
+    /// The change-quality sheet clears a row's per-file PRESET so the chosen quality actually
+    /// reaches it (without that, `recompressState` reads the override and the row never arms).
+    /// A press that starts nothing must put the override back: the preview is reversible, and a
+    /// refused press that silently stripped a per-file setting would be a data loss the user
+    /// never asked for. Engine-less model ⇒ `canStart` false ⇒ nothing starts.
+    func testConfirmRestoresPerRowOverridesWhenNothingStarts() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+        let job = try XCTUnwrap(model.jobs.first)
+
+        var override = RowOverride()
+        override.preset = .maximumQuality
+        override.ocr = true
+        model.setOverride(override, for: job.id)
+        let snapshot = model.overrides
+
+        // What the sheet does while previewing: the preset field goes, the rest stays.
+        var previewed = override
+        previewed.preset = nil
+        model.setOverride(previewed, for: job.id)
+        XCTAssertNil(model.overrides[job.id]?.preset)
+
+        // With the preset cleared the row sits at the batch's own preset, so nothing arms and
+        // `canStart` refuses — which is exactly the "nothing started" leg under test.
+        XCTAssertEqual(model.recompressState(for: job), .none)
+        XCTAssertFalse(model.canStart)
+
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced,
+                                         fallbackExclusions: [], fallbackOverrides: snapshot)
+
+        XCTAssertEqual(model.overrides[job.id]?.preset, .maximumQuality,
+                       "a press that started nothing must restore the per-file preset it cleared")
+        XCTAssertTrue(model.overrides[job.id]?.ocr == true,
+                      "the fields the sheet never touched come back untouched")
     }
 
     /// R12: an engine failure keeps the version the user had, on disk and on screen, and says so.

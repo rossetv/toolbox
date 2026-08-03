@@ -63,7 +63,10 @@ struct QueueView: View {
     var body: some View {
         VStack(spacing: 0) {
             if screenState == .empty {
-                EmptyStateView(history: history) {
+                // The empty state's own centred stack sits exactly where the drag-over screen puts
+                // its fan and headline, so both were legible through each other while a drag was
+                // over the window. It steps aside for the duration (DESIGN.md §9 02).
+                EmptyStateView(history: history, isDropTargeted: isTargeted) {
                     model.add(FilePicker.choosePDFs())
                 }
                 // The window becoming (or ceasing to be) a queue is the biggest change it makes:
@@ -89,21 +92,26 @@ struct QueueView: View {
             isTargeted: $isTargeted, draggedCount: $draggedCount,
             onDrop: { acceptDrop($0) }
         ))
-        // A single `.sheet(item:)` over one optional enum — NOT four stacked `.sheet(isPresented:)`
-        // modifiers on the same view, which is a known SwiftUI failure mode (later modifiers can
-        // shadow earlier ones so only one ever actually presents). Keying on `QueueSheet.id` also
-        // fixes the consent FIFO: a derived `isPresented` Bool (`consentJobID != nil`) never goes
-        // false between two queued consents, so SwiftUI has no edge to dismiss-then-represent on —
-        // the second row's sheet would never appear. An `Identifiable` item forces a clean
-        // dismiss+present on every id change, including consent → consent (spec §7's multi-scan case).
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .changeQuality: ChangeQualitySheet(model: model)
-            case .recentBatches: RecentBatchesSheet(history: history)
-            case .about: AboutView()
-            case .consent(let id): ScanConsentSheet(model: model, jobID: id)
+        // An IN-WINDOW overlay, not `.sheet(...)`: `SheetChrome` draws the whole modal itself — its
+        // own dim, its own card, 52pt below the titlebar (DESIGN.md §9 11) — so a system sheet
+        // wrapped that card in a second window-shaped container, which is what read as a stray
+        // frame around About/Recent batches/Change quality. Presenting here also puts every sheet
+        // control back inside the main window, so `WindowSetup`'s stray-focus-ring net covers them.
+        //
+        // One optional enum drives it — NOT four booleans, which is a known SwiftUI failure mode
+        // when stacked as `.sheet(isPresented:)` modifiers. `.id(sheet.id)` is load-bearing and
+        // carries over from the `.sheet(item:)` this replaces: it forces a clean teardown+rebuild
+        // on every id change, including consent → consent (spec §7's multi-scan case), which a
+        // bare `if let` would not — SwiftUI would reuse the view and its `@State` across two
+        // different rows' consents.
+        .overlay {
+            if let sheet = activeSheet {
+                sheetContent(sheet)
+                    .id(sheet.id)
+                    .transition(.opacity)
             }
         }
+        .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: activeSheet)
         // Drives the FIFO: any change to the queue's head re-targets `activeSheet`. If the head
         // becomes nil while a consent sheet is up (the user resolved it through the sheet's own
         // content, which pops the queue), clear it too. A user who dismisses the sheet directly (Escape) —
@@ -133,6 +141,22 @@ struct QueueView: View {
                 showAbout.wrappedValue = false
             }
         }
+    }
+
+    /// One presented sheet, plus the Escape path a system sheet used to give for free — including
+    /// the consent sheet, which spec §7 explicitly allows to be escaped without resolving.
+    @ViewBuilder
+    private func sheetContent(_ sheet: QueueSheet) -> some View {
+        let close = { activeSheet = nil }
+        Group {
+            switch sheet {
+            case .changeQuality: ChangeQualitySheet(model: model, onClose: close)
+            case .recentBatches: RecentBatchesSheet(history: history, onClose: close)
+            case .about: AboutView(onClose: close)
+            case .consent(let id): ScanConsentSheet(model: model, jobID: id)
+            }
+        }
+        .escapeToDismiss(close)
     }
 
     /// Screens 03/05/06/10 — header, rows, footer. One property rather than an inline `else`

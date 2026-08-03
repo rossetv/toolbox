@@ -13,7 +13,9 @@ import SwiftUI
 /// `lifetimeSavedBytes` survives (spec §6.9), matching the footer's own promise.
 struct RecentBatchesSheet: View {
     @ObservedObject var history: HistoryStore
-    @Environment(\.dismiss) private var dismiss
+    /// Presented as an in-window overlay (see `QueueView`'s overlay call site), so closing is a
+    /// caller-supplied closure — `@Environment(\.dismiss)` has no presentation to dismiss here.
+    let onClose: () -> Void
 
     var body: some View {
         SheetChrome(width: 520) {
@@ -36,13 +38,6 @@ struct RecentBatchesSheet: View {
                                             trailingValue: (text: Self.savedText(batch),
                                                            isMuted: batch.savedBytes <= 0),
                                             action: { NSWorkspace.shared.open(batch.folderURL) })
-                                            // This sheet is its own `NSWindow` (a real sheet, not
-                                            // an in-window overlay) and `canBecomeMain` excludes
-                                            // it from `WindowSetup`'s stray-focus-ring net, so
-                                            // AppKit's auto-assigned first responder on open is
-                                            // never cleared here — same carve-out as `AboutView`
-                                            // (memory: stray-focus-ring invariant).
-                                            .focusEffectDisabled()
                                     }
                                 }
                             }
@@ -56,7 +51,7 @@ struct RecentBatchesSheet: View {
                         .themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
                     Spacer(minLength: Theme.Spacing.small)
                     LinkButton(title: "Clear list") { history.clearList() }
-                    PrimaryButton(title: "Done") { dismiss() }
+                    PrimaryButton(title: "Done", action: onClose)
                 }
             }
             .padding(20)
@@ -120,7 +115,7 @@ struct RecentBatchesSheet: View {
 }
 
 #Preview("RecentBatchesSheet") {
-    RecentBatchesSheet(history: HistoryStore(directory: FileManager.default.temporaryDirectory))
+    RecentBatchesSheet(history: HistoryStore(directory: FileManager.default.temporaryDirectory), onClose: {})
         .frame(width: 700, height: 600)
         .background(Theme.Colors.background)
 }

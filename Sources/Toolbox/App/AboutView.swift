@@ -12,11 +12,16 @@ import SwiftUI
 /// later" clause is static — it names this project's actual `project.yml` deployment target,
 /// not a fact the running bundle can report about itself.
 ///
-/// `init()` stays no-arg: `QueueView` presents this exact construction via `.sheet(item:)`, so
-/// this view's own `SheetChrome` sits inside the system sheet — the double chrome is a known,
-/// accepted shape of that call site, not a temporary artefact.
+/// Presented as an IN-WINDOW overlay by `QueueView`, not a system sheet: `SheetChrome` already
+/// draws the dim and the card, and a system sheet put a second container around them. Closing is
+/// therefore a caller-supplied closure rather than `@Environment(\.dismiss)`, which is a no-op
+/// outside a real presentation.
 struct AboutView: View {
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
+
+    /// Same ±1 pointer the empty state's icon leans on (DESIGN.md §9 11: "the app icon at 84pt
+    /// (same parallax)"); the stage here is the card's own content.
+    @State private var pointer: CGPoint?
 
     static let repositoryURL = URL(string: "https://github.com/rossetv/toolbox")!
     static let licenceURL = URL(string: "https://github.com/rossetv/toolbox/blob/main/LICENSE")!
@@ -34,10 +39,7 @@ struct AboutView: View {
             // rewritten DESIGN.md (D4) carries no general no-centre rule for this to except
             // itself from.
             VStack(spacing: Theme.Spacing.small) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 84, height: 84)
+                ParallaxAppIcon(size: 84, pointer: pointer)
 
                 Text("Toolbox")
                     .font(.system(size: 19, weight: .semibold))
@@ -54,20 +56,14 @@ struct AboutView: View {
                     .multilineTextAlignment(.center)
                     .padding(.top, 2)
 
+                // No `.focusEffectDisabled()` here any more: this view is presented inside the main
+                // window, so `WindowSetup`'s stray-focus clear covers these links like every other
+                // control (memory: stray-focus-ring invariant — the per-control hammer is exactly
+                // what that invariant forbids reaching for).
                 HStack(spacing: Theme.Spacing.medium) {
-                    // Two link groups, each with its own `.focusEffectDisabled()` — preserved
-                    // from the incumbent shape (which split GitHub+Licence from the standalone
-                    // email link) rather than folded into one call: this off-net sheet gets no
-                    // `WindowSetup` clearing (memory: stray-focus-ring invariant), so every
-                    // focusable control here must independently refuse the ring AppKit would
-                    // otherwise auto-assign on open, in case a future edit ever separates them.
-                    HStack(spacing: Theme.Spacing.medium) {
-                        LinkButton(title: "Source Code") { NSWorkspace.shared.open(Self.repositoryURL) }
-                        LinkButton(title: "Licence") { NSWorkspace.shared.open(Self.licenceURL) }
-                    }
-                    .focusEffectDisabled()
+                    LinkButton(title: "Source Code") { NSWorkspace.shared.open(Self.repositoryURL) }
+                    LinkButton(title: "Licence") { NSWorkspace.shared.open(Self.licenceURL) }
                     LinkButton(title: "Contact me") { NSWorkspace.shared.open(Self.maintainerURL) }
-                        .focusEffectDisabled()
                 }
                 .padding(.top, Theme.Spacing.small)
 
@@ -79,21 +75,27 @@ struct AboutView: View {
             }
             .padding(Theme.Spacing.large)
             .padding(.top, Theme.Spacing.small)
-        }
-        .overlay(alignment: .topTrailing) {
-            // `.about` style: this sheet gets no `WindowSetup` stray-focus clearing (memory:
-            // stray-focus-ring invariant), so its own `.focusEffectDisabled()` — the third of this
-            // file's three, with the two link groups above — is load-bearing, not decorative.
-            PopoverCloseButton(action: { dismiss() }, style: .about)
-                .padding(20)
+            .parallaxStage($pointer)
+            // Full card width before the overlay: the text block is narrower than the 330pt card,
+            // so a `.topTrailing` overlay measured against the block alone sat well short of the
+            // card's right edge.
+            .frame(maxWidth: .infinity)
+            // Inside the chrome's CONTENT, not on `SheetChrome` itself: the chrome's root is a
+            // window-filling ZStack (it draws the dim), so a `.topTrailing` overlay out there lands
+            // in the window's corner rather than the card's.
+            .overlay(alignment: .topTrailing) {
+                PopoverCloseButton(action: onClose, style: .about)
+                    .padding(.top, 14)
+                    .padding(.trailing, 12)
+            }
         }
     }
 }
 
 #Preview("About – Dark") {
-    AboutView().preferredColorScheme(.dark)
+    AboutView(onClose: {}).preferredColorScheme(.dark)
 }
 
 #Preview("About – Light") {
-    AboutView().preferredColorScheme(.light)
+    AboutView(onClose: {}).preferredColorScheme(.light)
 }
