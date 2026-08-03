@@ -737,7 +737,7 @@ final class QueueViewModel: ObservableObject {
             case .done(let outcome):
                 if outcome.isDegraded { partial = true }
                 if let row = versionStore.versions(for: id) {
-                    if row.searchableByCard[.shipped] == true { searchableCount += 1 }
+                    if Self.madeSearchable(row) { searchableCount += 1 }
                 } else if case .added = outcome.ocr {
                     // No `RowVersions` entry means the compress leg never recorded one at all — a
                     // rescue or a verb-off OCR-only delivery (`ingestCompletedJobs`'s
@@ -1739,10 +1739,22 @@ final class QueueViewModel: ObservableObject {
                 guard !layerIsUnwritable else { throw UnwritableTextLayerError() }
                 return nil
             }
-            flags[.shipped] = false
-            if let retainedKind {
-                flags[.runnerUp] = retainedKind == .original ? originalIsSearchable : false
-            }
+            // Every card carries the ORIGINAL's own answer here, because nothing was appended and
+            // nothing was rebuilt out of something that reads differently. `.alreadySearchable` is
+            // the engine's statement that every page already carried extractable text
+            // (`RecognisedDocument.outcome`), and each variant that can exist beside that outcome
+            // keeps the text: gs's arguments strip none (`CompressPreset.gsArguments`), Rung 2
+            // re-embeds an extracted layer and verifies it or declines to gs
+            // (`CompressEngine.bilevelCompress`), and Rung 3's R2 structural sweep refuses any
+            // text-bearing page outright (`MRCClassifier.structure`). A hard-coded `false` denied
+            // searchability of a delivered file that provably still reads — the criterion-3 lie
+            // §6.4's Original labelling was already amended to kill, one card over. Every other
+            // outcome on this arm (`.tooFaint`, a layer that cannot be written) leaves it false,
+            // exactly as before.
+            flags[.shipped] = originalIsSearchable
+            // The parked `.original` is labelled from the outcome by §6.4's own rule; a retained
+            // compress variant is labelled from the same evidence, by the paragraph above.
+            if retainedKind != nil { flags[.runnerUp] = originalIsSearchable }
             return flags
         }
 
@@ -2340,7 +2352,20 @@ final class QueueViewModel: ObservableObject {
         // must show the futile caption rather than read as a plain, unremarkable finished row.
         if futileAttempts.contains(futileKey(job.id, at: target)) { return .futile(target) }
         if row.rowPreset == target { return .none }
-        if row.previous?.preset == target { return .instantSwitch(target) }
+        // The parked FILE, never the record alone. A slot is routinely recorded with nothing behind
+        // it — `RunnerUpStore.promote`'s cache-slot step is best-effort, and its doc tells callers
+        // not to assume a file is there — so offering `.instantSwitch` off the record advertises a
+        // switch the row cannot honour. The Change quality sheet then presses it for every in-scope
+        // row (`ChangeQualitySheet.confirm`), turning that advertisement into a failure note on a
+        // row the user never selected. Falling through to `.armed` is the honest answer: the
+        // version can only come back by being made again. Checked on every read rather than cached,
+        // exactly as `isOriginalMissing` is and for the same reason — there is no file watcher, so
+        // a stored answer would go stale silently — and reached only by a row whose parked preset
+        // already matches the target.
+        if let previous = row.previous, previous.preset == target,
+           FileManager.default.fileExists(atPath: previous.url.path) {
+            return .instantSwitch(target)
+        }
         return .armed(target)
     }
 
@@ -2455,13 +2480,25 @@ final class QueueViewModel: ObservableObject {
         return versionStore.versions(for: job.id)
     }
 
-    /// Rows OCR made searchable (mirrors `HistoryStore`'s own `searchableCount` derivation: the
-    /// STORE's flag, never `job.state`'s outcome, which is stale after a re-run and disagrees by
-    /// design on the all-lossy path) — the one figure the header and footer both render, so a
-    /// drift between two private copies can never make the two halves of the same window disagree.
+    /// Rows OCR MADE searchable — the copy this feeds ("N files are now searchable", "made
+    /// searchable") claims an action, so a file that arrived with a text layer of its own does not
+    /// count however searchable the delivered file is. Still the STORE's flags, never
+    /// `job.state`'s outcome, which is stale after a re-run and disagrees by design on the
+    /// all-lossy path; the original's own flag is what separates "we did this" from "it was
+    /// already so". One figure for the header and the footer, so the two halves of the window
+    /// cannot drift apart.
     var searchableRowCount: Int {
-        jobs.filter { versions(for: $0)?.searchableByCard[.shipped] == true }.count
+        jobs.filter { madeSearchable(versions(for: $0)) }.count
     }
+
+    /// Shared by `searchableRowCount` and the history record, so the live figure and the banked one
+    /// can never be derived two different ways.
+    static func madeSearchable(_ row: RowVersions?) -> Bool {
+        guard let row else { return false }
+        return row.searchableByCard[.shipped] == true && row.searchableByCard[.originalReference] != true
+    }
+
+    private func madeSearchable(_ row: RowVersions?) -> Bool { Self.madeSearchable(row) }
 
     /// The before/after byte pair `job` contributes to the batch totals, or nil when the row has
     /// shipped nothing (queued/running/failed/no-gain/OCR). `after` is always the SHIPPED version's
@@ -2523,8 +2560,19 @@ final class QueueViewModel: ObservableObject {
             return
         }
 
+        // Where the displaced file goes. `.previous` is its natural home, but taking that slot when
+        // it is OCCUPIED DISCARDS the version parked there (`setSlot`'s R14 rule) — one tap turning
+        // a three-card row into two, under a popover header promising the switch stays available
+        // until quit. The runner-up slot is free in exactly that case, so the park uses it and all
+        // three versions survive; the two-slot cap (spec §5) is respected either way, because this
+        // fills the free slot rather than evicting an offered version. With both slots occupied
+        // there is nowhere left and the R14 discard stands.
+        let slot: VersionSlot = row.previous != nil && row.runnerUp == nil ? .runnerUp : .previous
         var reserved = reservedKeys()
-        let parked = versionStore.reservePreviousURL(for: job.url, reserving: &reserved)
+        // Each slot's own suffix keeps the two apart in the shared cache root (`reserveURL`'s note).
+        let parked = slot == .runnerUp
+            ? store.reserveURL(for: job.url, reserving: &reserved)
+            : versionStore.reservePreviousURL(for: job.url, reserving: &reserved)
         do {
             try await store.promote(fresh: temp, to: shipped.url, parking: parked)
         } catch let stranded as RunnerUpStore.SwitchError {
@@ -2544,20 +2592,22 @@ final class QueueViewModel: ObservableObject {
 
         // `promote` reaches the cache slot on a best-effort third step, so a file may not exist at
         // `parked` — an already-designed-for state (`useVersion`'s "no longer available" path).
-        // Replacing the slot discards whatever the old occupant held (R14).
-        versionStore.setSlot(.previous,
+        // Replacing the slot discards whatever the old occupant held (R14) — which is why the slot
+        // above is chosen to be an empty one wherever the row has one.
+        versionStore.setSlot(slot,
                              to: FileVersion(url: parked, bytes: shipped.bytes,
                                              preset: shipped.preset, variant: shipped.variant),
                              for: job.id)
         versionStore.setShipped(FileVersion(url: shipped.url, bytes: row.originalBytes,
                                             preset: row.rowPreset, variant: .original),
                                 for: job.id)
-        // The flags describe the BYTES, so they travel with them — but ONLY when the row has flags
+        // The flags describe the BYTES, so they travel with them — onto the card the file actually
+        // landed in, never the slot name this path used to assume — but ONLY when the row has flags
         // at all: on a compress-only row a `?? false` default here would manufacture a claim the
         // row has no evidence for in either direction (spec §6.4).
         if !row.searchableByCard.isEmpty {
             versionStore.setSearchable(row.searchableByCard[.shipped] ?? false,
-                                       card: .previous, for: job.id)
+                                       card: slot == .runnerUp ? .runnerUp : .previous, for: job.id)
             versionStore.setSearchable(row.searchableByCard[.originalReference] ?? false,
                                        card: .shipped, for: job.id)
         }
@@ -2649,7 +2699,18 @@ final class QueueViewModel: ObservableObject {
         // fine here — only the parked copy is gone — so this is a message beside the row, never a
         // `.failed` state that would hide a good result.
         guard slot == .runnerUp else {
-            versionStore.setSlot(.previous, to: nil, for: job.id)
+            // The RECORD stays. Every route here has already established that the file is gone, so
+            // clearing the slot discards nothing (`setSlot`'s `cache.discard` is a no-op on an
+            // absent path) — it only erases the row's own memory that a version at that preset ever
+            // existed, which is the very thing this message tells the user to recompress back, and
+            // it pulls the card out from under the pointer that just clicked it. Keeping it
+            // advertises nothing false either: the one place a fileless slot could be pressed on
+            // the user's behalf is `recompressState`'s `.instantSwitch`, which now proves the file
+            // is there before it offers the switch. It is also what R11 asks for — the reservation
+            // seeding in `compress()` states that a parked file may be permanently absent while its
+            // row still OWNS that path, and that an allocation must be kept off it by the record
+            // rather than by the file happening to exist. Dropping the slot frees a name the row
+            // still owns; the card the popover keeps listing simply re-reports this same message.
             recompressErrors[job.id] = "That version is no longer available — recompress at "
                                      + "\(parked.preset.title) to get it back."
             publishJobs()

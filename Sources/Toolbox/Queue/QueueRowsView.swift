@@ -110,14 +110,12 @@ struct QueueRowsView: View {
 
     @ViewBuilder
     private func row(for job: ToolJob) -> some View {
-        let descriptor = Self.describe(job: job, model: model, state: state)
-        let isChoosingVersion = versionsJobID == job.id
+        let base = Self.describe(job: job, model: model, state: state)
+        let descriptor = versionsJobID == job.id ? Self.choosingVersion(base) : base
         QueueRow(
             name: job.url.lastPathComponent,
-            // DESIGN.md §9 07: the row meta reads "Choosing a version" for as long as its own
-            // versions popover is open, overriding whatever this row would otherwise say.
-            meta: isChoosingVersion ? "Choosing a version" : descriptor.meta,
-            metaAccent: isChoosingVersion ? nil : descriptor.metaAccent,
+            meta: descriptor.meta,
+            metaAccent: descriptor.metaAccent,
             fileURL: job.url,
             emphasis: descriptor.emphasis,
             onOpen: descriptor.canOpen ? { NSWorkspace.shared.open(Self.urlToOpen(for: job, model: model)) } : nil,
@@ -248,9 +246,10 @@ struct QueueRowsView: View {
             let action: () -> Void
         }
 
-        let meta: String
+        var meta: String
         /// `.danger` for a `recompressErrors` note (R12); `.accent` (the `QueueRow` default) for
         /// every other use — e.g. "Its own settings". Nil when the row has no accent text at all.
+        /// The colour is the register: `choosingVersion` reads it to tell a failure from a remark.
         var metaAccent: (text: String, colour: Color)? = nil
         var emphasis: QueueRow<AnyView>.Emphasis = .none
         var trailing: Trailing
@@ -309,6 +308,23 @@ struct QueueRowsView: View {
         case .failed(let message):
             return describeFailed(job: job, model: model, message: message)
         }
+    }
+
+    /// The overlay a row wears while its OWN versions popover is open (DESIGN.md §9 07): the meta
+    /// reads "Choosing a version" in place of whatever the row would otherwise say.
+    ///
+    /// The danger accent survives it. That accent is the `recompressErrors` note, and the tap that
+    /// opened this popover is precisely what writes one — `useVersion`/`useOriginalReference` arm
+    /// their failures through `reportKeptVersion` — so blanking it renders a failure the user's own
+    /// press just caused as nothing at all until they dismiss the popover, which is the silent
+    /// failure R12 forbids. The informational register ("Its own settings") still yields: it
+    /// describes the row's settings, not the outcome of a press, and nothing is lost by deferring
+    /// it to the popover the user is already reading.
+    static func choosingVersion(_ descriptor: RowDescriptor) -> RowDescriptor {
+        var overlaid = descriptor
+        overlaid.meta = "Choosing a version"
+        if descriptor.metaAccent?.colour != Theme.Colors.danger { overlaid.metaAccent = nil }
+        return overlaid
     }
 
     // MARK: queued / analysing

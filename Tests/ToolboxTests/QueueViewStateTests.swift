@@ -899,6 +899,48 @@ final class QueueViewStateTests: XCTestCase {
                        "2 files have their own settings, so their estimates differ from the batch.")
     }
 
+    // MARK: the versions popover's overlay on its own row (DESIGN.md §9 07, R12)
+
+    /// R12: the tap that opens this popover is what produces the failure note, so the note must be
+    /// readable WHILE the popover is open. Blanking it with the "Choosing a version" meta rendered
+    /// a failure the user's own press had just caused as nothing at all until they dismissed the
+    /// popover — an explicit button press failing silently.
+    func testChoosingAVersionKeepsTheFailureNoteTheTapItselfProduced() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        let job = try await env.runToDone()
+        // The tap's own failure, from inside the popover: switching to Original copies the
+        // untouched input, and the user has since moved it out from under the row.
+        try FileManager.default.removeItem(at: job.url)
+
+        await model.useCard(.originalReference, for: job)
+
+        let message = try XCTUnwrap(model.recompressErrors[job.id])
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .finished)
+        XCTAssertEqual(descriptor.metaAccent?.text, message, "sanity: the row reports it when closed")
+
+        let choosing = QueueRowsView.choosingVersion(descriptor)
+        XCTAssertEqual(choosing.meta, "Choosing a version")
+        XCTAssertEqual(choosing.metaAccent?.text, message,
+                       "the failure must not wait for the popover to close to become visible")
+        XCTAssertEqual(choosing.metaAccent?.colour, Theme.Colors.danger)
+    }
+
+    /// The other register still yields: "Its own settings" describes the row's settings, not the
+    /// outcome of a press, and the popover the user is reading already says what the row is doing.
+    func testChoosingAVersionReplacesTheInformationalAccent() throws {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        model.add([try Fixtures.bornDigitalPDF()])
+        let job = try XCTUnwrap(model.jobs.first)
+        model.setOverride(RowOverride(rebuildScan: false), for: job.id)
+        let descriptor = QueueRowsView.describe(job: job, model: model, state: .ready)
+        XCTAssertEqual(descriptor.metaAccent?.text, "Its own settings", "sanity")
+
+        let choosing = QueueRowsView.choosingVersion(descriptor)
+        XCTAssertEqual(choosing.meta, "Choosing a version")
+        XCTAssertNil(choosing.metaAccent)
+    }
+
     // MARK: problems header count (spec §7) — delivered-of-total, never problem/failed rows counted as done
 
     /// The exact repro: a `.failed` row and an unresolved `.locked` row must not inflate the

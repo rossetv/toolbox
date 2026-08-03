@@ -203,10 +203,21 @@ final class QueuePassTests: XCTestCase {
                       "no OCR leg ran, so the row carries no searchability claim")
     }
 
-    /// The counterintuitive but legal pair (spec §6.4, amended 2026-07-30): the compress leg
-    /// rasterised the pages, so the file the user got cannot be searched, while the input it came
-    /// from could — and the Original row says so because the leg returned `.alreadySearchable`.
-    func testShippedUnsearchableOriginalSearchableCorollary() async throws {
+    /// `.alreadySearchable` is the engine's statement that EVERY page already carried extractable
+    /// text (`RecognisedDocument.outcome`), and the file the user gets keeps it: gs's arguments
+    /// strip no text (`CompressPreset.gsArguments`), Rung 2 re-embeds an extracted layer and
+    /// verifies it or declines to gs (`CompressEngine.bilevelCompress`), and Rung 3's R2 sweep
+    /// refuses any text-bearing page outright (`MRCClassifier.structure`). So the delivered card
+    /// carries the same evidence the Original's does.
+    ///
+    /// SUPERSEDES `testShippedUnsearchableOriginalSearchableCorollary`, which asserted `false` here
+    /// on this same fixture from a premise no engine can produce ("the compress leg rasterised the
+    /// pages" — every rebuild rung declines a page that carries text, so an `.alreadySearchable`
+    /// document is never rebuilt). Spec §6.4's corollary — a shipped card reading "not searchable"
+    /// beside a searchable neighbour — keeps the paths that genuinely produce it: an append that
+    /// failed (`testSearchableByCardReflectsAppendOutcomes`) and the switch to Original, which
+    /// moves each flag onto the bytes it describes (`testUseOriginalReferenceMovesSearchableFlags`).
+    func testAlreadySearchableLabelsTheDeliveredFileSearchableToo() async throws {
         let (env, ocr) = try env(alreadySearchable)
         let model = env.model
         let id = try await env.addRow()
@@ -216,10 +227,49 @@ final class QueuePassTests: XCTestCase {
 
         XCTAssertEqual(ocr.appendCallCount, 0, "there is nothing to add to any variant")
         let row = try XCTUnwrap(model.versions(for: try job(model, id)))
-        XCTAssertEqual(row.searchableByCard[.shipped], false)
+        XCTAssertEqual(row.searchableByCard[.shipped], true,
+                       "the delivered file still reads — denying it is the criterion-3 lie")
+        // The retained variant answers from the same evidence: a compress variant is no more
+        // rasterised than the delivered one, so the row's cards cannot disagree with each other.
+        // Stub-constructible only — a real runner-up needs MRC to have run, which this outcome
+        // precludes — so this pins the flag's rule, never a state the engine can reach.
+        XCTAssertEqual(row.searchableByCard[.runnerUp], true)
         XCTAssertEqual(row.searchableByCard[.originalReference], true,
                        "the Original label is outcome-keyed: `.alreadySearchable` is the evidence")
         XCTAssertEqual(try XCTUnwrap(outcome(model, id)).ocr, .alreadySearchable)
+    }
+
+    /// The count means what its copy says. Labelling the delivered file searchable (above) is a
+    /// statement about the FILE; "N files are now searchable" and the history's "made searchable"
+    /// are claims about what this run DID, and it did nothing to a document that arrived with its
+    /// own text layer. The card and the count therefore read the same flags and answer differently.
+    func testAnAlreadySearchableFileIsNotCountedAsOneTheRunMadeSearchable() async throws {
+        let (env, _) = try env(alreadySearchable)
+        let model = env.model
+        _ = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertEqual(model.searchableRowCount, 0,
+                       "the file arrived searchable — this run did not make it so")
+    }
+
+    /// The other outcomes on the same no-append arm are untouched: `.tooFaint` read the pages and
+    /// found nothing usable, so no card may claim a layer in either direction.
+    func testTooFaintStillLabelsEveryCardUnsearchable() async throws {
+        let (env, ocr) = try env(tooFaint)
+        let model = env.model
+        let id = try await env.addRow()
+
+        model.compress()
+        try await waitUntil(timeout: 15) { !model.isRunning }
+
+        XCTAssertEqual(ocr.appendCallCount, 0, "there was nothing usable to add")
+        let row = try XCTUnwrap(model.versions(for: try job(model, id)))
+        XCTAssertEqual(row.searchableByCard[.shipped], false)
+        XCTAssertEqual(row.searchableByCard[.runnerUp], false)
+        XCTAssertEqual(row.searchableByCard[.originalReference], false)
     }
 
     /// A recognition whose every run would be destroyed by the WinAnsi text layer is not written at
@@ -751,23 +801,33 @@ final class QueuePassTests: XCTestCase {
                        "the delivered file now holds the original's content")
     }
 
-    /// The switch parks the version the user had into `previous`, replacing (and discarding) any
-    /// occupant — the cap stays at two parked versions (spec §5).
-    func testUseOriginalParksShippedIntoPreviousReplacingOccupant() async throws {
+    /// The switch parks the version the user had, and with BOTH parked slots already full there is
+    /// nowhere to put it but over an occupant — which is then discarded, never accumulated. The cap
+    /// is two parked versions (spec §5), and this is where it genuinely binds.
+    ///
+    /// SUPERSEDES the free-slot half of `testUseOriginalParksShippedIntoPreviousReplacingOccupant`,
+    /// which drove this same path with the runner-up slot EMPTY and read the resulting discard as
+    /// the cap at work. The cap forces nothing while a slot is free: that discard destroyed a
+    /// version the popover was still offering, and `QueueViewModelTests`'
+    /// `testSwitchingToOriginalParksIntoTheFreeSlotRatherThanEvictingTheParkedVersion` now pins the
+    /// park into the free slot instead.
+    func testUseOriginalDiscardsAnOccupantOnlyWhenBothParkedSlotsAreFull() async throws {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
         try await env.runToDone()
         let id = try XCTUnwrap(model.jobs.first).id
-        // A re-run at another preset parks the first result into `previous`.
+        // A re-run that retains a variant of its own fills BOTH slots: its loser takes the
+        // runner-up, and the version it replaces parks as the previous.
         env.stub.script = { _, _ in
-            .init(outcome: .compressed(before: 9_000, after: 2_000),
-                  shippedBytes: 2_000, runnerUpBytes: nil)
+            .init(outcome: .compressedHeavy(before: 9_000, after: 2_000, runnerUpBytes: 1_500),
+                  shippedBytes: 2_000, runnerUpBytes: 1_500)
         }
         model.preset = .maximumQuality
         model.compress()
         try await waitUntil(timeout: 15) { !model.isRunning }
         let occupant = try XCTUnwrap(model.versions(for: try job(model, id))?.previous?.url)
+        let retained = try XCTUnwrap(model.versions(for: try job(model, id))?.runnerUp?.url)
         XCTAssertTrue(exists(occupant))
 
         await model.useCard(.originalReference, for: try job(model, id))
@@ -777,6 +837,8 @@ final class QueuePassTests: XCTestCase {
         XCTAssertEqual(row.previous?.bytes, 2_000, "the version they had is the one parked")
         XCTAssertNotEqual(row.previous?.url, occupant)
         XCTAssertFalse(exists(occupant), "the superseded park is discarded, never accumulated")
+        XCTAssertEqual(row.runnerUp?.url, retained, "the other slot's version is not touched")
+        XCTAssertTrue(exists(retained))
     }
 
     /// The flags describe the BYTES, so they travel with them: the demoted file keeps its claim and

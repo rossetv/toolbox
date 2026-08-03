@@ -19,7 +19,9 @@ struct FileVersion: Equatable {
 /// The two parked slots a row can hold. The shipped version has no slot — it is the user's
 /// delivered file and is never discarded.
 enum VersionSlot: Equatable {
-    /// This run's engine runner-up (the heavy/gs race's loser).
+    /// This run's engine runner-up (the heavy/gs race's loser) — and, when it is free while
+    /// `.previous` is not, the park a switch to Original takes instead of evicting the version
+    /// `.previous` already offers (`QueueViewModel.useOriginalReference`).
     case runnerUp
     /// The ONE previous version a recompress parked (D3).
     case previous

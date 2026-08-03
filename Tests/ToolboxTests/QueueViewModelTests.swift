@@ -1391,6 +1391,63 @@ final class QueueViewModelTests: XCTestCase {
         XCTAssertEqual(model.armedCount, 0)
     }
 
+    /// A parked slot can be RECORDED with no file behind it — `RunnerUpStore.promote`'s cache-slot
+    /// step is best-effort and documents exactly that — so arming off the record alone advertises a
+    /// switch the row cannot honour. The honest answer is `.armed`: the version can only come back
+    /// by being made again, which is what the row would then do.
+    func testAPreviousSlotWhoseFileIsGoneArmsARecompressInsteadOfOfferingAnInstantSwitch() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        XCTAssertEqual(model.recompressState(for: job), .instantSwitch(.balanced), "precondition")
+
+        try FileManager.default.removeItem(at: try XCTUnwrap(model.versions(for: job)?.previous?.url))
+
+        XCTAssertEqual(model.recompressState(for: job), .armed(.balanced))
+        XCTAssertEqual(model.armedCount, 1)
+    }
+
+    /// The consequence the sheet made visible: `confirm` presses `useVersion` for every in-scope
+    /// row `recompressState` calls `.instantSwitch`, so a fileless slot wrote a failure note onto a
+    /// row the user never selected. With the state honest, the row is simply armed and the sheet
+    /// leaves no note behind. The updater is reported busy so `canStart` refuses the re-run — the
+    /// run's own start would otherwise clear the very dictionary under assertion.
+    func testConfirmWritesNoFailureNoteForARowWhoseParkedFileIsGone() async throws {
+        final class Flag { var busy = false }
+        let flag = Flag()
+        let env = try HeavyEnv(isUpdating: { flag.busy })
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        model.preset = .balanced
+        let job = try XCTUnwrap(model.jobs.first)
+        try FileManager.default.removeItem(at: try XCTUnwrap(model.versions(for: job)?.previous?.url))
+        flag.busy = true
+
+        await ChangeQualitySheet.confirm(rows: [job], model: model, fallback: .balanced,
+                                         fallbackExclusions: [], fallbackOverrides: [:])
+
+        XCTAssertNil(model.recompressErrors[job.id],
+                     "the user never asked for this row's version — the sheet must not report one")
+    }
+
     /// The Change quality sheet's footer CTA (regression fix, spec §7): an `.instantSwitch` row
     /// pressed through the sheet must actually land the parked previous version on the delivery
     /// path — the SAME on-disk switch `useVersion` drives for the versions popover — not silently
@@ -2087,6 +2144,43 @@ final class QueueViewModelTests: XCTestCase {
                        "the version the runner-up slot no longer holds is discarded, not orphaned")
     }
 
+    /// A switch to Original parks the file it displaces — and must not pay for that park with a
+    /// version the row is still offering. Here the row holds a parked previous version and an EMPTY
+    /// runner-up slot, so the displaced file takes the free one: writing it over `.previous` would
+    /// discard the file that slot holds (`VersionStore.setSlot`'s R14 rule) and drop the row from
+    /// three cards to two, one tap after a popover promising the switch stays available until quit.
+    func testSwitchingToOriginalParksIntoTheFreeSlotRatherThanEvictingTheParkedVersion() async throws {
+        let env = try HeavyEnv()
+        let model = env.model
+        model.preset = .balanced
+        try await env.runToDone()
+
+        // A re-run that retains nothing empties the runner-up slot and parks the Balanced version.
+        env.stub.script = { _, _ in .init(outcome: .compressed(before: 9000, after: 700),
+                                          shippedBytes: 700, runnerUpBytes: nil) }
+        model.preset = .smallestSize
+        model.compress()
+        try await waitUntil(timeout: 5) { !model.isRunning }
+
+        let before = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertNil(before.runnerUp, "precondition: one parked version, one free slot")
+        let parkedPrevious = try XCTUnwrap(before.previous?.url)
+        XCTAssertEqual(before.cards.map(\.key), [.shipped, .previous, .originalReference])
+
+        await model.useCard(.originalReference, for: try XCTUnwrap(model.jobs.first))
+
+        let row = try XCTUnwrap(model.versions(for: try XCTUnwrap(model.jobs.first)))
+        XCTAssertEqual(row.shipped?.variant, .original, "precondition: the switch itself landed")
+        XCTAssertEqual(row.previous?.url, parkedPrevious, "the Balanced version keeps its slot")
+        XCTAssertEqual(try fileSize(parkedPrevious), HeavyEnv.heavyBytes,
+                       "and its file is still on disk — the park must not have discarded it")
+        XCTAssertEqual(row.runnerUp?.bytes, 700, "the displaced file took the free slot")
+        XCTAssertEqual(row.runnerUp?.preset, .smallestSize)
+        XCTAssertEqual(try fileSize(try XCTUnwrap(row.runnerUp?.url)), 700)
+        XCTAssertEqual(row.cards.map(\.key), [.shipped, .runnerUp, .previous],
+                       "three versions survive the switch, exactly as the popover promised")
+    }
+
     // MARK: one run, two phases (R5/R9)
 
     /// R5: newly added files and armed rows form ONE run behind one button. The counts the button
@@ -2437,9 +2531,17 @@ final class QueueViewModelTests: XCTestCase {
     }
 
     /// A vanished PREVIOUS version can never be regenerated (a re-run reproduces the row's own
-    /// preset, not the previous one), so it must say so beside the row and drop the slot — while
-    /// leaving the perfectly good delivered result exactly where it is.
-    func testUsingAVanishedPreviousVersionReportsItAndDropsTheSlot() async throws {
+    /// preset, not the previous one), so it says so beside the row — while leaving the perfectly
+    /// good delivered result exactly where it is, and leaving the row's RECORD of the lost version
+    /// standing.
+    ///
+    /// SUPERSEDES `testUsingAVanishedPreviousVersionReportsItAndDropsTheSlot`: dropping the slot
+    /// discarded nothing (the file is already gone) and erased the row's only record of the preset
+    /// this very message tells the user to recompress back to, taking the card out from under the
+    /// pointer that clicked it. Keeping it advertises nothing false —
+    /// `testAPreviousSlotWhoseFileIsGoneArmsARecompressInsteadOfOfferingAnInstantSwitch` pins the
+    /// one place a fileless slot could be pressed on the user's behalf.
+    func testUsingAVanishedPreviousVersionReportsItWithoutErasingTheRowsRecordOfIt() async throws {
         let env = try HeavyEnv()
         let model = env.model
         model.preset = .balanced
@@ -2459,7 +2561,10 @@ final class QueueViewModelTests: XCTestCase {
         await model.useVersion(.previous, for: job)
 
         XCTAssertEqual(env.stub.callCount, callsBefore, "a vanished previous is never re-run")
-        XCTAssertNil(model.versions(for: job)?.previous, "the slot is dropped, not left dangling")
+        XCTAssertEqual(model.versions(for: job)?.previous?.url, previous,
+                       "the row still knows which version it lost…")
+        XCTAssertEqual(model.versions(for: job)?.previous?.preset, .balanced,
+                       "…and at which quality to make it again")
         XCTAssertEqual(model.recompressErrors[job.id],
                        "That version is no longer available — recompress at "
                        + "\(CompressPreset.balanced.title) to get it back.")
