@@ -118,7 +118,7 @@ call sites are unchanged.
   fill (no gradient, no glow — §7), `control` (8) radius. "Choose Files…", "Start",
   "Update", "Add More".
 - **`LinkButton`** — a borderless `link`-blue text action: "+ Add", "Clear", "Change…",
-  "Match the batch", "See what changed". See §11 for its recorded size divergence.
+  "Reset override", "See what changed". See §11 for its recorded size divergence.
 - **`StatPill`** — a small `pill`-radius badge for a short stat. Tones: success / neutral
   / accent.
 - **`PDFThumbnail`** — a first-page render with an optional red "PDF" label band
@@ -313,6 +313,7 @@ Standard curve: the handoff's `cubic-bezier(.2,.8,.25,1)`, reproduced as
 | `hoverLift` | −1pt | Filled-CTA hover rise (handoff `transform:translateY(-1px)`) |
 | `pressScale` | 0.97 | Pressed scale for every button (handoff `transform:translateY(0) scale(.97)` — the lift returns to rest as the scale lands) |
 | `linkHoverOpacity` | 0.6 | Text-link hover/press fade (handoff `opacity:.6` on the "+ Add"/"⊗ Clear"/"Cancel" spans; the handoff's `opacity:.65` on "See what changed" is consolidated into this same token — a 0.05 delta nobody can see is scatter, not fidelity) |
+| `rowPoof` | 0.24s | A removed queue row's puff-out: squeeze to 0.88 vertically (0.98 horizontally), drift −5pt, blur 9, fade — ease-out, deliberately shorter than the spring closing the gap below it |
 | `capGlow` | 1.6s | Progress bar leading-cap glow pulse (handoff `@keyframes capGlow`, opacity .35→.95, ease-in-out, autoreversing) |
 
 The handoff writes `scale(.97)` on three of its five actively-styled primary buttons and
@@ -345,7 +346,7 @@ polish of §11 added, each with its home:
   (`QueueHeaderView`);
 - the empty↔queue screen swap cross-fades ±10pt (+10 for the empty side, −10 for the
   queue) (`QueueView`);
-- a queue row lands from +26pt and leaves at scale 0.96 (`QueueRowsView`);
+- a queue row lands from +26pt and leaves on `rowPoof` (`QueueRowsView`);
 - the row gear fades in from scale 0.7 (`QueueRow`);
 - a radio row's selection dot springs from scale 0.1 (`RadioRow`) and a tick box's mark
   from 0.92 (`CheckRow`).
@@ -438,9 +439,12 @@ filename (`bodyStrong`) + "Overrides just this file" (`textTertiary`) + close ×
 rendered, whether or not this row has left the batch, so the popover's height never moves
 as the quality segments are clicked. Two `ToggleRow`s: "Rebuild the scan" (default
 off — "stamps stay photographic") and "Read the text (OCR)" (state line names language +
-accuracy). Footer: "Estimate **{size}**" left, a `LinkButton` "Match the batch" right
-(clears overrides). An overridden row's meta line turns accent "Its own settings" and its
-gear stops hiding — it stays on the row in `accent` rather than waiting for hover, so the
+accuracy). Footer: "Estimate **{size}**" left, a `LinkButton` "Reset override" right
+(clears them). That link is drawn only while the row actually overrides something — hidden,
+never removed, so the popover's height stays put. A field that says exactly what the batch
+says is not an override: setting a row's quality back to the batch's preset (or its OCR
+back to the batch's verb) leaves the row unmarked and following the batch again. An
+overridden row's meta line turns accent "Its own settings" and its gear stops hiding — it stays on the row in `accent` rather than waiting for hover, so the
 overridden rows are identifiable at a glance; the batch footer notes "One file has its own
 settings, so its estimate differs from the batch."
 
@@ -573,7 +577,7 @@ stands for.
 | OCR popover — footnote | "Pages that already contain text are left alone." |
 | Per-file settings — subtitle | "Overrides just this file" |
 | Per-file settings — rebuild toggle off-state | "stamps stay photographic" |
-| Per-file settings — match batch | "Match the batch" |
+| Per-file settings — reset override | "Reset override" (shown only while the row overrides something) |
 | Per-file settings — override note | "Its own settings" / "One file has its own settings, so its estimate differs from the batch." |
 | Working — footer | "Toolbox works several files at once on your Mac's fastest cores." (§11 divergence) |
 | Working — active row meta | "Reading page {n} of {m}" |
@@ -619,7 +623,7 @@ A divergence is recorded here or it does not exist (`CODE_GUIDELINES.md` §8.4).
 
 - **`LinkButton` renders at 14pt; the handoff specifies 13pt** ("+ Add"/"⊗ Clear" links,
   README: "13/link"). App-wide, not one screen — every `LinkButton` call site (Ready's
-  "+ Add"/"⊗ Clear", "Match the batch", "See what changed", the Problems screen's
+  "+ Add"/"⊗ Clear", "Reset override", "See what changed", the Problems screen's
   Skip/Remove, `BatchCard`'s "Open folder"). Only the **size** diverges — tracking stays
   the incumbent −0.224 (§3). Plan-pinned (Task F7); not a defect to silently correct.
 - **`PDFThumbnail`'s two-layer shadow** (tight contact + wide soft) rather than a single

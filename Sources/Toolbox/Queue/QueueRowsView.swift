@@ -8,6 +8,25 @@
 import AppKit
 import SwiftUI
 
+/// A removed row's exit state, driven from `progress` 0 (untouched) → 1 (gone). The row squeezes
+/// vertically far more than it narrows — the direction the list is closing anyway, so the two
+/// motions agree — drifts up a few points, blurs, and fades: a puff rather than a snap. A uniform
+/// scale was tried first and reads as wrong at row width: a 900pt-wide element shrinking towards
+/// its centre pulls the eye sideways, away from the gap actually closing.
+private struct RowPoof: ViewModifier {
+    /// 0…1. `AnyTransition.modifier` only ever hands this the two ends; interpolation between
+    /// them is the animation's.
+    let progress: Double
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(x: 1 - 0.02 * progress, y: 1 - 0.12 * progress, anchor: .center)
+            .offset(y: -5 * progress)
+            .blur(radius: 9 * progress)
+            .opacity(1 - progress)
+    }
+}
+
 /// Byte formatting shared by the header/rows/footer copy — one place so a figure never reads
 /// differently two lines apart.
 enum QueueByteFormat {
@@ -44,11 +63,11 @@ struct QueueRowsView: View {
             VStack(spacing: 2) {
                 ForEach(model.jobs) { job in
                     row(for: job)
-                        // The handoff lands dropped rows rising into place; a removed row leaves
-                        // by shrinking out rather than the list snapping shut under the pointer.
+                        // The handoff lands dropped rows rising into place; a removed row puffs
+                        // out (see `RowPoof`) rather than the list snapping shut under the pointer.
                         .transition(.asymmetric(
                             insertion: .opacity.combined(with: .offset(y: 26)),
-                            removal: .opacity.combined(with: .scale(scale: 0.96))
+                            removal: rowRemoval
                         ))
                 }
                 if state == .ready {
@@ -65,6 +84,16 @@ struct QueueRowsView: View {
             // list, so a running batch doesn't re-trigger this.
             .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: model.jobs.map(\.id))
         }
+    }
+
+    /// `RowPoof` on its own fast ease-out, deliberately shorter than the standard spring the rows
+    /// below close the gap on: measured on a screen recording, the ghost is gone in ~0.24s while
+    /// the gap is still closing, so the two read as one gesture instead of a snap. Under Reduce
+    /// Motion it is a plain fade — the row still leaves visibly, with no transform (DESIGN.md §8).
+    private var rowRemoval: AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .modifier(active: RowPoof(progress: 1), identity: RowPoof(progress: 0))
+            .animation(.easeOut(duration: Theme.Motion.rowPoof))
     }
 
     private var dropHint: some View {
@@ -298,7 +327,7 @@ struct QueueRowsView: View {
             return RowDescriptor(meta: "Next", trailing: .status(text: current, kind: .queued), canOpen: true)
         }
         // Per-file override (spec §7, DESIGN.md §9 04c): an overridden row's meta gets the
-        // accent "Its own settings" — the popover's own "Match the batch" is what clears it.
+        // accent "Its own settings" — the popover's own "Reset override" is what clears it.
         let isOverridden = model.overrides[job.id] != nil
         let metaAccent: (text: String, colour: Color)? = isOverridden
             ? (text: "Its own settings", colour: Theme.Colors.accent) : nil

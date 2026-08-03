@@ -287,6 +287,10 @@ enum Theme {
         static let banner: Double = 0.45
         /// Success/warn check "pop" (scale .4→1.16→1).
         static let checkPop: Double = 0.45
+        /// A removed queue row's puff-out (shrink + blur + fade). Deliberately shorter than
+        /// `standard`'s settle: the row is gone before the list finishes closing the gap, so the
+        /// gap never appears to close around something still visible.
+        static let rowPoof: Double = 0.24
 
         // MARK: values
 
