@@ -72,7 +72,7 @@ final class QueueViewModel: ObservableObject {
     }
 
     /// Per-row overrides of the batch settings (spec §6.1). Sparse: a row with nothing overridden
-    /// has no entry at all, which is the state "Match the batch" restores.
+    /// has no entry at all, which is the state "Reset override" restores.
     @Published private(set) var overrides: [ToolJob.ID: RowOverride] = [:]
     /// What add-time inspection found per row (spec §6.6).
     @Published private(set) var inspections: [ToolJob.ID: RowInspection] = [:]
@@ -900,11 +900,34 @@ final class QueueViewModel: ObservableObject {
         return (settings.compressOn, ocr)
     }
 
-    /// Replace one row's overrides; `nil` (or an empty override) is "Match the batch". The row's
-    /// reservation follows, because both the delivered suffix and the runner-up name derive from
-    /// the row's effective settings (spec §6.5).
+    /// A field that says exactly what the batch already says is NOT an override: it is dropped
+    /// here, so a row whose every field matches the batch keeps no entry at all and goes back to
+    /// following the batch — including when the batch later moves. Without this, walking a row's
+    /// quality away from the batch and back left it marked "Its own settings" while carrying
+    /// settings identical to the batch's, which is the mark saying something untrue.
+    ///
+    /// Compared against `activeSettings`, NEVER the published `preset`/`ocrOn`: those two are what
+    /// `effectivePreset(for:)`/`effectiveVerbs(for:)` fall back to when a field is absent, and mid-
+    /// run they are the run's lock rather than the live values. Collapsing against the live value
+    /// while a run held a different lock would drop a field the row's effective settings still need.
+    ///
+    /// `rebuildScan`'s batch value is the constant every read site defaults to (`?? true`), so an
+    /// explicit `true` is indistinguishable from no entry and collapses on the same terms.
+    private func collapsingBatchMatches(_ override: RowOverride) -> RowOverride {
+        let settings = activeSettings
+        var collapsed = override
+        if collapsed.preset == settings.preset { collapsed.preset = nil }
+        if collapsed.ocr == settings.ocrOn { collapsed.ocr = nil }
+        if collapsed.rebuildScan == true { collapsed.rebuildScan = nil }
+        return collapsed
+    }
+
+    /// Replace one row's overrides; `nil` (or an override that says nothing the batch does not
+    /// already say) is "no override". The row's reservation follows, because both the delivered
+    /// suffix and the runner-up name derive from the row's effective settings (spec §6.5).
     func setOverride(_ override: RowOverride?, for id: ToolJob.ID) {
-        let normalised = (override?.isEmpty ?? true) ? nil : override
+        let collapsed = override.map(collapsingBatchMatches)
+        let normalised = (collapsed?.isEmpty ?? true) ? nil : collapsed
         guard overrides[id] != normalised else { return }
         let rebuildChanged = (overrides[id]?.rebuildScan ?? true) != (normalised?.rebuildScan ?? true)
         overrides[id] = normalised

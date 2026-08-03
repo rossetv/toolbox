@@ -9,7 +9,7 @@ import SwiftUI
 
 /// Per-file settings (handoff screen 04c), opened from a row's gear: one row's Quality/Rebuild/
 /// OCR overriding the batch (spec §6.1). Every control commits immediately through
-/// `model.setOverride(_:for:)` — there is no OK/Cancel here, only "Match the batch".
+/// `model.setOverride(_:for:)` — there is no OK/Cancel here, only "Reset override".
 struct PerFileSettingsPopover: View {
     @ObservedObject var model: QueueViewModel
     let jobID: ToolJob.ID
@@ -40,11 +40,19 @@ struct PerFileSettingsPopover: View {
                     + Text(estimateText(for: job)).themeFont(.body13).fontWeight(.semibold))
                     .foregroundStyle(Theme.Colors.text)
                 Spacer(minLength: Theme.Spacing.small)
-                LinkButton(title: "Match the batch") { model.setOverride(nil, for: jobID) }
+                // Hidden rather than removed while the row matches the batch: this footer row's
+                // height is set by the taller link, so dropping it out of the layout made the
+                // popover shrink and grow under the pointer as an override came and went.
+                LinkButton(title: "Reset override") { model.setOverride(nil, for: jobID) }
+                    .opacity(hasOverride ? 1 : 0)
+                    .allowsHitTesting(hasOverride)
+                    .accessibilityHidden(!hasOverride)
             }
         }
         .padding(10)
     }
+
+    private var hasOverride: Bool { model.overrides[jobID] != nil }
 
     private func header(_ job: ToolJob) -> some View {
         PopoverFileHeader(job: job, caption: "Overrides just this file") { dismiss() }

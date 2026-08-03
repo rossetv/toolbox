@@ -9,7 +9,7 @@ import Foundation
 
 /// One row's overrides of the batch settings (spec §6.1, design screen 04c). Sparse on purpose —
 /// an absent field means "match the batch", and clearing every field is what the popover's
-/// "Match the batch" link does.
+/// "Reset override" link does.
 ///
 /// There is deliberately **no `compress` field**: screen 04c offers exactly three controls
 /// (Quality, Rebuild the scan, Read the text), so the Compress verb is batch-level only. That is
@@ -28,7 +28,7 @@ struct RowOverride: Equatable {
         self.ocr = ocr
     }
 
-    /// True when the row overrides nothing — the state "Match the batch" restores, and the one
+    /// True when the row overrides nothing — the state "Reset override" restores, and the one
     /// this type stores as an absent entry rather than an empty one.
     var isEmpty: Bool { self == RowOverride() }
 }

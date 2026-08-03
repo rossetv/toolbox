@@ -851,3 +851,32 @@ no button at all. The precedent is deliberate, not an oversight; only its record
 
 **Spec:** .claude/specs/20260730-ui-redesign.md (§7 Problems)
 **Affects:** DESIGN.md (§11)
+
+## 2026-08-03 — A per-row field matching the batch is not an override; "Reset override"
+
+**Decision (human, during hands-on testing):** three linked changes to the per-file override
+surface (screen 04c).
+
+1. `QueueViewModel.setOverride` drops every field that says exactly what the batch already
+   says — `preset == preset`, `ocr == ocrOn`, `rebuildScan == true` (the value every read site
+   already defaults to). A row whose fields all match keeps no entry, so it is unmarked and
+   follows the batch again, including when the batch later moves. Collapsing happens on the
+   ROW's own writes only: changing the batch preset does not re-collapse existing overrides
+   (the change-quality sheet already clears per-row presets for the rows it includes).
+2. The footer link is renamed "Match the batch" → **"Reset override"** and is drawn only while
+   the row overrides something — hidden, not removed, so the popover's height does not move.
+3. A removed row leaves on a new `Theme.Motion.rowPoof` (0.24s ease-out: vertical squeeze,
+   −5pt drift, blur, fade) instead of a flat scale-0.96 fade.
+
+**Why:** walking a row's quality away from the batch and back left it flagged "Its own
+settings" with an accent gear while carrying settings identical to the batch's — the mark
+asserting something untrue. The rename follows: with the mark now meaning "this row really
+does differ", the link's job is to undo that, and a link offering to match a batch the row
+already matches is noise. Spec §6.1 names the old copy ("'Match the batch' clears them"); this
+entry is the record that the human superseded it.
+
+**Spec:** .claude/specs/20260730-ui-redesign.md (§6.1, §7 — copy superseded here)
+**Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift` (`collapsingBatchMatches`),
+`Sources/Toolbox/Queue/PerFileSettingsPopover.swift`, `Sources/Toolbox/Queue/QueueRowsView.swift`
+(`RowPoof`), `Sources/Toolbox/DesignSystem/Theme.swift` (`rowPoof`), DESIGN.md (§4.1, §8, §9 04c,
+§10, §11)
