@@ -21,8 +21,8 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
 | File | Role |
 |------|------|
 | `Sources/Toolbox/DesignSystem/Theme.swift` | `enum Theme` — Colors, Radius, Spacing, Shadow, Typography, Motion; `Color(light:dark:)` / `NSColor(hex:)` and the `themeFont(_:)` text helper |
-| `Sources/Toolbox/DesignSystem/Components.swift` | The app-wide primitives: `PrimaryButton`, `LinkButton`, `PDFThumbnail`, `SectionLabel`, `MotionButtonStyle` (the one press/hover style every button wears — plain rendering, `configuration.isPressed` scale, hover lift/fade, Reduce Motion gated) and the `clearsClickFocus()`/`pointingHandCursor()`/`continuousHover(_:)` view modifiers |
-| `Sources/Toolbox/DesignSystem/QueueComponents.swift` | Everything the redesigned window is built from: `VerbChip`, `QueueRow` (+ `Emphasis`, `QueueRowSizeColumn`), `StatusIndicator`, `CapsuleProgressBar`, `CapsuleBadge`, `OptionCard`, `VariantCard`, `BatchCard`, `SecondaryButton`, `SegmentedRow`, `DropdownRow`, `ToggleRow`, `RadioRow`, `CheckRow`, `PopoverChrome`, `SheetChrome`, `UpdateBannerChrome`, `QueueRowShimmer` (the active-row sweep, extracted so its `onAppear` fires when the row turns active). Its head comment carries the per-screen component map (which component each of the design's screens uses, and what is deliberately *not* a component) |
+| `Sources/Toolbox/DesignSystem/Components.swift` | The app-wide primitives: `PrimaryButton`, `LinkButton`, `PDFThumbnail`, `SectionLabel`, `MotionButtonStyle` (the one press/hover style every button wears — plain rendering, `configuration.isPressed` scale, hover lift/fade, Reduce Motion gated), `ParallaxAppIcon` + `parallaxStage(_:)` (the shared pointer-tilt app icon over glow+sheen, backed by `PointerTilt`/`ParallaxStageModifier`; used by the empty state and `AboutView`), `escapeToDismiss(_:)` (backed by `EscapeResponders`, the one app-wide Escape owner) and the `clearsClickFocus()`/`pointingHandCursor()`/`continuousHover(_:)` view modifiers |
+| `Sources/Toolbox/DesignSystem/QueueComponents.swift` | Everything the redesigned window is built from: `VerbChip`, `QueueRow` (+ `Emphasis`, `QueueRowSizeColumn`), `StatusIndicator`, `CapsuleProgressBar`, `CapsuleBadge`, `OptionCard`, `VariantCard`, `BatchCard`, `SecondaryButton`, `SegmentedRow`, `DropdownRow`, `ToggleRow`, `RadioRow`, `CheckRow`, `PopoverChrome` (pins its window's appearance via `NonVibrantWindowAppearance`, draws no tail — every caller now presents through a real system `.popover`), `SheetChrome`, `UpdateBannerChrome`, `QueueRowShimmer` (the active-row sweep, extracted so its `onAppear` fires when the row turns active). Its head comment carries the per-screen component map (which component each of the design's screens uses, and what is deliberately *not* a component) |
 
 ## Invariants
 
@@ -45,6 +45,24 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
   `.monospacedDigit()` universally — `DESIGN.md` requires every number in the UI to be
   monospaced-digit, so making it a property of the font helper rather than a per-call-site
   modifier is what stops a figure jittering as it counts.
+- **`EscapeResponders` is the one owner of "Escape closes the frontmost dismissable thing"**
+  (`CODE_GUIDELINES.md` §8.2): a single app-wide `NSEvent` key-down monitor over a stack of dismiss
+  actions (innermost last), installed on the first `escapeToDismiss(_:)` registration and torn down
+  when the stack empties. Registration order — not window identity — resolves nesting (a popover
+  opened from a sheet registers after it, so it answers first); a per-view monitor scoped by
+  comparing `event.window` was tried and abandoned because whether an `NSPopover`'s window is the
+  one a key-down is posted to is unsettled in this repo. No close button anywhere carries its own
+  `.keyboardShortcut(.cancelAction)` any more — that would be a second, ambiguous Escape owner.
+  **Not fully verified**: a key-code probe in this repo's UI-automation environment showed
+  ordinary keys reaching a monitor of this kind while keyCode 53 never arrived from either a
+  CGEvent driver or System Events — wants a check by hand.
+- **`PopoverChrome`'s window is pinned to the plain (non-vibrant) appearance**
+  (`NonVibrantWindowAppearance`, an `NSViewRepresentable`): a `.popover`'s host window comes up
+  `NSAppearanceNameVibrantDark`/`VibrantLight` by default, and AppKit resolves native control colours
+  (e.g. a `Toggle`) against that vibrancy — the visible casualty was the per-file popover's OCR
+  switch compositing to near-white over the chrome's opaque surface. `Theme.Colors`' own
+  `Color(light:dark:)` tokens are unaffected either way, since they already resolve down to
+  `.aqua`/`.darkAqua`.
 
 ## Gotchas
 
@@ -64,6 +82,14 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
 - **`VariantCard` carries no `action`/`Button`** — the scan-choice cards are the one
   place in the design with neither a pointer cursor nor a hover style; `isSelected`
   drives the ring/tint only, and the choice is made by the sheet's footer buttons.
+- `pointingHandCursor()` uses `.continuousHover`, not `.onHover`: a single `set()` on hover-in
+  survives only until AppKit next re-evaluates its cursor rects, and any view-tree change does
+  that — hovering a queue row's name used to insert the row's gear/× buttons on hover, which put
+  the arrow straight back with the pointer never having left. Re-asserting per move (empirically
+  traced with a cursor-inclusive `screencapture -C`) also covers a synthetic/warped pointer that
+  never crosses an AppKit tracking area. Now that `QueueRow`'s gear/remove-× are always mounted
+  (see [Queue](queue.md)), the specific row-name symptom is gone, but the modifier stays on
+  `continuousHover` as the general fix.
 - `Theme.Typography` line-heights are **not** reproduced per role from `DESIGN.md`:
   SwiftUI's `lineSpacing` adds to a font's natural leading rather than replacing the
   CSS line-box `DESIGN.md`'s values assume, so a naive px→points copy would be

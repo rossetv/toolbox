@@ -120,6 +120,32 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
   first delivered it, so a pure recompress records no batch at all.
 - **`QueueScreenState` is derived on every read, never stored** — the screen cannot
   disagree with the model it is computed from.
+- **Sheets present in-window, not as system sheets** — one `QueueSheet` enum (unchanged) now
+  drives a `.overlay` on `QueueView` (`sheetContent(_:)`) instead of `.sheet(item:)`: `SheetChrome`/
+  `AboutView` already draw their own dim + card, so a system sheet wrapped that in a second
+  window-shaped container. `.disabled(activeSheet != nil)` +
+  `.accessibilityHidden(activeSheet != nil)` on the screen underneath restore the modality a system
+  sheet gave for free (a focusable `QueueRow` answers Return by opening the file underneath the
+  dim), and `escapeToDismiss` (see [DesignSystem](design-system.md)) restores Escape. Every drop
+  entry point (`QueueDropDelegate.validateDrop`/`dropEntered`/`dropUpdated`/`performDrop`) now reads
+  a live `sheetPresented` closure, not just `performDrop`: `QueueView.shouldAcceptDrop(modalWindowPresented:sheetPresented:)`
+  refuses while either a modal panel (`FilePicker`) or an in-window sheet is up — `NSApp.modalWindow`
+  is nil for the latter by construction, so it must be passed explicitly.
+- **A row's override is judged by its EFFECTIVE settings, never by "does an `overrides[id]` entry
+  exist"** (`QueueViewModel.differsFromBatch(_:)`): the "Its own settings" mark (`QueueRowsView`),
+  the per-file popover's "Reset override" visibility, and the ready footer's divergence line
+  (`QueueFooterView.readySubline`) all read it. `setOverride(_:for:)` also collapses any field that
+  now says exactly what the batch says (`collapsingBatchMatches`, compared against `activeSettings`
+  — never the live published `preset`/`ocrOn`, which are wrong mid-run) — including an `ocr: false`
+  that `effectiveVerbs` floors back on when Compress is off — so a row that has drifted back to the
+  batch keeps no entry and re-follows the batch if it moves again.
+- **Change quality clears a row's PRESET override on selection, never its OCR/rebuild fields**
+  (`ChangeQualitySheet.applySelectionToIncludedRows`, called on `.onAppear` and from every card):
+  `recompressState`/`recompressPrediction` key off `effectivePreset(for:)`, so an overridden row's
+  own preset silently outranked the sheet's choice until this cleared it. The full restore set on
+  every non-confirmed exit is now three snapshots — `initialPreset`, `initialExclusions` **and**
+  `initialOverrides` (`ChangeQualitySheet.restoreOverrides`, keyed over the union of the snapshot's
+  and the live `overrides`' keys so a row added while the sheet was open restores to `nil`).
 
 ## Gotchas
 
@@ -141,6 +167,18 @@ own engine-facing surface of `QueueViewModel`; this doc owns the queue-wide mech
   `QueueViewModel.ocrOptions`' setter already clamps it (`clampingAccuracy`): the
   control must not dangle a choice the model would silently override underneath the
   user.
+- A removed row exits through `RowPoof` (squeeze + drift-up + blur + fade,
+  `Theme.Motion.rowPoof` = 0.24s — see [DesignSystem](design-system.md)) rather than the plain
+  scale-down it used before; Reduce Motion drops to a plain fade with no transform.
+- `QueueRow`'s gear (`gearIsMarked`, driven by `differsFromBatch`) and remove-× are now always
+  mounted — the gear's slot is reserved and only its opacity/scale animate on hover so the trailing
+  size column never shifts sideways, and the remove-× sits at the row's trailing end at rest
+  (`textTertiary`, no disc) rather than being hover-inserted (see [DesignSystem](design-system.md)
+  `QueueRow`). Only the thumbnail + name open the file now (`RowOpenModifier` moved off the whole
+  row onto just those two) — a click in the row's empty middle no longer launches Preview.
+- The finished/problems header (`QueueHeaderView`) now carries the same `⊗ Clear` link as the ready
+  header, gated on the same `model.canClearFinished` — before this, clearing a finished batch
+  required adding more files to reach the Ready screen's Clear.
 
 ## Related
 
