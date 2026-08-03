@@ -54,7 +54,10 @@ struct PerFileSettingsPopover: View {
         .padding(10)
     }
 
-    private var hasOverride: Bool { model.overrides[jobID] != nil }
+    /// The same question the row's mark asks (`QueueViewModel.differsFromBatch`), not "is there an
+    /// entry in `overrides`": offering to reset an override the row does not effectively have is
+    /// the popover contradicting the row it belongs to.
+    private var hasOverride: Bool { model.differsFromBatch(jobID) }
 
     private func header(_ job: ToolJob) -> some View {
         PopoverFileHeader(job: job, caption: "Overrides just this file") { dismiss() }

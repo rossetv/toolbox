@@ -909,8 +909,14 @@ final class QueueViewModel: ObservableObject {
     /// the state was reached.
     func differsFromBatch(_ id: ToolJob.ID) -> Bool {
         let settings = activeSettings
-        return effectivePreset(for: id) != settings.preset
-            || effectiveVerbs(for: id).ocr != settings.ocrOn
+        let verbs = effectiveVerbs(for: id)
+        // Each leg gated on the verb that gives it effect. A quality override on a Compress-off
+        // batch is the preset twin of the floored `ocr` case below it: nothing reads
+        // `effectivePreset` outside `if verbs.compress`, the delivered name keys on the verb set
+        // rather than the preset, and the row shows no estimate — so marking the row would again
+        // announce a divergence that changes nothing.
+        return (verbs.compress && effectivePreset(for: id) != settings.preset)
+            || verbs.ocr != settings.ocrOn
             || (overrides[id]?.rebuildScan ?? true) != true
     }
 
@@ -939,6 +945,10 @@ final class QueueViewModel: ObservableObject {
         // footer line announcing a divergence — while its effective settings are the batch's, and
         // the toggle would sit off while OCR ran anyway.
         if collapsed.ocr == false, !settings.compressOn { collapsed.ocr = nil }
+        // Same treatment for the preset: with Compress off it is never read, so storing it would
+        // leave a field that does nothing waiting to matter if the verb ever comes back on — and
+        // the row wearing a mark for it in the meantime.
+        if !settings.compressOn { collapsed.preset = nil }
         return collapsed
     }
 

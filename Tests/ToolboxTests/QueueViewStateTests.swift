@@ -853,6 +853,24 @@ final class QueueViewStateTests: XCTestCase {
                        "and the footer must not announce a divergence that no longer exists")
     }
 
+    /// The preset twin of the floored-OCR case: with Compress off, nothing reads the row's
+    /// effective preset — no estimate, no delivered name keyed on it — so a quality override
+    /// changes nothing that runs and must not mark the row.
+    func testQualityOverrideOnACompressOffBatchDoesNotMarkTheRow() throws {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        model.compressOn = false
+        model.ocrOn = true
+        model.add([try Fixtures.bornDigitalPDF()])
+        let job = try XCTUnwrap(model.jobs.first)
+
+        model.setOverride(RowOverride(preset: .smallestSize), for: job.id)
+
+        XCTAssertNil(QueueRowsView.describe(job: job, model: model, state: .ready).metaAccent,
+                     "a quality nobody reads is not settings of the row's own")
+        XCTAssertEqual(QueueFooterView.readySubline(model: model),
+                       "Your originals stay exactly where they are.")
+    }
+
     /// The ready footer's subline notes the divergence iff any row has its own settings — singular
     /// wording is the handoff's pinned string (DESIGN.md §9 04c); several overrides get a
     /// truthful plural, recorded as a divergence (no plural form is pinned).
