@@ -164,7 +164,7 @@ struct QueueView: View {
             case .consent(let id): ScanConsentSheet(model: model, jobID: id)
             }
         }
-        .escapeToDismiss(close)
+        .escapeToDismiss(depth: .sheet, close)
     }
 
     /// Screens 03/05/06/10 — header, rows, footer. One property rather than an inline `else`

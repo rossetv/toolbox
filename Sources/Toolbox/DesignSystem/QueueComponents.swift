@@ -1347,7 +1347,11 @@ struct CheckRow: View {
                     // A tick that lands slightly over-size and settles reads as a press being
                     // answered; the empty box sits a hair under, so ticking grows into place.
                     .scaleEffect(isChecked ? 1 : 0.92)
+                // Truncates rather than wraps, like `PopoverFileHeader`'s own filename: this row
+                // sits in a fixed-width popover, so a long name would otherwise push the list
+                // taller line by line.
                 Text(title).themeFont(.body13).foregroundStyle(Theme.Colors.text)
+                    .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
@@ -1391,7 +1395,10 @@ struct PopoverChrome<Content: View>: View {
         content()
             // Escape closes a popover, as it does everywhere else in macOS. `dismiss()` is the
             // right call here — unlike the in-window sheets, a popover IS a real presentation.
-            .escapeToDismiss { dismiss() }
+            // PRECONDITION: every caller presents this chrome inside a real `.popover`. Used
+            // inline instead, `dismiss()` has no presentation to close and AppKit falls back to
+            // closing the window it is the root of — Escape would shut the main window.
+            .escapeToDismiss(depth: .popover) { dismiss() }
             .background(NonVibrantWindowAppearance())
             .padding(7)
             .frame(width: width)

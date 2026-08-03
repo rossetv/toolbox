@@ -545,15 +545,25 @@ private struct ParallaxStageModifier: ViewModifier {
 
 /// The one owner of "Escape closes the frontmost dismissable thing" (`CODE_GUIDELINES.md` §8.2).
 ///
-/// A single app-wide key-down monitor over a STACK of dismiss actions, innermost last. Escape
-/// calls the top of the stack and nobody else. The stack — not window identity — is what makes a
-/// nested presentation work: a popover opened from a sheet registers after the sheet, so it
-/// answers first, and the sheet answers again only once the popover has gone. An earlier attempt
-/// scoped a per-view monitor by comparing `event.window` against the view's host window; whether
-/// an `NSPopover`'s window is the one a key-down is posted to is not something this repo can
-/// settle (this project's own memory records that a popover never takes key status), and a fix
-/// resting on an unsettled runtime fact is a guess. Registration order is plain SwiftUI lifecycle,
-/// which is settled.
+/// A single app-wide key-down monitor over a STACK of dismiss actions. Escape calls the frontmost
+/// registered dismisser and nobody else: entries carry an explicit `Depth` (a sheet is 0, a
+/// popover 1), the deepest wins, and registration order breaks ties. An earlier attempt scoped a
+/// per-view monitor by comparing `event.window` against the view's host window; whether an
+/// `NSPopover`'s window is the one a key-down is posted to is not something this repo can settle
+/// (this project's own memory records that a popover never takes key status), and a fix resting on
+/// an unsettled runtime fact is a guess.
+///
+/// Depth rather than registration order ALONE, which was the first shape of this: order only
+/// matches nesting while every presentation opens inside the one below it, and this app can break
+/// that — a consent sheet arrives mid-run (`QueueView`'s `pendingConsents` observer) while a
+/// versions popover is open, registering *after* the popover it sits behind. Apple documents
+/// `onAppear`/`onDisappear` timing as "depends on the specific view type", so leaning on order for
+/// correctness would have been the same class of guess as the window check.
+///
+/// Known gap, accepted: `pop` runs only from `onDisappear`. A registration orphaned by a teardown
+/// that never delivers one would leave the monitor installed and swallowing every Escape in the
+/// app. Nothing observed — reported here rather than papered over with a window-liveness check,
+/// which is the plumbing this design exists to avoid.
 ///
 /// A monitor rather than `.keyboardShortcut(.cancelAction)` on a close button: the in-window
 /// sheets are not real presentations, and every control in them clears its own click focus
@@ -565,25 +575,47 @@ private struct ParallaxStageModifier: ViewModifier {
 /// ordinary keys reaching a monitor of this kind while keyCode 53 never arrived from EITHER a
 /// CGEvent-based driver or `System Events`, so something upstream of the app swallows Escape
 /// there. The mechanism is ordinary AppKit; it wants a check by hand.
+/// How far in front a dismissable presentation sits. Two real values, no more: everything this app
+/// presents is one or the other.
+enum EscapeDepth: Int, Comparable {
+    case sheet = 0
+    case popover = 1
+
+    static func < (lhs: EscapeDepth, rhs: EscapeDepth) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
 @MainActor
 private enum EscapeResponders {
     private struct Entry {
         let id: UUID
+        let depth: EscapeDepth
+        /// Ties within a depth go to whoever registered last.
+        let sequence: Int
         let action: () -> Void
     }
 
     private static var stack: [Entry] = []
     private static var monitor: Any?
+    private static var nextSequence = 0
 
-    static func push(_ id: UUID, action: @escaping () -> Void) {
-        stack.append(Entry(id: id, action: action))
+    static func push(_ id: UUID, depth: EscapeDepth, action: @escaping () -> Void) {
+        nextSequence += 1
+        stack.append(Entry(id: id, depth: depth, sequence: nextSequence, action: action))
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard event.keyCode == 53 else { return event }   // Escape
-            guard let top = stack.last else { return event }
-            top.action()
-            return nil                                        // handled: stop dispatch
+            // AppKit documents no queue for a local monitor's handler; it delivers on the main
+            // thread in practice, and this asserts that rather than assuming it silently.
+            return MainActor.assumeIsolated {
+                guard let top = frontmost else { return event }
+                top.action()
+                return nil                                    // handled: stop dispatch
+            }
         }
+    }
+
+    private static var frontmost: Entry? {
+        stack.max { ($0.depth, $0.sequence) < ($1.depth, $1.sequence) }
     }
 
     static func pop(_ id: UUID) {
@@ -595,6 +627,7 @@ private enum EscapeResponders {
 }
 
 private struct EscapeToDismiss: ViewModifier {
+    let depth: EscapeDepth
     let action: () -> Void
 
     /// Identity for this registration, stable across body passes.
@@ -602,15 +635,17 @@ private struct EscapeToDismiss: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onAppear { EscapeResponders.push(id, action: action) }
+            .onAppear { EscapeResponders.push(id, depth: depth, action: action) }
             .onDisappear { EscapeResponders.pop(id) }
     }
 }
 
 extension View {
-    /// Close this on Escape, the way a system sheet does for free.
-    func escapeToDismiss(_ action: @escaping () -> Void) -> some View {
-        modifier(EscapeToDismiss(action: action))
+    /// Close this on Escape, the way a system sheet does for free. `depth` says how far in front
+    /// this presentation sits, so a popover opened from a sheet answers before the sheet whatever
+    /// order the two happened to register in.
+    func escapeToDismiss(depth: EscapeDepth, _ action: @escaping () -> Void) -> some View {
+        modifier(EscapeToDismiss(depth: depth, action: action))
     }
 
     /// Track the pointer across this view and publish it as the ±1 offset from the view's centre
