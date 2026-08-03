@@ -543,8 +543,9 @@ newer version {version} is available", trailing a `LinkButton` "See what changed
 release's tag page) + `PrimaryButton` "Update" + a × dismiss (persists per-version).
 **About** (`⋯` menu and app menu): `SheetChrome` (330pt) — the app icon at 84pt (same
 parallax), "Toolbox" (19/semibold), "Version {version} · macOS 14 or later" (12.5,
-`textTertiary`), "Free PDF tools that never phone home. / No account, no subscription, no
-watermark." (`body13`, `textSecondary`, centred), links "Source Code" · "Licence" ·
+`textTertiary`), "Compress PDFs and make scans searchable. / Free forever, entirely on your
+Mac." (`body13`, `textSecondary`, centred, `lineLimit(2)` — each line must fit the 330pt card
+on one line), links "Source Code" · "Licence" ·
 "Contact me", "© 2026 Vilmar Rosset · AGPL-3.0" (11, `textTertiary`), × close.
 
 ### 12 — Dark
@@ -617,7 +618,7 @@ stands for.
 | Recent batches — controls | "Clear list" / "Done" |
 | Update banner | "A newer version {version} is available" / "See what changed" / "Update" |
 | About — identity | "Toolbox" / "Version {version} · macOS 14 or later" |
-| About — tagline | "Free PDF tools that never phone home. / No account, no subscription, no watermark." |
+| About — tagline | "Compress PDFs and make scans searchable. / Free forever, entirely on your Mac." (two rendered lines, never more) |
 | About — links | "Source Code" · "Licence" · "Contact me" |
 | About — copyright | "© 2026 Vilmar Rosset · AGPL-3.0" |
 

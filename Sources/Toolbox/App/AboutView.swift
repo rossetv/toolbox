@@ -50,10 +50,15 @@ struct AboutView: View {
                     .monospacedDigit()
                     .foregroundStyle(Theme.Colors.textTertiary)
 
-                Text("Free PDF tools that never phone home.\nNo account, no subscription, no watermark.")
+                // Two lines, and each short enough to render as one at the card's 330pt: the
+                // previous pair read as four wrapped lines and unbalanced the sheet. `lineLimit`
+                // is the guard rather than the mechanism — copy that outgrows it should be cut,
+                // not truncated.
+                Text("Compress PDFs and make scans searchable.\nFree forever, entirely on your Mac.")
                     .themeFont(.body13)
                     .foregroundStyle(Theme.Colors.textSecondary)
                     .multilineTextAlignment(.center)
+                    .lineLimit(2)
                     .padding(.top, 2)
 
                 // No `.focusEffectDisabled()` here any more: this view is presented inside the main
