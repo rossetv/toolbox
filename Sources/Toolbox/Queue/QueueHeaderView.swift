@@ -298,6 +298,10 @@ struct QueueHeaderView: View {
                             in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .menuStyle(.borderlessButton)
+        // The ⋯ IS the affordance; AppKit's disclosure chevron beside it is redundant chrome and
+        // widens the square hit area into a lopsided rectangle. (The save-destination menu keeps
+        // its chevron — there the "⌄" is part of the labelled control, DESIGN.md §9 03.)
+        .menuIndicator(.hidden)
         .fixedSize()
         .continuousHover($isHoveringEllipsis)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringEllipsis)

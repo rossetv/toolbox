@@ -396,7 +396,8 @@ Start." (`textSecondary`).
 
 Header: "{n} files" (`windowHeadline`) + total size (`body13`, `textTertiary`),
 baseline-aligned; trailing `LinkButton`s "+ Add" / "⊗ Clear", a 28pt `⋯` menu (native
-`Menu`). Verb-chip row: `VerbChip` Compress (active, reads "✕→ Compress · {preset} ⌄"),
+`Menu`, indicator hidden — the glyph is the whole affordance). Verb-chip row: `VerbChip`
+Compress (active, reads "✕→ Compress · {preset} ⌄"),
 `VerbChip` OCR (inactive by default). Trailing: a folder icon + "Saving beside the
 originals ⌄" (native `Menu`; alternate: chosen folder name). Rows: `QueueRow` with
 `QueueRowSizeColumn` trailing — name (`rowName`), one meta line (`meta`) describing
