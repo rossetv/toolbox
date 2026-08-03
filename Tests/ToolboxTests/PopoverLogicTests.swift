@@ -525,22 +525,22 @@ final class PopoverLogicTests: XCTestCase {
     /// instead of the stage, which put the input near ±5 and sheared the icon off its stack.
     func testEmptyStateParallaxNormalisesAgainstTheStageAndClamps() {
         let stage = CGSize(width: 900, height: 508)
-        let centre = EmptyStateView.normalise(CGPoint(x: 450, y: 254), in: stage)
+        let centre = ParallaxAppIcon.normalise(CGPoint(x: 450, y: 254), in: stage)
         XCTAssertEqual(centre.x, 0, accuracy: 0.0001)
         XCTAssertEqual(centre.y, 0, accuracy: 0.0001)
 
-        let corner = EmptyStateView.normalise(CGPoint(x: 900, y: 0), in: stage)
+        let corner = ParallaxAppIcon.normalise(CGPoint(x: 900, y: 0), in: stage)
         XCTAssertEqual(corner.x, 1, accuracy: 0.0001)
         XCTAssertEqual(corner.y, -1, accuracy: 0.0001)
 
         // `onContinuousHover` can report a location just outside the bounds; it must not push the
         // tilt past the handoff's envelope.
-        let outside = EmptyStateView.normalise(CGPoint(x: 4000, y: -900), in: stage)
+        let outside = ParallaxAppIcon.normalise(CGPoint(x: 4000, y: -900), in: stage)
         XCTAssertEqual(outside.x, 1, accuracy: 0.0001)
         XCTAssertEqual(outside.y, -1, accuracy: 0.0001)
 
         // A zero-sized stage (first layout pass) must rest, not divide by zero.
-        XCTAssertEqual(EmptyStateView.normalise(CGPoint(x: 10, y: 10), in: .zero), .zero)
+        XCTAssertEqual(ParallaxAppIcon.normalise(CGPoint(x: 10, y: 10), in: .zero), .zero)
     }
 
     func testRecentBatchesDayLabelTodayYesterdayAndOlder() {

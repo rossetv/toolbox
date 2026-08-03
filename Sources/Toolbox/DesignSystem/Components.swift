@@ -383,7 +383,211 @@ struct SectionLabel: View {
     }
 }
 
+// MARK: - ParallaxAppIcon
+
+/// The real app icon leaning towards the pointer, over an accent glow that slides the opposite way
+/// and under a specular sheen that follows it — the handoff's three `[data-parallax-*]` layers
+/// (DESIGN.md §8: ~90ms follow, ±11°/±13° rotation, ±7px translate, 1.05 scale, glow in
+/// counter-phase). Screens 01 and About both draw it, at different sizes, which is why it lives
+/// here rather than inside either of them.
+///
+/// The sheen is MASKED to the icon's own artwork. Unmasked it slides off the icon at full tilt and
+/// renders as a stray pale rounded square beside it, which is what the empty state was showing.
+/// Glow and sheen are attached outside the tilt so they stay flat, as the handoff's
+/// siblings-in-a-perspective-box markup has them, and via `background`/`overlay` so the glow can
+/// overflow without widening the layout slot.
+///
+/// `pointer` is the ±1 offset from the centre of whatever stage the caller tracks (see
+/// `parallaxStage(_:)`), `nil` at rest — every layer is a pure function of it, so "at rest" is one
+/// state rather than three. Reduce Motion simply leaves it `nil`.
+struct ParallaxAppIcon: View {
+    var size: CGFloat = 76
+    var pointer: CGPoint?
+
+    /// Every offset below is expressed against the 76pt empty-state icon the handoff specifies, so
+    /// a bigger instance (the About sheet's 84pt) scales its glow and sheen with it rather than
+    /// wearing the smaller icon's travel.
+    private var scale: CGFloat { size / 76 }
+
+    private var artwork: Image {
+        Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high)
+    }
+
+    var body: some View {
+        let p = pointer ?? .zero
+        return artwork
+            .frame(width: size, height: size)
+            .overlay { sheen(p).mask(artwork) }
+            .scaleEffect(pointer == nil ? 1 : 1.05)
+            .modifier(PointerTilt(dx: p.x, dy: p.y))
+            .background { glow(p) }
+            // Decorative in both homes: the headline beneath it in the empty state, and the app
+            // name beneath it in About, already say what it is.
+            .accessibilityHidden(true)
+    }
+
+    private func glow(_ p: CGPoint) -> some View {
+        Circle()
+            .fill(RadialGradient(
+                colors: [Theme.Colors.accent.opacity(0.26), Theme.Colors.accent.opacity(0)],
+                center: .center,
+                // 66% of the CSS gradient's farthest-corner radius (52√2) on a 104px box.
+                startRadius: 0, endRadius: 48.54 * scale
+            ))
+            .frame(width: 104 * scale, height: 104 * scale)
+            .scaleEffect(1 + abs(p.x) * 0.12)
+            // Resting centre sits at 58% of the icon box — 6.08px below its middle at 76pt.
+            .offset(x: -p.x * 16 * scale, y: 6.08 * scale - p.y * 12 * scale)
+    }
+
+    private func sheen(_ p: CGPoint) -> some View {
+        Rectangle()
+            .fill(LinearGradient(
+                stops: [.init(color: .white.opacity(0.6), location: 0),
+                        .init(color: .white.opacity(0), location: 0.48)],
+                // The handoff's 125° gradient line across the icon's square.
+                startPoint: UnitPoint(x: -0.071, y: 0.100),
+                endPoint: UnitPoint(x: 1.071, y: 0.900)
+            ))
+            .opacity(pointer == nil ? 0 : 0.16 + min(1, abs(p.x) + abs(p.y)) * 0.42)
+            .offset(x: p.x * 22 * scale, y: p.y * 16 * scale)
+            // Scaled past the icon so a full-tilt offset still covers it — the mask, not the
+            // rectangle's own edges, is what shapes this layer.
+            .scaleEffect(2)
+    }
+
+    /// Pointer offset from the stage centre, ±1 at the edges — the handoff's own normalisation,
+    /// clamped because `onContinuousHover` can report a location just outside the bounds.
+    static func normalise(_ location: CGPoint, in size: CGSize) -> CGPoint {
+        guard size.width > 0, size.height > 0 else { return .zero }
+        return CGPoint(x: min(1, max(-1, (location.x - size.width / 2) / (size.width / 2))),
+                       y: min(1, max(-1, (location.y - size.height / 2) / (size.height / 2))))
+    }
+}
+
+/// The handoff's `[data-parallax-icon]` transform, reproduced exactly: `rotateX(-dy·11°)
+/// rotateY(dx·13°) translate3d(dx·7px, dy·7px, 0)` inside a **700px-perspective** container.
+///
+/// Spec §7 names `rotation3DEffect`; this composes the same rotation directly because
+/// `rotation3DEffect`'s `perspective` argument has no documented unit — there is no value that
+/// provably corresponds to the handoff's `perspective:700px`, and chaining two of them applies
+/// two separate projections, which is what read as a shear. `m34 = -1/700` is the same number
+/// the CSS states, and it is the near/far foreshortening that makes the tilt read as depth.
+private struct PointerTilt: GeometryEffect {
+    var dx: Double
+    var dy: Double
+
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(dx, dy) }
+        set { (dx, dy) = (newValue.first, newValue.second) }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        // Each `CATransform3D*` call prepends, so the applied order is translate → rotateY →
+        // rotateX → perspective: the CSS transform list read right to left.
+        var t = CATransform3DIdentity
+        t.m34 = -1 / 700
+        t = CATransform3DRotate(t, -dy * 11 * .pi / 180, 1, 0, 0)
+        t = CATransform3DRotate(t, dx * 13 * .pi / 180, 0, 1, 0)
+        t = CATransform3DTranslate(t, dx * 7, dy * 7, 0)
+        // CSS `transform-origin: 50% 50%`: rotate about the icon's middle, not its top-left.
+        let toCentre = CGAffineTransform(translationX: -size.width / 2, y: -size.height / 2)
+        return ProjectionTransform(toCentre)
+            .concatenating(ProjectionTransform(t))
+            .concatenating(ProjectionTransform(toCentre.inverted()))
+    }
+}
+
+/// Backs `parallaxStage(_:)`. Owns the stage measurement so neither caller needs a `GeometryReader`
+/// wrapped round its own layout just to know how big it is.
+private struct ParallaxStageModifier: ViewModifier {
+    @Binding var pointer: CGPoint?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var stageSize: CGSize = .zero
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { stageSize = geo.size }
+                        .onChange(of: geo.size) { _, newValue in stageSize = newValue }
+                }
+            }
+            .contentShape(Rectangle())
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                    guard !reduceMotion else { return }
+                    // ~90ms follow (DESIGN.md §8) — near-immediate, not the exit-only settle spring.
+                    withAnimation(.easeOut(duration: 0.09)) {
+                        pointer = ParallaxAppIcon.normalise(location, in: stageSize)
+                    }
+                case .ended:
+                    // Deliberately not gated on Reduce Motion: turning it on mid-hover must still
+                    // let the icon come to rest rather than freeze mid-tilt.
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { pointer = nil }
+                }
+            }
+    }
+}
+
+#Preview("ParallaxAppIcon") {
+    HStack(spacing: 40) {
+        ParallaxAppIcon(size: 76, pointer: nil)
+        ParallaxAppIcon(size: 76, pointer: CGPoint(x: 1, y: -1))
+        ParallaxAppIcon(size: 84, pointer: CGPoint(x: -0.5, y: 0.5))
+    }
+    .padding(50)
+    .background(Theme.Colors.surface)
+}
+
+/// Backs `escapeToDismiss(_:)`. A local key-down monitor, installed only while the view is on
+/// screen, rather than a `.keyboardShortcut(.cancelAction)` button: the in-window sheets are not
+/// real presentations, and every control in them clears its own click focus (DESIGN.md §6's
+/// stray-ring rule), so the window frequently has no first responder for SwiftUI to route a
+/// shortcut through. A monitor sees the key regardless of who holds focus, and consuming the event
+/// stops it reaching anything behind.
+///
+/// NOT verified in the UI-automation environment this was written in: a key-code probe showed
+/// ordinary keys reaching this monitor while keyCode 53 never arrived from EITHER a CGEvent-based
+/// driver or `System Events`, so something upstream of the app swallows Escape there. The
+/// mechanism is ordinary AppKit; it wants a check by hand.
+private struct EscapeToDismiss: ViewModifier {
+    let action: () -> Void
+
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    guard event.keyCode == 53 else { return event }   // Escape
+                    action()
+                    return nil
+                }
+            }
+            .onDisappear {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                monitor = nil
+            }
+    }
+}
+
 extension View {
+    /// Close this on Escape, the way a system sheet does for free.
+    func escapeToDismiss(_ action: @escaping () -> Void) -> some View {
+        modifier(EscapeToDismiss(action: action))
+    }
+
+    /// Track the pointer across this view and publish it as the ±1 offset from the view's centre
+    /// that `ParallaxAppIcon` leans on — `nil` while the pointer is away. The stage is the whole
+    /// area the icon reacts to, which is deliberately larger than the icon itself.
+    func parallaxStage(_ pointer: Binding<CGPoint?>) -> some View {
+        modifier(ParallaxStageModifier(pointer: pointer))
+    }
+
     /// Keep a mouse click from leaving this control keyboard-focused — the recurring "stray blue
     /// square" defect. On modern macOS a click on any focusable SwiftUI control (plain-style
     /// buttons included) makes it first responder, and the system then draws a keyboard focus
@@ -434,16 +638,20 @@ private struct ClearsClickFocusModifier: ViewModifier {
 /// rest of the session. `set()` has no stack to unbalance, and the `@State` flag plus
 /// `onDisappear` make sure a torn-down view still restores the arrow.
 ///
-/// Deliberately stays on `.onHover`, not `.continuousHover`: `onContinuousHover`'s `.active`
-/// fires per mouse-move, so converting would call `NSCursor.set()` on every pointer motion
-/// inside the control; the hand cursor is therefore still dead for a warped/synthetic pointer,
-/// unaddressed here.
+/// Uses `.continuousHover`, whose `.active` phase fires per mouse-move, so the cursor is RE-SET on
+/// every motion inside the control. That repetition is the point, not waste. EMPIRICAL (traced live
+/// with a cursor-inclusive `screencapture -C`): a single `set()` on hover-in survives only until
+/// AppKit next re-evaluates its cursor rects, and any change to the view tree does that — hovering
+/// a queue row's name inserts the row's gear and × buttons, which put the arrow straight back while
+/// the pointer had not moved off the name. The gear read as "working" only because hovering it
+/// changes nothing. Re-asserting per move also fixes the synthetic/warped pointer that never
+/// crosses an AppKit tracking area at all (see `continuousHover`'s own note).
 private struct PointingHandCursorModifier: ViewModifier {
     @State private var isShowingHandCursor = false
 
     func body(content: Content) -> some View {
         content
-            .onHover { isInside in
+            .continuousHover { isInside in
                 isShowingHandCursor = isInside
                 (isInside ? NSCursor.pointingHand : NSCursor.arrow).set()
             }
