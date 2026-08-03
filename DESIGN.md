@@ -193,7 +193,10 @@ All defined in `Sources/Toolbox/DesignSystem/QueueComponents.swift`.
 - **`CheckRow`** — a plain checkbox row ("Choose which files…").
 - **`PopoverChrome` / `SheetChrome` / `UpdateBannerChrome`** — shared containers.
   Popover: fade + scale + rise entrance (anchor and tail are the system popover's own —
-  `PopoverChrome` draws neither). Sheet: dim overlay, centred,
+  `PopoverChrome` draws neither), and it pins its window to the plain, non-vibrant
+  appearance: a popover window comes up vibrant, which AppKit resolves NATIVE control
+  colours against, and the system switch's off-state track then composited to near-white
+  over the chrome's own opaque surface. Sheet: dim overlay, centred,
   fade + rise + scale entrance. Update banner: full-width strip under the titlebar,
   slide-down entrance. All three gate their entrance transform on Reduce Motion
   (appear instantly, no transform, when it is on).

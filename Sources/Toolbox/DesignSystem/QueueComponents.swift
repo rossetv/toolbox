@@ -1388,6 +1388,7 @@ struct PopoverChrome<Content: View>: View {
             // Escape closes a popover, as it does everywhere else in macOS. `dismiss()` is the
             // right call here — unlike the in-window sheets, a popover IS a real presentation.
             .escapeToDismiss { dismiss() }
+            .background(NonVibrantWindowAppearance())
             .padding(7)
             .frame(width: width)
             .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
@@ -1403,6 +1404,37 @@ struct PopoverChrome<Content: View>: View {
                 guard !reduceMotion else { hasAppeared = true; return }
                 withAnimation(.easeOut(duration: Theme.Motion.popover)) { hasAppeared = true }
             }
+    }
+}
+
+/// Pins the host window to the plain (non-vibrant) appearance matching its own light/dark.
+///
+/// A `.popover`'s window comes up as `NSAppearanceNameVibrantDark`/`VibrantLight` — its frame view
+/// is an `NSVisualEffectView` — and AppKit resolves NATIVE control colours against that vibrancy.
+/// The system switch inside the per-file popover was the visible casualty: its off-state track
+/// composited to near-white over the chrome's opaque surface, knob and track indistinguishable, so
+/// the control read as broken (verified at runtime: the popover window logged
+/// `NSAppearanceNameVibrantDark`). `PopoverChrome` paints its own opaque background, so the
+/// vibrancy behind it buys nothing — dropping it costs no visual and makes every native control in
+/// a popover draw exactly as it does in the main window. Our own `Color(light:dark:)` tokens are
+/// unaffected either way: they already `bestMatch` vibrant names down to `.aqua`/`.darkAqua`.
+private struct NonVibrantWindowAppearance: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { AppearancePinningView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class AppearancePinningView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            // The light/dark question is asked of the APPLICATION, never of the window being
+            // pinned: once pinned, that window's `effectiveAppearance` reports back whatever this
+            // code last wrote, so a popover window SwiftUI reuses across presentations would stay
+            // latched to the appearance the system had the first time it opened.
+            let name: NSAppearance.Name =
+                NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .darkAqua : .aqua
+            guard window.appearance?.name != name else { return }
+            window.appearance = NSAppearance(named: name)
+        }
     }
 }
 
