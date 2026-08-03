@@ -141,7 +141,10 @@ struct QueueFooterView: View {
     /// own per-file settings, else the plain originals-are-safe reassurance. Only the singular
     /// wording is pinned by the handoff; a truthful plural is a recorded divergence.
     static func readySubline(model: QueueViewModel) -> String {
-        let overridden = model.jobs.filter { model.overrides[$0.id] != nil }.count
+        // `differsFromBatch`, not a count of `overrides` entries: a stored field the batch has
+        // since floored away changes nothing about the run, and a footer line announcing a
+        // divergence that no longer exists is the same lie the row's mark used to tell.
+        let overridden = model.jobs.filter { model.differsFromBatch($0.id) }.count
         guard overridden > 0 else { return "Your originals stay exactly where they are." }
         if overridden == 1 {
             return "One file has its own settings, so its estimate differs from the batch."

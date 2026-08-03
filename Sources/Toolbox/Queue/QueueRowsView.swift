@@ -328,7 +328,7 @@ struct QueueRowsView: View {
         }
         // Per-file override (spec §7, DESIGN.md §9 04c): an overridden row's meta gets the
         // accent "Its own settings" — the popover's own "Reset override" is what clears it.
-        let isOverridden = model.overrides[job.id] != nil
+        let isOverridden = model.differsFromBatch(job.id)
         let metaAccent: (text: String, colour: Color)? = isOverridden
             ? (text: "Its own settings", colour: Theme.Colors.accent) : nil
         guard model.effectiveVerbs(for: job.id).compress else {

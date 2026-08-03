@@ -900,6 +900,20 @@ final class QueueViewModel: ObservableObject {
         return (settings.compressOn, ocr)
     }
 
+    /// Whether this row's EFFECTIVE settings differ from the batch's — the question the row's
+    /// "Its own settings" mark and the ready footer's divergence line actually ask. NOT the same
+    /// as "an entry exists in `overrides`": `collapsingBatchMatches` can only judge a field as it
+    /// is written, and the batch moves afterwards — turning Compress off floors a stored
+    /// `ocr: false` back on (`effectiveVerbs`), at which point the entry is still there but the row
+    /// runs exactly what the batch runs. Asking the effective values keeps the mark honest however
+    /// the state was reached.
+    func differsFromBatch(_ id: ToolJob.ID) -> Bool {
+        let settings = activeSettings
+        return effectivePreset(for: id) != settings.preset
+            || effectiveVerbs(for: id).ocr != settings.ocrOn
+            || (overrides[id]?.rebuildScan ?? true) != true
+    }
+
     /// A field that says exactly what the batch already says is NOT an override: it is dropped
     /// here, so a row whose every field matches the batch keeps no entry at all and goes back to
     /// following the batch — including when the batch later moves. Without this, walking a row's

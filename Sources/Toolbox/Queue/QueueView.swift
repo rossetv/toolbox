@@ -330,14 +330,29 @@ private struct QueueDropDelegate: DropDelegate {
     let sheetPresented: () -> Bool
     let onDrop: ([URL]) -> Void
 
+    /// EVERY entry point asks the gate, not just `performDrop`: gating the drop alone still let a
+    /// refused drag light up the whole drag-over screen and carry a copy cursor, then reject on
+    /// release — the same "promise acceptance, deliver nothing" failure the `performDrop` comment
+    /// below describes, reached one method earlier. `validateDrop` is implemented rather than left
+    /// to its default because AppKit does not document that a false return suppresses the others.
+    func validateDrop(info: DropInfo) -> Bool { accepts }
+
     func dropEntered(info: DropInfo) {
+        guard accepts else { return }
         isTargeted = true
         draggedCount = max(1, info.itemProviders(for: [.fileURL]).count)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard accepts else { return DropProposal(operation: .forbidden) }
         draggedCount = max(1, info.itemProviders(for: [.fileURL]).count)
         return DropProposal(operation: .copy)
+    }
+
+    /// The gate, read fresh: a drag can begin before a sheet opens and land after it has.
+    private var accepts: Bool {
+        QueueView.shouldAcceptDrop(modalWindowPresented: NSApp.modalWindow != nil,
+                                   sheetPresented: sheetPresented())
     }
 
     func dropExited(info: DropInfo) {
@@ -351,8 +366,7 @@ private struct QueueDropDelegate: DropDelegate {
         // immediately to decide the drop's accept/reject animation, so returning `true`
         // unconditionally animates acceptance even while the Choose Files/Folder panel is up —
         // the exact case the gate exists for — and silently drops the files with no feedback.
-        guard QueueView.shouldAcceptDrop(modalWindowPresented: NSApp.modalWindow != nil,
-                                         sheetPresented: sheetPresented()) else { return false }
+        guard accepts else { return false }
         let providers = info.itemProviders(for: [.fileURL])
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in

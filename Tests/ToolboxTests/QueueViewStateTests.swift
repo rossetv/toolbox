@@ -825,6 +825,34 @@ final class QueueViewStateTests: XCTestCase {
                      "and the row must not claim settings of its own")
     }
 
+    /// The floor's own path, which the write-time collapse no longer reaches: store a genuine
+    /// `ocr: false` while Compress is ON, then turn Compress off. The override survives (it was
+    /// legal when written), `effectiveVerbs` floors it so OCR still runs — and the row must stop
+    /// claiming settings of its own, because at that point it has none that matter.
+    func testOverrideFlooredByALaterCompressToggleStopsMarkingTheRow() throws {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        model.ocrOn = true
+        model.compressOn = true
+        model.add([try Fixtures.bornDigitalPDF()])
+        let job = try XCTUnwrap(model.jobs.first)
+
+        model.setOverride(RowOverride(ocr: false), for: job.id)
+        XCTAssertEqual(model.overrides[job.id], RowOverride(ocr: false), "legal when written")
+        XCTAssertFalse(model.effectiveVerbs(for: job.id).ocr, "and in force while Compress is on")
+        XCTAssertEqual(QueueRowsView.describe(job: job, model: model, state: .ready).metaAccent?.text,
+                       "Its own settings")
+
+        model.compressOn = false
+
+        XCTAssertTrue(model.effectiveVerbs(for: job.id).ocr,
+                      "the floor keeps the row's last verb on (spec §6.1)")
+        XCTAssertNil(QueueRowsView.describe(job: job, model: model, state: .ready).metaAccent,
+                     "so the row runs what the batch runs and must not claim otherwise")
+        XCTAssertEqual(QueueFooterView.readySubline(model: model),
+                       "Your originals stay exactly where they are.",
+                       "and the footer must not announce a divergence that no longer exists")
+    }
+
     /// The ready footer's subline notes the divergence iff any row has its own settings — singular
     /// wording is the handoff's pinned string (DESIGN.md §9 04c); several overrides get a
     /// truthful plural, recorded as a divergence (no plural form is pinned).

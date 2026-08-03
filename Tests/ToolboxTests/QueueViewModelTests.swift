@@ -1710,7 +1710,9 @@ final class QueueViewModelTests: XCTestCase {
     /// reaches it (without that, `recompressState` reads the override and the row never arms).
     /// A press that starts nothing must put the override back: the preview is reversible, and a
     /// refused press that silently stripped a per-file setting would be a data loss the user
-    /// never asked for. Engine-less model ⇒ `canStart` false ⇒ nothing starts.
+    /// never asked for. `canStart` is false here because the batch has already run — after
+/// `runToDone()` there is no healthy queued row and nothing armed — NOT because the model
+/// lacks an engine (`HeavyEnv` supplies a stub one).
     func testConfirmRestoresPerRowOverridesWhenNothingStarts() async throws {
         let env = try HeavyEnv()
         let model = env.model
