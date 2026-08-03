@@ -111,7 +111,7 @@ struct QueueRowsView: View {
     @ViewBuilder
     private func row(for job: ToolJob) -> some View {
         let base = Self.describe(job: job, model: model, state: state)
-        let descriptor = versionsJobID == job.id ? Self.choosingVersion(base) : base
+        let descriptor = Self.overlaidForVersionChoice(base, isChoosing: versionsJobID == job.id)
         QueueRow(
             name: job.url.lastPathComponent,
             meta: descriptor.meta,
@@ -141,6 +141,13 @@ struct QueueRowsView: View {
                 ? { AnyView(VersionsPopoverContent(model: model, jobID: job.id)) } : nil
         ) {
             trailing(for: job, descriptor: descriptor)
+        }
+        // A row that loses its capsule — a failed switch drops it to `.failed`, a re-run to
+        // `.running` — takes its popover with it, so the binding above that clears this never
+        // fires. Left set, the id would silently re-enter "choosing" the moment the row finished
+        // and got its capsule back.
+        .onChange(of: descriptor.capsuleTitle == nil) { _, lostCapsule in
+            if lostCapsule, versionsJobID == job.id { versionsJobID = nil }
         }
     }
 
@@ -325,6 +332,17 @@ struct QueueRowsView: View {
         overlaid.meta = "Choosing a version"
         if descriptor.metaAccent?.colour != Theme.Colors.danger { overlaid.metaAccent = nil }
         return overlaid
+    }
+
+    /// The overlay, applied ONLY while the row is still a finished row with versions to choose
+    /// between. A switch can fail hard — `reportSwitchFailure` puts the row into `.failed`, whose
+    /// descriptor carries its message as the META with no accent at all — and that row loses its
+    /// versions capsule, so the popover binding that clears `versionsJobID` never fires. Without
+    /// this guard the overlay then blanks the one line naming where the user's file was stranded
+    /// and pins the row to "Choosing a version" for good, with no popover left to close.
+    static func overlaidForVersionChoice(_ descriptor: RowDescriptor, isChoosing: Bool) -> RowDescriptor {
+        guard isChoosing, descriptor.capsuleTitle != nil else { return descriptor }
+        return choosingVersion(descriptor)
     }
 
     // MARK: queued / analysing

@@ -926,6 +926,41 @@ final class QueueViewStateTests: XCTestCase {
         XCTAssertEqual(choosing.metaAccent?.colour, Theme.Colors.danger)
     }
 
+    /// The sibling arm the first pass missed. A hard switch failure (`reportSwitchFailure`) puts
+    /// the row into `.failed`, whose descriptor carries the message as its META with no accent at
+    /// all — and a failed row has no versions capsule, so the popover binding that clears the
+    /// choosing id never fires. The overlay must stand down for such a row: applied, it blanks the
+    /// one line naming where the file was stranded and pins the row to "Choosing a version" with
+    /// no popover left to close. Asserted at the overlay itself, which is where the guard lives.
+    func testAFailedRowIsNotOverlaidByTheVersionChoiceLine() {
+        let stranded = QueueRowsView.RowDescriptor(
+            meta: "The switch failed and the compressed file could not be put back. "
+                + "It is safe at /tmp/parked.pdf.",
+            emphasis: .problemDanger,
+            trailing: .problem(primary: nil, link: nil)
+        )
+        XCTAssertNil(stranded.capsuleTitle, "a failed row offers no versions capsule")
+
+        let shown = QueueRowsView.overlaidForVersionChoice(stranded, isChoosing: true)
+
+        XCTAssertEqual(shown.meta, stranded.meta,
+                       "the row must keep saying where the file went, not 'Choosing a version'")
+    }
+
+    /// The overlay still applies to the row it was written for: a finished row that HAS versions
+    /// to choose between.
+    func testAFinishedRowWithVersionsIsStillOverlaid() {
+        let finished = QueueRowsView.RowDescriptor(
+            meta: "87% smaller",
+            trailing: .status(text: "1.2 MB", kind: .finished),
+            capsuleTitle: "3 versions"
+        )
+        XCTAssertEqual(QueueRowsView.overlaidForVersionChoice(finished, isChoosing: true).meta,
+                       "Choosing a version")
+        XCTAssertEqual(QueueRowsView.overlaidForVersionChoice(finished, isChoosing: false).meta,
+                       "87% smaller", "and never when the row is not the one being chosen for")
+    }
+
     /// The other register still yields: "Its own settings" describes the row's settings, not the
     /// outcome of a press, and the popover the user is reading already says what the row is doing.
     func testChoosingAVersionReplacesTheInformationalAccent() throws {
