@@ -579,14 +579,15 @@ struct QueueRow<Trailing: View>: View {
         HStack(spacing: 14) {
             leading
             Spacer(minLength: Theme.Spacing.small)
-            // Stays mounted while its popover is open even after the pointer leaves the row for
-            // the popover itself — otherwise the hover-gated gear (and the `.popover` anchored to
-            // it) would vanish mid-interaction and the popover would close under the user.
-            if onGear != nil, gearIsMarked || isHovering || isFocused || (gearPopoverPresented?.wrappedValue ?? false) {
+            // The slot is RESERVED for the whole life of a configurable row, never inserted and
+            // removed on hover: inserting it shoved the trailing sizes sideways as the pointer
+            // crossed each row. The gear itself still fades and pops (opacity + scale are not
+            // layout changes), so the reveal reads the same while the column stays put.
+            if onGear != nil {
                 gearButton
-                    // The handoff fades the gear in ahead of the sizes rather than popping it
-                    // into the row; it leaves the same way.
-                    .transition(.opacity.combined(with: .scale(scale: 0.7)))
+                    .opacity(gearIsShown ? 1 : 0)
+                    .scaleEffect(gearIsShown ? 1 : 0.7)
+                    .allowsHitTesting(gearIsShown)
                     .modifier(OptionalPopover(isPresented: gearPopoverPresented, content: gearPopoverContent))
             }
             if let versionsCapsuleTitle {
@@ -605,11 +606,11 @@ struct QueueRow<Trailing: View>: View {
                 .modifier(OptionalPopover(isPresented: versionsPopoverPresented, content: versionsPopoverContent))
             }
             trailing()
-            // Hover/focus-revealed, on the same terms as the gear: taking a file back out of the
-            // queue was context-menu-only, which is a menu nobody finds (DESIGN.md §9 03).
-            if onRemove != nil, isHovering || isFocused {
+            // Always drawn, never hover-revealed: it sits at the row's trailing END, so revealing
+            // it on hover pushed the whole size column left and let it snap back on exit
+            // (DESIGN.md §9 03). It rests quiet and animates under the pointer instead.
+            if onRemove != nil {
                 removeButton
-                    .transition(.opacity.combined(with: .scale(scale: 0.7)))
             }
         }
         .padding(.vertical, 12)
@@ -678,6 +679,13 @@ struct QueueRow<Trailing: View>: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
+    /// Marked, hovered or focused — and it stays shown while its own popover is open even after
+    /// the pointer leaves the row for the popover itself, or the gear (and the `.popover` anchored
+    /// to it) would vanish mid-interaction and close the popover under the user.
+    private var gearIsShown: Bool {
+        gearIsMarked || isHovering || isFocused || (gearPopoverPresented?.wrappedValue ?? false)
+    }
+
     private var gearButton: some View {
         Button(action: { onGear?() }) {
             Image(systemName: "gearshape")
@@ -701,13 +709,16 @@ struct QueueRow<Trailing: View>: View {
 
     /// Take this file back out of the queue. Same 26pt circular shape as the gear so the two read
     /// as one pair of row affordances, tinted `danger` on hover because it is the destructive one.
+    /// It is on screen at all times, so it rests at `textTertiary` on no disc at all — quiet enough
+    /// to sit on every row — and does its growing and colouring under the pointer.
     private var removeButton: some View {
         Button(action: { onRemove?() }) {
             Image(systemName: "xmark")
-                .foregroundStyle(isHoveringRemove ? Theme.Colors.danger : Theme.Colors.textSecondary)
+                .foregroundStyle(isHoveringRemove ? Theme.Colors.danger : Theme.Colors.textTertiary)
                 .font(.system(size: 11, weight: .semibold))
                 .frame(width: 26, height: 26)
-                .background(isHoveringRemove ? Theme.Colors.background : Theme.Colors.surface, in: Circle())
+                .background(isHoveringRemove ? Theme.Colors.danger.opacity(0.14) : .clear, in: Circle())
+                .scaleEffect(isHoveringRemove ? 1.12 : 1)
                 .contentShape(Circle())
         }
         .buttonStyle(MotionButtonStyle())

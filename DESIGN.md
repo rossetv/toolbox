@@ -157,11 +157,13 @@ All defined in `Sources/Toolbox/DesignSystem/QueueComponents.swift`.
   each re-deriving the width.
 - **`QueueRow`** — the one row shape spanning Ready, Working, Finished, Versions and
   Problems. Fixed mechanics: hover/keyboard focus (2px accent ring — §6), the leading
-  thumbnail + name + meta, a hover- and focus-revealed gear (which stays visible in
-  `accent` while the row carries per-file settings), a hover- and focus-revealed 26pt
-  circular × at the row's trailing end that takes the file back out of the queue (`danger`
-  glyph on hover; absent on rows that cannot be removed), the versions capsule, problem-row
-  tinting (`emphasis`: none / degraded / problemDanger / problemWarn), and a context menu
+  thumbnail + name + meta, a hover- and focus-revealed gear whose slot is reserved
+  whenever the row is configurable, so revealing it never moves the trailing column
+  (it stays visible in `accent` while the row carries per-file settings), an always-drawn
+  26pt circular × at the row's trailing end that takes the file back out of the queue
+  (`textTertiary` at rest, growing to a tinted `danger` disc on hover; absent on rows that
+  cannot be removed), the versions capsule, problem-row tinting (`emphasis`: none /
+  degraded / problemDanger / problemWarn), and a context menu
   mirroring every hover-only affordance for the non-hover/keyboard path. Only the leading
   thumbnail + name + meta opens the file — never the row's full width. Trailing content is
   composed per screen.
@@ -396,10 +398,10 @@ baseline-aligned; trailing `LinkButton`s "+ Add" / "⊗ Clear", a 28pt `⋯` men
 originals ⌄" (native `Menu`; alternate: chosen folder name). Rows: `QueueRow` with
 `QueueRowSizeColumn` trailing — name (`rowName`), one meta line (`meta`) describing
 content ("48 pages, mostly photographs" / "32 pages, no text layer yet" / "12 pages, text
-and vectors"). Hover reveals the gear and, at the row's trailing end, the × that removes
-the file from the list. Below the rows: a drop hint, "Drop more PDFs
-anywhere in this window" (`textTertiary`). Footer above a 1px `sep`: total → predicted
-total (`bodyStrong`) over "Your originals stay exactly where they are." (`textTertiary`);
+and vectors"). Hover reveals the gear in its reserved slot; the × that removes the file
+from the list is always drawn at the row's trailing end. Below the rows: a drop hint,
+"Drop more PDFs anywhere in this window" (`textTertiary`). Footer above a 1px `sep`:
+total → predicted total (`bodyStrong`) over "Your originals stay exactly where they are." (`textTertiary`);
 a `PrimaryButton` "Start", disabled with zero verbs on or zero healthy rows.
 
 ### 04 — Quality popover
