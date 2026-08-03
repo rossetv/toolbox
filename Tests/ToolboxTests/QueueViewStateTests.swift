@@ -245,11 +245,17 @@ final class QueueViewStateTests: XCTestCase {
     // MARK: drop refused while the Choose Files/Choose Folder panel is up (the one modal exception)
 
     func testShouldAcceptDropRefusesWhileModalWindowPresented() {
-        XCTAssertFalse(QueueView.shouldAcceptDrop(modalWindowPresented: true))
+        XCTAssertFalse(QueueView.shouldAcceptDrop(modalWindowPresented: true, sheetPresented: false))
     }
 
     func testShouldAcceptDropAllowsWhenNoModalWindowPresented() {
-        XCTAssertTrue(QueueView.shouldAcceptDrop(modalWindowPresented: false))
+        XCTAssertTrue(QueueView.shouldAcceptDrop(modalWindowPresented: false, sheetPresented: false))
+    }
+
+    /// An in-window sheet is a modal too — `NSApp.modalWindow` is nil for one by construction, so
+    /// the gate has to be told about it or a drag lands in a queue a sheet has already snapshotted.
+    func testShouldAcceptDropRefusesWhileAnInWindowSheetIsPresented() {
+        XCTAssertFalse(QueueView.shouldAcceptDrop(modalWindowPresented: false, sheetPresented: true))
     }
 
     func testAcceptDropRefusesAndDoesNotMutateQueueWhileModalWindowPresented() {
@@ -798,6 +804,25 @@ final class QueueViewStateTests: XCTestCase {
         model.setOverride(RowOverride(preset: .balanced, rebuildScan: false, ocr: true), for: id)
         XCTAssertEqual(model.overrides[id], RowOverride(rebuildScan: false),
                        "only the field that differs from the batch survives")
+    }
+
+    /// The verb floor's own instance of the same rule: on a Compress-off batch `effectiveVerbs`
+    /// refuses an `ocr: false` (it would leave the row with nothing to do), so storing that field
+    /// would mark the row while changing nothing about what runs — and leave the toggle sitting
+    /// off while OCR ran anyway.
+    func testOCROverrideTheVerbFloorRefusesIsNotStored() throws {
+        let model = QueueViewModel(engine: nil, history: makeHermeticHistory())
+        model.ocrOn = true
+        model.compressOn = false
+        model.add([try Fixtures.bornDigitalPDF()])
+        let job = try XCTUnwrap(model.jobs.first)
+
+        model.setOverride(RowOverride(ocr: false), for: job.id)
+
+        XCTAssertNil(model.overrides[job.id], "a floored override changes nothing and is not stored")
+        XCTAssertTrue(model.effectiveVerbs(for: job.id).ocr, "the floor keeps the row's last verb on")
+        XCTAssertNil(QueueRowsView.describe(job: job, model: model, state: .ready).metaAccent,
+                     "and the row must not claim settings of its own")
     }
 
     /// The ready footer's subline notes the divergence iff any row has its own settings — singular

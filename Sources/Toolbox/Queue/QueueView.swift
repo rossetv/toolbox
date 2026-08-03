@@ -90,8 +90,16 @@ struct QueueView: View {
         }
         .onDrop(of: [.fileURL], delegate: QueueDropDelegate(
             isTargeted: $isTargeted, draggedCount: $draggedCount,
+            sheetPresented: { activeSheet != nil },
             onDrop: { acceptDrop($0) }
         ))
+        // The modality a system sheet gave for free, restored by hand: presenting in-window put
+        // every control behind the dim back within reach of the keyboard (a `QueueRow` is
+        // focusable and answers Return by opening the file) and of VoiceOver, while
+        // `SheetChrome`'s dim only ever stopped the mouse. Applied BEFORE the sheet overlay
+        // below, so it covers the screen underneath and never the sheet itself.
+        .disabled(activeSheet != nil)
+        .accessibilityHidden(activeSheet != nil)
         // An IN-WINDOW overlay, not `.sheet(...)`: `SheetChrome` draws the whole modal itself — its
         // own dim, its own card, 52pt below the titlebar (DESIGN.md §9 11) — so a system sheet
         // wrapped that card in a second window-shaped container, which is what read as a stray
@@ -211,15 +219,19 @@ struct QueueView: View {
     /// gate itself (`shouldAcceptDrop`) is testable without a real panel on screen.
     @discardableResult
     func acceptDrop(_ urls: [URL], modalWindowPresented: Bool = NSApp.modalWindow != nil) -> Bool {
-        guard Self.shouldAcceptDrop(modalWindowPresented: modalWindowPresented) else { return false }
+        guard Self.shouldAcceptDrop(modalWindowPresented: modalWindowPresented,
+                                    sheetPresented: activeSheet != nil) else { return false }
         model.add(urls)
         return true
     }
 
     /// Pure gate backing `acceptDrop`: refuse while a modal panel (`FilePicker`) is presented, since
-    /// it — not the drop target underneath — is the active affordance.
-    static func shouldAcceptDrop(modalWindowPresented: Bool) -> Bool {
-        !modalWindowPresented
+    /// it — not the drop target underneath — is the active affordance. An in-window sheet counts as
+    /// well and must be passed explicitly: `NSApp.modalWindow` is nil for one by construction (no
+    /// modal session exists), and a sheet like Change quality snapshots the queue when it opens —
+    /// a drop landing underneath it would leave that snapshot describing a queue that has moved.
+    static func shouldAcceptDrop(modalWindowPresented: Bool, sheetPresented: Bool) -> Bool {
+        !modalWindowPresented && !sheetPresented
     }
 
     /// Pure state-selection (`QueueViewStateTests`): empty until the first file lands; ready until
@@ -288,8 +300,8 @@ struct QueueView: View {
 }
 
 /// The single presentation surface for every sheet `QueueView` owns — see the doc comment on the
-/// `.sheet(item:)` call site for why this replaces four separately-toggled `.sheet(isPresented:)`
-/// modifiers.
+/// `.overlay` that presents it for why this replaces four separately-toggled
+/// `.sheet(isPresented:)` modifiers.
 private enum QueueSheet: Identifiable, Equatable {
     case changeQuality
     case recentBatches
@@ -313,6 +325,9 @@ private enum QueueSheet: Identifiable, Equatable {
 private struct QueueDropDelegate: DropDelegate {
     @Binding var isTargeted: Bool
     @Binding var draggedCount: Int
+    /// Read at drop time, not captured at construction: the delegate is rebuilt on every body
+    /// pass, but the drag that lands may have begun before the sheet opened.
+    let sheetPresented: () -> Bool
     let onDrop: ([URL]) -> Void
 
     func dropEntered(info: DropInfo) {
@@ -336,7 +351,8 @@ private struct QueueDropDelegate: DropDelegate {
         // immediately to decide the drop's accept/reject animation, so returning `true`
         // unconditionally animates acceptance even while the Choose Files/Folder panel is up —
         // the exact case the gate exists for — and silently drops the files with no feedback.
-        guard QueueView.shouldAcceptDrop(modalWindowPresented: NSApp.modalWindow != nil) else { return false }
+        guard QueueView.shouldAcceptDrop(modalWindowPresented: NSApp.modalWindow != nil,
+                                         sheetPresented: sheetPresented()) else { return false }
         let providers = info.itemProviders(for: [.fileURL])
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
