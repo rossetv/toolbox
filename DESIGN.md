@@ -157,10 +157,14 @@ All defined in `Sources/Toolbox/DesignSystem/QueueComponents.swift`.
   each re-deriving the width.
 - **`QueueRow`** — the one row shape spanning Ready, Working, Finished, Versions and
   Problems. Fixed mechanics: hover/keyboard focus (2px accent ring — §6), the leading
-  thumbnail + name + meta, a hover- and focus-revealed gear, the versions capsule,
-  problem-row tinting (`emphasis`: none / degraded / problemDanger / problemWarn), and a
-  context menu mirroring every hover-only affordance for the non-hover/keyboard path.
-  Trailing content is composed per screen.
+  thumbnail + name + meta, a hover- and focus-revealed gear (which stays visible in
+  `accent` while the row carries per-file settings), a hover- and focus-revealed 26pt
+  circular × at the row's trailing end that takes the file back out of the queue (`danger`
+  glyph on hover; absent on rows that cannot be removed), the versions capsule, problem-row
+  tinting (`emphasis`: none / degraded / problemDanger / problemWarn), and a context menu
+  mirroring every hover-only affordance for the non-hover/keyboard path. Only the leading
+  thumbnail + name + meta opens the file — never the row's full width. Trailing content is
+  composed per screen.
 - **`BatchCard`** — a recent-batch summary tile: the empty-state history strip
   (`trailingLink`, e.g. "Open folder") and the Recent-batches sheet's rows
   (`trailingValue`, a plain savings figure) — the two trailing shapes are mutually
@@ -186,7 +190,8 @@ All defined in `Sources/Toolbox/DesignSystem/QueueComponents.swift`.
   flag; the quality popover passes `false`.
 - **`CheckRow`** — a plain checkbox row ("Choose which files…").
 - **`PopoverChrome` / `SheetChrome` / `UpdateBannerChrome`** — shared containers.
-  Popover: anchored, tail, fade + scale + rise entrance. Sheet: dim overlay, centred,
+  Popover: fade + scale + rise entrance (anchor and tail are the system popover's own —
+  `PopoverChrome` draws neither). Sheet: dim overlay, centred,
   fade + rise + scale entrance. Update banner: full-width strip under the titlebar,
   slide-down entrance. All three gate their entrance transform on Reduce Motion
   (appear instantly, no transform, when it is on).
@@ -250,9 +255,11 @@ the pattern every focusable control follows. This is the standing invariant behi
   status, so a key-transition observer alone misses it — app reactivation) is swept by
   `WindowSetup.installStrayFocusClear(on:)`: a KVO watch on the main window's
   `firstResponder` that clears any assignment whose current event is not `.keyDown`.
-- **`.focusEffectDisabled()` is reserved**, never reached for first: today's one carve-out
-  is the About sheet, where auto-focus draws a permanent ring outside the main window's
-  net. Hiding a ring anywhere else blinds keyboard users to where focus actually is.
+- **`.focusEffectDisabled()` is reserved**, never reached for first, and today has no
+  carve-outs at all: every sheet is presented as an in-window overlay, so the main window's
+  net covers all of them — About included. Hiding a ring anywhere blinds keyboard users to
+  where focus actually is; a control that draws one it should not is a bug in the net, not
+  a reason to reach for this.
 
 ## 7. Do's and Don'ts
 
@@ -389,7 +396,8 @@ baseline-aligned; trailing `LinkButton`s "+ Add" / "⊗ Clear", a 28pt `⋯` men
 originals ⌄" (native `Menu`; alternate: chosen folder name). Rows: `QueueRow` with
 `QueueRowSizeColumn` trailing — name (`rowName`), one meta line (`meta`) describing
 content ("48 pages, mostly photographs" / "32 pages, no text layer yet" / "12 pages, text
-and vectors"). Hover reveals the gear. Below the rows: a drop hint, "Drop more PDFs
+and vectors"). Hover reveals the gear and, at the row's trailing end, the × that removes
+the file from the list. Below the rows: a drop hint, "Drop more PDFs
 anywhere in this window" (`textTertiary`). Footer above a 1px `sep`: total → predicted
 total (`bodyStrong`) over "Your originals stay exactly where they are." (`textTertiary`);
 a `PrimaryButton` "Start", disabled with zero verbs on or zero healthy rows.
@@ -420,13 +428,15 @@ print.", a hairline, and the footnote "Pages that already contain text are left 
 
 `PopoverChrome` (300pt) anchored to the row's gear, right-aligned. Header: thumbnail +
 filename (`bodyStrong`) + "Overrides just this file" (`textTertiary`) + close ×. A
-`SegmentedRow` for quality with a context caption ("The batch is on {preset}. This one is
-a signed contract, so keep it sharp."). Two `ToggleRow`s: "Rebuild the scan" (default
+`SegmentedRow` for quality with a context caption ("The batch is on {preset}.") — always
+rendered, whether or not this row has left the batch, so the popover's height never moves
+as the quality segments are clicked. Two `ToggleRow`s: "Rebuild the scan" (default
 off — "stamps stay photographic") and "Read the text (OCR)" (state line names language +
 accuracy). Footer: "Estimate **{size}**" left, a `LinkButton` "Match the batch" right
-(clears overrides). An overridden row's meta line turns accent "Its own settings"; the
-batch footer notes "One file has its own settings, so its estimate differs from the
-batch."
+(clears overrides). An overridden row's meta line turns accent "Its own settings" and its
+gear stops hiding — it stays on the row in `accent` rather than waiting for hover, so the
+overridden rows are identifiable at a glance; the batch footer notes "One file has its own
+settings, so its estimate differs from the batch."
 
 ### 05 — Working
 

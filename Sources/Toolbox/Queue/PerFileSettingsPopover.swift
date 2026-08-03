@@ -16,9 +16,8 @@ struct PerFileSettingsPopover: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        // Right-aligned to the row's gear (README screen 04c): the tail sits near the popover's
-        // trailing edge, not centred like the batch popovers above the chip.
-        PopoverChrome(width: 300, tailOffset: 250) {
+        // Anchoring is the system popover's own (it tails on the row's gear — README screen 04c).
+        PopoverChrome(width: 300) {
             if let job = model.jobs.first(where: { $0.id == jobID }) {
                 content(for: job)
             }
@@ -31,9 +30,7 @@ struct PerFileSettingsPopover: View {
             VStack(alignment: .leading, spacing: 4) {
                 SectionLabel("Quality")
                 SegmentedRow(options: CompressPreset.allCases.map(\.title), selection: presetIndex)
-                if let caption = qualityCaption {
-                    Text(caption).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
-                }
+                Text(qualityCaption).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
             }
             rebuildToggle(for: job)
             ToggleRow(title: "Read the text (OCR)", stateLine: ocrStateLine, isOn: ocrBinding)
@@ -75,8 +72,10 @@ struct PerFileSettingsPopover: View {
         case .enabled:
             ToggleRow(title: "Rebuild the scan", stateLine: rebuildStateLine, isOn: rebuildBinding)
         case .disabledAtMaximumQuality:
+            // Kept to one line's worth of copy on purpose: this popover's height must not move as
+            // the quality segments are clicked, and the fuller "…never rebuilds a scan" wrapped.
             ToggleRow(title: "Rebuild the scan",
-                     stateLine: "Off — High quality never rebuilds a scan", isOn: .constant(false))
+                     stateLine: "Off — High quality never rebuilds", isOn: .constant(false))
                 .disabled(true)
         }
     }
@@ -112,11 +111,12 @@ struct PerFileSettingsPopover: View {
 
     // MARK: quality
 
-    private var qualityCaption: String? {
-        let batch = model.preset
-        let effective = model.effectivePreset(for: jobID)
-        guard effective != batch else { return nil }
-        return "The batch is on \(batch.title)."
+    /// Always rendered, never conditional: hiding this line when the row matches the batch made the
+    /// popover grow and shrink under the pointer as the quality segments were clicked. Present tense
+    /// either way — it states where the batch stands, which stays true whether or not this row has
+    /// left it.
+    private var qualityCaption: String {
+        "The batch is on \(model.preset.title)."
     }
 
     private var presetIndex: Binding<Int> {
@@ -175,11 +175,10 @@ struct PopoverFileHeader: View {
 }
 
 /// The small circular × close affordance shared by every popover/sheet that needs one (04c, 07,
-/// and the About sheet). Two real call sites differ on three things — size, fill, and which focus
-/// treatment applies — so those are parameters rather than a second near-identical type: `.popover`
-/// (the default) is the WindowSetup-covered main-window case and gets `.clearsClickFocus()`;
-/// `.about` is the one carve-out DESIGN.md §6 already blesses for a window outside that net
-/// (memory: stray-focus-ring invariant) and gets `.focusEffectDisabled()` instead.
+/// and the About sheet). The two call sites differ on size and fill, which is what `Style` carries;
+/// both now live inside the main window — About included, since it is presented as an in-window
+/// overlay — so both take the same `.clearsClickFocus()` treatment and neither needs
+/// `.focusEffectDisabled()` (memory: stray-focus-ring invariant).
 struct PopoverCloseButton: View {
     enum Style: Equatable {
         /// 20pt/9pt glyph, `Theme.Colors.fill`/`track` — the popover chrome's own hover tokens.
@@ -205,7 +204,7 @@ struct PopoverCloseButton: View {
     }
 
     var body: some View {
-        let button = Button(action: action) {
+        Button(action: action) {
             Image(systemName: "xmark")
                 .font(.system(size: glyphSize, weight: .bold))
                 .foregroundStyle(isHovering ? Theme.Colors.text : Theme.Colors.textSecondary)
@@ -220,11 +219,7 @@ struct PopoverCloseButton: View {
         .continuousHover($isHovering)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHovering)
         .accessibilityLabel("Close")
-
-        switch style {
-        case .about: button.focusEffectDisabled()
-        case .popover: button.clearsClickFocus()
-        }
+        .clearsClickFocus()
     }
 }
 

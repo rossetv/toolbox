@@ -547,6 +547,10 @@ struct QueueRow<Trailing: View>: View {
 
     var onOpen: (() -> Void)? = nil
     var onGear: (() -> Void)? = nil
+    /// This row's settings differ from the batch's: the gear stops being hover-only and reads
+    /// accent, so an overridden row is identifiable without hovering every row in the queue
+    /// (DESIGN.md §9 04c). Presentation-only — the row knows nothing about what an override is.
+    var gearIsMarked: Bool = false
     /// Attached directly to the gear button below, not to the whole row: same rationale as
     /// `versionsPopoverPresented` below — a `.popover` anchors to whichever view carries the
     /// modifier, so attaching this externally to the whole row opens it centred in the window
@@ -568,6 +572,7 @@ struct QueueRow<Trailing: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
     @State private var isHoveringGear = false
+    @State private var isHoveringRemove = false
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -577,7 +582,7 @@ struct QueueRow<Trailing: View>: View {
             // Stays mounted while its popover is open even after the pointer leaves the row for
             // the popover itself — otherwise the hover-gated gear (and the `.popover` anchored to
             // it) would vanish mid-interaction and the popover would close under the user.
-            if onGear != nil, isHovering || isFocused || (gearPopoverPresented?.wrappedValue ?? false) {
+            if onGear != nil, gearIsMarked || isHovering || isFocused || (gearPopoverPresented?.wrappedValue ?? false) {
                 gearButton
                     // The handoff fades the gear in ahead of the sizes rather than popping it
                     // into the row; it leaves the same way.
@@ -600,6 +605,12 @@ struct QueueRow<Trailing: View>: View {
                 .modifier(OptionalPopover(isPresented: versionsPopoverPresented, content: versionsPopoverContent))
             }
             trailing()
+            // Hover/focus-revealed, on the same terms as the gear: taking a file back out of the
+            // queue was context-menu-only, which is a menu nobody finds (DESIGN.md §9 03).
+            if onRemove != nil, isHovering || isFocused {
+                removeButton
+                    .transition(.opacity.combined(with: .scale(scale: 0.7)))
+            }
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 12)
@@ -624,7 +635,6 @@ struct QueueRow<Trailing: View>: View {
         // A row changing state mid-run (queued → active → finished) re-tints its background and
         // re-lays its trailing column; the standard spring keeps that from flickering.
         .animation(Theme.Motion.standardCurve(reduceMotion: reduceMotion), value: emphasis)
-        .modifier(RowOpenModifier(onOpen: onOpen))
         .onKeyPress(.return) {
             guard let onOpen else { return .ignored }
             onOpen()
@@ -645,12 +655,18 @@ struct QueueRow<Trailing: View>: View {
         .accessibilityLabel(accessibilityLabel)
     }
 
+    /// The thumbnail + name + meta stack — and, when the row is openable, the ONLY part of the row
+    /// that opens the file. The tap used to sit on the whole row, so a click anywhere in the empty
+    /// middle launched Preview; the affordance now matches what a pointer would expect from a file
+    /// name and its icon, and the hand cursor sits on that same region rather than the full width.
     private var leading: some View {
         HStack(spacing: 13) {
             PDFThumbnail(url: fileURL).accessibilityHidden(true)
+                .modifier(RowOpenModifier(onOpen: onOpen))
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).themeFont(.rowName).foregroundStyle(Theme.Colors.text)
                     .lineLimit(1).truncationMode(.middle)
+                    .modifier(RowOpenModifier(onOpen: onOpen))
                 HStack(spacing: 4) {
                     Text(meta).themeFont(.meta).foregroundStyle(metaTextColor)
                     if let metaAccent {
@@ -666,8 +682,10 @@ struct QueueRow<Trailing: View>: View {
         Button(action: { onGear?() }) {
             Image(systemName: "gearshape")
                 // Handoff: `transition:background .15s,color .15s`, hovering to
-                // `background:var(--bg);color:var(--text)`.
-                .foregroundStyle(isHoveringGear ? Theme.Colors.text : Theme.Colors.textSecondary)
+                // `background:var(--bg);color:var(--text)`. A marked gear ignores that pair and
+                // stays accent — it is reporting a fact about the row, not its own hover state.
+                .foregroundStyle(gearIsMarked ? Theme.Colors.accent
+                                 : (isHoveringGear ? Theme.Colors.text : Theme.Colors.textSecondary))
                 .font(.system(size: 12, weight: .medium))
                 .frame(width: 26, height: 26)
                 .background(isHoveringGear ? Theme.Colors.background : Theme.Colors.surface, in: Circle())
@@ -678,7 +696,27 @@ struct QueueRow<Trailing: View>: View {
         .pointingHandCursor()
         .continuousHover($isHoveringGear)
         .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringGear)
-        .accessibilityLabel("Settings for \(name)")
+        .accessibilityLabel(gearIsMarked ? "Settings for \(name), overridden" : "Settings for \(name)")
+    }
+
+    /// Take this file back out of the queue. Same 26pt circular shape as the gear so the two read
+    /// as one pair of row affordances, tinted `danger` on hover because it is the destructive one.
+    private var removeButton: some View {
+        Button(action: { onRemove?() }) {
+            Image(systemName: "xmark")
+                .foregroundStyle(isHoveringRemove ? Theme.Colors.danger : Theme.Colors.textSecondary)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 26, height: 26)
+                .background(isHoveringRemove ? Theme.Colors.background : Theme.Colors.surface, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(MotionButtonStyle())
+        .clearsClickFocus()
+        .pointingHandCursor()
+        .continuousHover($isHoveringRemove)
+        .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: isHoveringRemove)
+        .help("Remove from the list")
+        .accessibilityLabel("Remove \(name) from the list")
     }
 
     private var isActive: Bool {
@@ -1120,7 +1158,10 @@ struct ToggleRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).themeFont(.bodyStrong).foregroundStyle(Theme.Colors.text)
+                // One line, always: a state line that wraps changes the row's height, and these
+                // rows sit inside a popover whose height must not move as its controls are clicked.
                 Text(stateLine).themeFont(.caption).foregroundStyle(Theme.Colors.textTertiary)
+                    .lineLimit(1)
             }
             Spacer(minLength: Theme.Spacing.small)
             Toggle("", isOn: $isOn)
@@ -1316,20 +1357,26 @@ struct CheckRow: View {
 
 // MARK: - Chrome: PopoverChrome / SheetChrome / UpdateBannerChrome
 
-/// Shared popover container — background, corner radius, shadow, anchor tail, and the fade +
-/// scale + rise entrance (Reduce Motion: appears instantly, no transform).
+/// Shared popover container — background, corner radius, shadow, and the fade + scale + rise
+/// entrance (Reduce Motion: appears instantly, no transform).
+///
+/// It draws no tail of its own: every caller is presented through SwiftUI's `.popover`, which
+/// anchors itself and draws the arrow. The hand-drawn diamond this used to carry sat wherever its
+/// `tailOffset` said rather than wherever the system had actually anchored the popover, so it
+/// showed up as a stray notch on an edge with no anchor behind it.
 struct PopoverChrome<Content: View>: View {
     var width: CGFloat
-    /// Horizontal offset of the tail from the popover's leading edge, matching the anchor.
-    var tailOffset: CGFloat = 24
-    var tailEdge: Edge = .top
     @ViewBuilder var content: () -> Content
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dismiss) private var dismiss
     @State private var hasAppeared = false
 
     var body: some View {
         content()
+            // Escape closes a popover, as it does everywhere else in macOS. `dismiss()` is the
+            // right call here — unlike the in-window sheets, a popover IS a real presentation.
+            .escapeToDismiss { dismiss() }
             .padding(7)
             .frame(width: width)
             .background(Theme.Colors.surface, in: RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
@@ -1337,24 +1384,14 @@ struct PopoverChrome<Content: View>: View {
                 RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
                     .strokeBorder(Theme.Colors.stroke, lineWidth: 0.5)
             )
-            .overlay(alignment: tailEdge == .top ? .topLeading : .bottomLeading) { tail }
             .shadow(color: .black.opacity(0.24), radius: 23, x: 0, y: 16)
             .scaleEffect(hasAppeared || reduceMotion ? 1 : 0.95)
             .opacity(hasAppeared || reduceMotion ? 1 : 0)
-            .offset(y: hasAppeared || reduceMotion ? 0 : (tailEdge == .top ? -7 : 7))
+            .offset(y: hasAppeared || reduceMotion ? 0 : -7)
             .onAppear {
                 guard !reduceMotion else { hasAppeared = true; return }
                 withAnimation(.easeOut(duration: Theme.Motion.popover)) { hasAppeared = true }
             }
-    }
-
-    private var tail: some View {
-        Rectangle()
-            .fill(Theme.Colors.surface)
-            .frame(width: 12, height: 12)
-            .overlay(Rectangle().strokeBorder(Theme.Colors.stroke, lineWidth: 0.5))
-            .rotationEffect(.degrees(45))
-            .offset(x: tailOffset, y: tailEdge == .top ? -6 : 6)
     }
 }
 

@@ -93,6 +93,7 @@ struct QueueRowsView: View {
             emphasis: descriptor.emphasis,
             onOpen: descriptor.canOpen ? { NSWorkspace.shared.open(Self.urlToOpen(for: job, model: model)) } : nil,
             onGear: descriptor.canConfigure ? { perFileJobID = job.id } : nil,
+            gearIsMarked: descriptor.isOverridden,
             // Anchored to the gear button itself (see `QueueRow`'s doc comment on this param) —
             // attaching this externally to the whole row, as before, opened it centred in the
             // window instead of tailed on the gear.
@@ -113,9 +114,6 @@ struct QueueRowsView: View {
                 ? { AnyView(VersionsPopoverContent(model: model, jobID: job.id)) } : nil
         ) {
             trailing(for: job, descriptor: descriptor)
-        }
-        .popover(isPresented: Binding(get: { perFileJobID == job.id }, set: { if !$0 { perFileJobID = nil } })) {
-            PerFileSettingsPopover(model: model, jobID: job.id)
         }
     }
 
@@ -230,6 +228,10 @@ struct QueueRowsView: View {
         var canOpen = false
         var canConfigure = false
         var canRemove = false
+        /// This row carries per-file settings — the gear goes accent and stops hiding until hover
+        /// (spec §7, DESIGN.md §9 04c), so the queue shows which rows have left the batch without
+        /// the user sweeping the pointer down the list.
+        var isOverridden = false
         var capsuleTitle: String? = nil
 
         static func == (lhs: RowDescriptor, rhs: RowDescriptor) -> Bool {
@@ -239,6 +241,7 @@ struct QueueRowsView: View {
                 && emphasisEqual(lhs.emphasis, rhs.emphasis)
                 && lhs.trailing == rhs.trailing && lhs.canOpen == rhs.canOpen
                 && lhs.canConfigure == rhs.canConfigure && lhs.canRemove == rhs.canRemove
+                && lhs.isOverridden == rhs.isOverridden
                 && lhs.capsuleTitle == rhs.capsuleTitle
         }
 
@@ -296,7 +299,8 @@ struct QueueRowsView: View {
         }
         // Per-file override (spec §7, DESIGN.md §9 04c): an overridden row's meta gets the
         // accent "Its own settings" — the popover's own "Match the batch" is what clears it.
-        let metaAccent: (text: String, colour: Color)? = model.overrides[job.id] != nil
+        let isOverridden = model.overrides[job.id] != nil
+        let metaAccent: (text: String, colour: Color)? = isOverridden
             ? (text: "Its own settings", colour: Theme.Colors.accent) : nil
         guard model.effectiveVerbs(for: job.id).compress else {
             // No compress leg, so no size-change projection to promise: OCR alone never shrinks a
@@ -304,19 +308,21 @@ struct QueueRowsView: View {
             let sizeText = QueueByteFormat.size(of: job.url).map(QueueByteFormat.string) ?? "—"
             return RowDescriptor(meta: meta, metaAccent: metaAccent,
                                   trailing: .sizeColumn(current: sizeText, target: sizeText, sameSize: true),
-                                  canOpen: true, canConfigure: true, canRemove: true)
+                                  canOpen: true, canConfigure: true, canRemove: true,
+                                  isOverridden: isOverridden)
         }
         guard let estimate = job.estimate, let inputBytes = QueueByteFormat.size(of: job.url) else {
             return RowDescriptor(meta: meta, metaAccent: metaAccent,
                                   trailing: .sizeColumn(current: "—", target: "—"),
-                                  canOpen: true, canConfigure: true, canRemove: true)
+                                  canOpen: true, canConfigure: true, canRemove: true,
+                                  isOverridden: isOverridden)
         }
         let marker = estimate.isFallback ? "~" : "\u{2248}"
         return RowDescriptor(
             meta: meta, metaAccent: metaAccent,
             trailing: .sizeColumn(current: QueueByteFormat.string(inputBytes),
                                   target: "\(marker)\(QueueByteFormat.string(estimate.predictedBytes))"),
-            canOpen: true, canConfigure: true, canRemove: true
+            canOpen: true, canConfigure: true, canRemove: true, isOverridden: isOverridden
         )
     }
 
