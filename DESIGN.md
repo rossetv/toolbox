@@ -165,7 +165,7 @@ All defined in `Sources/Toolbox/DesignSystem/QueueComponents.swift`.
   cannot be removed), the versions capsule, problem-row tinting (`emphasis`: none /
   degraded / problemDanger / problemWarn), and a context menu
   mirroring every hover-only affordance for the non-hover/keyboard path. Only the leading
-  thumbnail + name + meta opens the file — never the row's full width. Trailing content is
+  thumbnail + name open the file — never the meta line, and never the row's full width. Trailing content is
   composed per screen.
 - **`BatchCard`** — a recent-batch summary tile: the empty-state history strip
   (`trailingLink`, e.g. "Open folder") and the Recent-batches sheet's rows
@@ -438,7 +438,8 @@ filename (`bodyStrong`) + "Overrides just this file" (`textTertiary`) + close ×
 `SegmentedRow` for quality with a context caption ("The batch is on {preset}.") — always
 rendered, whether or not this row has left the batch, so the popover's height never moves
 as the quality segments are clicked. Two `ToggleRow`s: "Rebuild the scan" (default
-off — "stamps stay photographic") and "Read the text (OCR)" (state line names language +
+ON — a scan is rebuilt unless the user opts out; "Off" reads "stamps stay
+photographic") and "Read the text (OCR)" (state line names language +
 accuracy). Footer: "Estimate **{size}**" left, a `LinkButton` "Reset override" right
 (clears them). That link is drawn only while the row actually overrides something — hidden,
 never removed, so the popover's height stays put. A field that says exactly what the batch

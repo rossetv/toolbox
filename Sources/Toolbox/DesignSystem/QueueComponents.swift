@@ -587,7 +587,11 @@ struct QueueRow<Trailing: View>: View {
                 gearButton
                     .opacity(gearIsShown ? 1 : 0)
                     .scaleEffect(gearIsShown ? 1 : 0.7)
-                    .allowsHitTesting(gearIsShown)
+                    // `.disabled`, not `.allowsHitTesting(false)`: the button stays in the view
+                    // tree while hidden, and only `disabled` also takes it out of keyboard focus
+                    // traversal — an invisible control that can still take focus draws a ring
+                    // over nothing (DESIGN.md §6).
+                    .disabled(!gearIsShown)
                     .modifier(OptionalPopover(isPresented: gearPopoverPresented, content: gearPopoverContent))
             }
             if let versionsCapsuleTitle {

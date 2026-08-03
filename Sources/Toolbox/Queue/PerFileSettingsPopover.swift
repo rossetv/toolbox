@@ -45,7 +45,9 @@ struct PerFileSettingsPopover: View {
                 // popover shrink and grow under the pointer as an override came and went.
                 LinkButton(title: "Reset override") { model.setOverride(nil, for: jobID) }
                     .opacity(hasOverride ? 1 : 0)
-                    .allowsHitTesting(hasOverride)
+                    // `.disabled` rather than `.allowsHitTesting(false)` — same reason as the row
+                    // gear: hidden must also mean unfocusable, not merely unclickable.
+                    .disabled(!hasOverride)
                     .accessibilityHidden(!hasOverride)
             }
         }

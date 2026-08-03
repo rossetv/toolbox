@@ -919,6 +919,12 @@ final class QueueViewModel: ObservableObject {
         if collapsed.preset == settings.preset { collapsed.preset = nil }
         if collapsed.ocr == settings.ocrOn { collapsed.ocr = nil }
         if collapsed.rebuildScan == true { collapsed.rebuildScan = nil }
+        // The same rule one step further out: `effectiveVerbs` floors an `ocr: false` that would
+        // empty the row's verb set, so on a Compress-off batch that field changes nothing about
+        // what runs. Stored, it would mark the row "Its own settings" — with an accent gear and a
+        // footer line announcing a divergence — while its effective settings are the batch's, and
+        // the toggle would sit off while OCR ran anyway.
+        if collapsed.ocr == false, !settings.compressOn { collapsed.ocr = nil }
         return collapsed
     }
 

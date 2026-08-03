@@ -558,12 +558,22 @@ private struct EscapeToDismiss: ViewModifier {
     let action: () -> Void
 
     @State private var monitor: Any?
+    @State private var host: NSWindow?
 
     func body(content: Content) -> some View {
         content
+            .background(HostWindowReader { host = $0 })
             .onAppear {
                 monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                     guard event.keyCode == 53 else { return event }   // Escape
+                    // Only the presentation the key actually went to answers it. The monitor is
+                    // APP-wide and consumes what it handles (`return nil` stops dispatch), so an
+                    // unscoped one let a sheet swallow the Escape meant for a popover opened FROM
+                    // that sheet — closing the sheet and rolling its preview state back instead of
+                    // closing the popover. `event.window` is the window the key was posted to;
+                    // a popover has its own. A synthesised event can carry no window at all, so
+                    // fall back to the key window rather than dropping Escape on the floor.
+                    guard let host, (event.window ?? NSApp.keyWindow) === host else { return event }
                     action()
                     return nil
                 }
@@ -572,6 +582,32 @@ private struct EscapeToDismiss: ViewModifier {
                 if let monitor { NSEvent.removeMonitor(monitor) }
                 monitor = nil
             }
+    }
+}
+
+/// Hands back the `NSWindow` hosting this view, once it has one. The callback fires again if the
+/// view is re-hosted (a popover's content is torn down and rebuilt on every presentation).
+private struct HostWindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView { ReaderView(onWindow: onWindow) }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class ReaderView: NSView {
+        let onWindow: (NSWindow?) -> Void
+
+        init(onWindow: @escaping (NSWindow?) -> Void) {
+            self.onWindow = onWindow
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindow(window)
+        }
     }
 }
 
