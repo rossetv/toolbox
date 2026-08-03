@@ -165,8 +165,12 @@ and drives the batch UI.
 - **A finished row can be recompressed at a different preset without re-adding the
   file** (`QueueViewModel.recompressState(for:)`): switching the batch preset arms
   every finished row whose own preset differs — `.futile` if that preset already came
-  back no-gain, `.instantSwitch` if a parked `previous` version already matches it
-  (no re-run), else `.armed`. Pressing run serialises the armed rows through the
+  back no-gain, `.instantSwitch` if a parked `previous` version already matches it AND
+  its file is still on disk (no re-run), else `.armed`. That file check is load-bearing,
+  not belt-and-braces: `RunnerUpStore.promote` parks best-effort and `commit` records
+  the slot regardless, so a slot with no file behind it is an ordinary state — offering
+  it swept rows the user never selected into `ChangeQualitySheet.confirm`'s switch loop
+  and reported a failure against them. Pressing run serialises the armed rows through the
   engine directly, AFTER the normal queue phase finishes (`runRecompressPhase`), so
   the batch stays within one normal run's process width (R9's arming is disabled for
   the run's duration). A recompress always reads the ORIGINAL input, never the
