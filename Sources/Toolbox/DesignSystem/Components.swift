@@ -108,6 +108,9 @@ struct MotionButtonStyle: ButtonStyle {
 struct PrimaryButton: View {
     let title: String
     var isEnabled: Bool = true
+    /// The update banner's size (13/600, 6×16 padding): a full-size CTA overpowers a slim
+    /// strip whose neighbours are 13pt text. Everywhere else keeps the standard size.
+    var compact: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -115,10 +118,10 @@ struct PrimaryButton: View {
             // 14/600: the handoff's "Choose Files…"/"Start" buttons — `.button`
             // (17/regular) predates the redesign and is a different, larger role.
             Text(title)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: compact ? 13 : 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .padding(.vertical, 10)
-                .padding(.horizontal, 22)
+                .padding(.vertical, compact ? 6 : 10)
+                .padding(.horizontal, compact ? 16 : 22)
                 // Solid `accent`, no shadow: DESIGN.md §7 forbids gradient backgrounds, §2's
                 // `accent` token is a flat #0071e3 fill, and §6 puts buttons at Flat (Level 0) —
                 // the one system shadow is the card's. The gradient (with its raw #0A84FF

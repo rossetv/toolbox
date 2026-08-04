@@ -116,7 +116,8 @@ call sites are unchanged.
 
 - **`PrimaryButton`** — the filled accent CTA: white 14/semibold label, flat `accent`
   fill (no gradient, no glow — §7), `control` (8) radius. "Choose Files…", "Start",
-  "Update", "Add More".
+  "Update", "Add More". A `compact` variant (13/semibold, 6×16 padding) exists for the
+  update banner only — a full-size CTA overpowers a slim strip of 13pt text.
 - **`LinkButton`** — a borderless `link`-blue text action: "+ Add", "Clear", "Change…",
   "Reset override", "See what changed". See §11 for its recorded size divergence.
 - **`StatPill`** — a small `pill`-radius badge for a short stat. Tones: success / neutral
@@ -539,8 +540,23 @@ TODAY/YESTERDAY; rows: a status square, "{n} files in {folder}" (`bodyStrong`), 
 `trailingValue`. Row click opens the folder. Footer: "Kept on this Mac. Clearing it
 doesn't delete any files." + a "Clear list" link + a `PrimaryButton` "Done".
 **Update banner** (`UpdateBannerChrome`, under the titlebar): a download-circle icon, "A
-newer version {version} is available", trailing a `LinkButton` "See what changed" (→ the
-release's tag page) + `PrimaryButton` "Update" + a × dismiss (persists per-version).
+newer version {version} is available" with a `LinkButton` "See what changed" (→ the
+release's tag page) beside it on the leading side, trailing a `PrimaryButton` "Update" +
+a × dismiss (persists per-version).
+While the update runs the headline becomes "Updating to {version}…" and the button's slot
+swaps (fade + 0.92 settle on `hover`; a hard cut under Reduce Motion — no transition) to
+a stage group: a `caption` stage label ("Downloading… {pct}%", then "Verifying…" /
+"Installing…" / "Restarting…") beside a 150pt `CapsuleProgressBar`. Download drives the
+bar with the real received fraction (whole-percent steps); until the first percent — or
+for the whole download when the server declares no Content-Length — the label renders
+alone, with no bar, because an empty static track reads as hung. The later stages hold
+the bar full: with motion on, the sweep and cap glow keep it visibly alive; under Reduce
+Motion it is a static full bar and the stage label alone carries the state (the fraction
+FILL animation keeps §8's real-progress carve-out; sweep/glow do not — they are
+decoration). When the install cannot self-replace, the button reads "Download…" and opens
+the release page. The swap slot is sized by an invisible compact `PrimaryButton`, so the
+banner's height never changes across resting ↔ updating states, and the stage label is
+width-pinned to its widest readout so percent ticks never shove the cluster sideways.
 **About** (`⋯` menu and app menu): `SheetChrome` (330pt) — the app icon at 84pt (same
 parallax), "Toolbox" (19/semibold), "Version {version} · macOS 14 or later" (12.5,
 `textTertiary`), "Compress PDFs and make scans searchable. / Free forever, entirely on your
@@ -617,6 +633,8 @@ stands for.
 | Recent batches — title/footer | "{total} saved in total" / "Kept on this Mac. Clearing it doesn't delete any files." |
 | Recent batches — controls | "Clear list" / "Done" |
 | Update banner | "A newer version {version} is available" / "See what changed" / "Update" |
+| Update banner — updating | "Updating to {version}…" headline; stage labels "Downloading… {pct}%" (percent only once known) / "Verifying…" / "Installing…" / "Restarting…" |
+| Update banner — can't self-replace | "Download…" (opens the release page; the status line says why) |
 | About — identity | "Toolbox" / "Version {version} · macOS 14 or later" |
 | About — tagline | "Compress PDFs and make scans searchable. / Free forever, entirely on your Mac." (two rendered lines, never more) |
 | About — links | "Source Code" · "Licence" · "Contact me" |

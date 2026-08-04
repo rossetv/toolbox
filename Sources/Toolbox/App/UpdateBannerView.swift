@@ -55,10 +55,13 @@ struct UpdateBannerView: View {
                     Image(systemName: "arrow.down.circle.fill")
                         .font(.system(size: 15, weight: .regular))
                         .foregroundStyle(Theme.Colors.accent)
-                    Text("A newer version v\(release.version) is available")
+                    Text(headline)
                         .themeFont(.body13)
                         .foregroundStyle(Theme.Colors.text)
                         .fixedSize()
+                    LinkButton(title: "See what changed") {
+                        NSWorkspace.shared.open(release.pageURL)
+                    }
                     if let status {
                         Text(status.text)
                             .themeFont(.caption)
@@ -67,14 +70,35 @@ struct UpdateBannerView: View {
                             .help(status.text)
                     }
                     Spacer(minLength: Theme.Spacing.small)
-                    LinkButton(title: "See what changed") {
-                        NSWorkspace.shared.open(release.pageURL)
+                    ZStack {
+                        // Invisible sizer: the banner's height is the button's in EVERY phase,
+                        // so the button→bar swap never changes it — the bar + caption alone are
+                        // shorter and the whole strip would jump on click.
+                        PrimaryButton(title: "Update", isEnabled: false, compact: true, action: {}).hidden()
+                        if let progress = activeProgress {
+                            progressGroup(progress)
+                                .transition(entrance)
+                        } else {
+                            PrimaryButton(title: buttonTitle, isEnabled: isButtonEnabled,
+                                          compact: true, action: buttonAction)
+                                .transition(entrance)
+                        }
                     }
-                    PrimaryButton(title: buttonTitle, isEnabled: isButtonEnabled, action: buttonAction)
                     dismissButton
                 }
+                // Keyed on the stage LABEL, not the phase: the label changes once per stage,
+                // so the button↔bar swap and stage renames animate while the per-percent
+                // fraction ticks stay with the bar's own 0.2s fill animation.
+                .animation(Theme.Motion.hoverCurve(reduceMotion: reduceMotion), value: activeProgress?.label)
             }
         }
+    }
+
+    /// Button → progress-group swap: a small fade + settle (DESIGN.md §8's un-tokenised
+    /// one-shot transforms). Under Reduce Motion the driving animation below is nil, so the
+    /// swap is a hard cut — this transition simply never rides.
+    private var entrance: AnyTransition {
+        .opacity.combined(with: .scale(scale: 0.92))
     }
 
     private var dismissButton: some View {
@@ -97,14 +121,85 @@ struct UpdateBannerView: View {
 
     // MARK: - Phase → chrome
 
-    private var buttonTitle: String {
-        switch updater.phase {
+    /// The banner's leading line: what is available when resting, what is HAPPENING while the
+    /// update runs — the stage group carries the detail, this carries the intent, so a glance
+    /// mid-update never reads as "still waiting for me to click".
+    private var headline: String { Self.headline(for: updater.phase, version: release.version) }
+
+    /// The phase→chrome mappings below are pure statics over `Phase`, with instance wrappers,
+    /// so each mapping can be asserted directly for every phase (spec §11) without driving a
+    /// real update into that phase — `Phase` is `private(set)` on the updater, deliberately.
+    static func headline(for phase: SelfUpdater.Phase, version: String) -> String {
+        activeProgress(for: phase) == nil
+            ? "A newer version v\(version) is available"
+            : "Updating to v\(version)…"
+    }
+
+    /// The stage label, bar fraction and whole-percent readout while an update is actually in
+    /// flight; nil in every resting phase (which render the button instead). A nil FRACTION
+    /// draws no bar at all: it means no honest fraction exists yet — the download hasn't
+    /// received its first percent, or the server declared no Content-Length — and an empty
+    /// track sitting dead beside "Downloading…" is exactly the hung look this UI replaces.
+    /// Verify/install/restart hold the bar full rather than emptying it; with motion on, the
+    /// sweep and cap glow keep it visibly alive (under Reduce Motion it is a static full bar
+    /// and the stage label alone carries the state — §8's carve-out is for real-progress
+    /// fills, never decoration).
+    var activeProgress: (label: String, fraction: Double?, percent: Int?)? {
+        Self.activeProgress(for: updater.phase)
+    }
+
+    static func activeProgress(for phase: SelfUpdater.Phase)
+        -> (label: String, fraction: Double?, percent: Int?)? {
+        switch phase {
+        case .downloading(let fraction):
+            return fraction > 0
+                ? ("Downloading…", fraction, Int((fraction * 100).rounded()))
+                : ("Downloading…", nil, nil)
+        case .verifying: return ("Verifying…", 1, nil)
+        case .installing: return ("Installing…", 1, nil)
+        case .relaunching: return ("Restarting…", 1, nil)
+        case .idle, .blockedByRun, .degradedToReleasePage, .failed: return nil
+        }
+    }
+
+    private func progressGroup(_ progress: (label: String, fraction: Double?, percent: Int?)) -> some View {
+        HStack(spacing: Theme.Spacing.small) {
+            ZStack(alignment: .trailing) {
+                // Invisible sizer at the widest readout, so the label's width never changes
+                // as the percent gains digits — without it every 9%→10% tick shoves the
+                // whole trailing cluster sideways.
+                Text("Downloading… 100%").themeFont(.caption).monospacedDigit().hidden()
+                Text(progress.percent.map { "\(progress.label) \($0)%" } ?? progress.label)
+                    .themeFont(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.Colors.textSecondary)
+            }
+            .fixedSize()
+            if let fraction = progress.fraction {
+                CapsuleProgressBar(fraction: fraction)
+                    .frame(width: 150)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        // The bar's own value would announce "100 percent" through Verifying/Installing/
+        // Restarting — a completion claim for stages with no measurable fraction. The stage
+        // label is the truth; the percent joins it only while one exists.
+        .accessibilityValue(progress.percent.map { "\($0) percent" } ?? "")
+    }
+
+    private var buttonTitle: String { Self.buttonTitle(for: updater.phase) }
+
+    static func buttonTitle(for phase: SelfUpdater.Phase) -> String {
+        switch phase {
+        // "Download…", not "Update": this install cannot be replaced in place, so the button
+        // opens the release page — promising an in-app update it can't deliver would be a lie,
+        // and the trailing ellipsis is the macOS convention for "leads somewhere else".
+        case .degradedToReleasePage: return "Download…"
         case .idle, .blockedByRun, .failed: return "Update"
-        case .downloading: return "Downloading…"
-        case .verifying: return "Verifying…"
-        case .installing: return "Installing…"
-        case .relaunching: return "Restarting…"
-        case .degradedToReleasePage: return "See the release page"
+        // Unreachable while `activeProgress` maps every active phase to the progress group —
+        // exhaustive so a future Phase case breaks the build here instead of silently
+        // rendering "Update" mid-update.
+        case .downloading, .verifying, .installing, .relaunching: return "Update"
         }
     }
 

@@ -33,9 +33,11 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         case idle
         /// A batch is running: the swap would pull the bundled `gs` out from under it.
         case blockedByRun
-        /// Fraction of the DMG downloaded, for a finer readout than the banner's
-        /// "Downloading…". Reported as 0 for now: the download is a single awaited call with no
-        /// intermediate progress signal, and honest progress is never fabricated (v1 §8).
+        /// Fraction of the DMG downloaded (0…1), driving the banner's progress bar. Real,
+        /// never fabricated (v1 §8): computed from bytes received against the response's
+        /// Content-Length, published at most every whole percent. Stays 0 for the whole
+        /// download when the server declares no length — the banner then shows the stage
+        /// label alone, with no bar, rather than a dead empty track.
         case downloading(Double)
         case verifying
         case installing
@@ -120,6 +122,11 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         let session = URLSession(configuration: sessionConfiguration, delegate: self, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 
+        // Sweep before creating this run's directory: a force-quit mid-download leaks the
+        // workdir (its `defer` never runs), and partial DMGs are ~16 MB each. Only entries
+        // older than an hour are touched — see `sweepStaleWorkDirectories` for why the
+        // single-instance guard alone is not sufficient protection for a sibling's run.
+        await Task.detached { Self.sweepStaleWorkDirectories() }.value
         guard let workdir = try? Self.makeWorkDirectory() else {
             phase = .failed(message: "Toolbox couldn't make room for the download.", asidePath: nil)
             return
@@ -128,7 +135,12 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
 
         let dmg = workdir.appendingPathComponent("Toolbox.dmg")
         do {
-            try await download(dmgURL, to: dmg, session: session)
+            try await Self.download(dmgURL, to: dmg, session: session) { [weak self] fraction in
+                // Only while still downloading: a refused redirect may already have moved the
+                // phase to `.failed`, and a late progress tick must not resurrect the bar.
+                guard let self, case .downloading = self.phase else { return }
+                self.phase = .downloading(fraction)
+            }
         } catch {
             // A refused redirect has already set the specific failure — don't overwrite it
             // with the generic cancellation that follows from `task.cancel()`.
@@ -141,7 +153,12 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         phase = .verifying
         do {
             let published = try await checksum(for: dmgURL, session: session)
-            guard try Self.sha256(of: dmg) == published else {
+            // Detached, as `install` below: hashing 16+ MB synchronously on the main actor
+            // would freeze the banner at the exact moment it claims to be working.
+            let digest = try await Task.detached(priority: .userInitiated) {
+                try Self.sha256(of: dmg)
+            }.value
+            guard digest == published else {
                 phase = .failed(
                     message: "The download didn't match its published checksum, so Toolbox stopped.",
                     asidePath: nil)
@@ -203,9 +220,22 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     /// never a real body size — the redirected host is deliberately unconstrained (see the type
     /// doc), so nothing about the response is trusted before this bound is enforced, exactly as
     /// `maxChecksumResponseBytes` does for the sibling fetch below.
-    private static let maxDMGBytes = 200_000_000
+    private nonisolated static let maxDMGBytes = 200_000_000
 
-    private func download(_ url: URL, to destination: URL, session: URLSession) async throws {
+    /// Deliberately `nonisolated static`, and this is load-bearing, not style: as a
+    /// `@MainActor` instance method, `for try await byte in stream` paid two executor hops
+    /// through the main thread PER BYTE — measured at 155 KB/s against 40 MB/s off the actor,
+    /// which turned a 16 MB DMG into a minutes-long "Downloading…" the user reads as hung
+    /// (and force-quits, which is why v0.0.2→v0.0.3 updates died mid-download in the wild).
+    ///
+    /// `onProgress` is called in order, at most once per whole percent, with a final `1` once
+    /// the body is fully on disk; it is never called when the server declares no
+    /// Content-Length — a fraction computed against a guess would be the fabricated progress
+    /// the phase doc forbids.
+    private nonisolated static func download(
+        _ url: URL, to destination: URL, session: URLSession,
+        onProgress: @escaping @MainActor (Double) -> Void
+    ) async throws {
         var request = URLRequest(url: url)
         request.timeoutInterval = 120
         let (stream, response) = try await session.bytes(for: request)
@@ -222,7 +252,9 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         let handle = try FileHandle(forWritingTo: destination)
         defer { try? handle.close() }
 
+        let total = http.expectedContentLength   // -1 when the server declares no length
         var received = 0
+        var lastReported = 0.0
         var buffer = Data()
         buffer.reserveCapacity(1 << 16)
         for try await byte in stream {
@@ -234,10 +266,21 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
             if buffer.count >= (1 << 16) {
                 try handle.write(contentsOf: buffer)
                 buffer.removeAll(keepingCapacity: true)
+                if total > 0 {
+                    // `min` guards a lying server that sends more than it declared.
+                    let fraction = min(1, Double(received) / Double(total))
+                    if fraction - lastReported >= 0.01 {
+                        lastReported = fraction
+                        await onProgress(fraction)
+                    }
+                }
             }
         }
         if !buffer.isEmpty {
             try handle.write(contentsOf: buffer)
+        }
+        if total > 0, lastReported < 1 {
+            await onProgress(1)
         }
     }
 
@@ -466,11 +509,36 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         return plist["CFBundleShortVersionString"] as? String
     }
 
+    private nonisolated static let workDirectoryPrefix = "Toolbox-update-"
+
     private nonisolated static func makeWorkDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Toolbox-update-\(UUID().uuidString)")
+            .appendingPathComponent(workDirectoryPrefix + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    /// How old an abandoned work directory must be before the sweep may take it. Two live
+    /// instances can briefly coexist — the single-instance guard's own tie window, and the
+    /// DEBUG update smoke runs before that guard is reached — and sweeping a sibling's
+    /// in-flight download would surface to its user as a checksum failure for a file this
+    /// process deleted. An in-flight run's directory is minutes old at most; the leaks this
+    /// sweep exists for are hours-to-days old.
+    private nonisolated static let sweepMinimumAge: TimeInterval = 3600
+
+    /// Remove work directories abandoned by earlier runs — a force-quit mid-download skips
+    /// the owning run's `defer`, and each leak is a partial DMG. Best-effort by design: a
+    /// sweep that cannot remove something must never fail the update it precedes.
+    private nonisolated static func sweepStaleWorkDirectories() {
+        let tmp = FileManager.default.temporaryDirectory
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: tmp, includingPropertiesForKeys: [.contentModificationDateKey], options: []) else { return }
+        for entry in entries where entry.lastPathComponent.hasPrefix(workDirectoryPrefix) {
+            let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate) ?? .distantPast
+            guard Date().timeIntervalSince(modified) > sweepMinimumAge else { continue }
+            try? FileManager.default.removeItem(at: entry)
+        }
     }
 
 }

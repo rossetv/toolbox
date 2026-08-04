@@ -6,6 +6,7 @@
 // Public License v3.0 or later. See the LICENSE file in the project root.
 
 import Combine
+import CryptoKit
 import Network
 import XCTest
 @testable import Toolbox
@@ -205,6 +206,12 @@ final class SelfUpdaterTests: XCTestCase {
         return dmg
     }
 
+    /// Hex digest for fixture checksum routes built in-process — beside `shasumOutput(for:)`,
+    /// which does the same for on-disk fixtures via the real `shasum` tool.
+    private static func sha256Hex(of data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     private static func shasumOutput(for file: URL) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/shasum")
@@ -306,8 +313,11 @@ final class SelfUpdaterTests: XCTestCase {
 
     @MainActor
     func testPhaseReportsEveryStageTheBannerShows() async throws {
-        // Downloading… / Verifying… / Installing… are the banner's button states (spec §6.10):
-        // the flow must actually pass through them, in order.
+        // Downloading… / Verifying… / Installing… are the banner's stages (spec §6.10): the
+        // flow must actually pass through them, in order. The downloading prefix is asserted
+        // by shape rather than pinned exactly — how many fractions land between 0 and 1
+        // depends on the fixture DMG's size, but the envelope (starts at 0, never decreases,
+        // ends at 1) and the tail's order are invariant.
         let bundle = try makeInstalledApp()
         let server = try startDMGServer()
         let updater = makeUpdater(bundle: bundle, relaunches: RelaunchLog())
@@ -317,7 +327,80 @@ final class SelfUpdaterTests: XCTestCase {
 
         await updater.update(release: release(dmgURL: server.url("/Toolbox.dmg")))
 
-        XCTAssertEqual(seen, [.idle, .downloading(0), .verifying, .installing, .relaunching])
+        XCTAssertEqual(seen.first, .idle)
+        let fractions: [Double] = seen.dropFirst().compactMap {
+            if case .downloading(let fraction) = $0 { return fraction } else { return nil }
+        }
+        XCTAssertEqual(seen.dropFirst().prefix(fractions.count),
+                       fractions.map { SelfUpdater.Phase.downloading($0) }[...],
+                       "every downloading phase precedes the first non-downloading one")
+        XCTAssertEqual(fractions.first, 0)
+        XCTAssertEqual(fractions.last, 1, "the bar must land on 100% before verification")
+        XCTAssertEqual(fractions, fractions.sorted(), "progress never goes backwards")
+        XCTAssertEqual(seen.dropFirst(1 + fractions.count), [.verifying, .installing, .relaunching])
+    }
+
+    /// The regression the stuck-looking banner shipped with: the download loop consumed the
+    /// body but only ever published `.downloading(0)`, so a real 16 MB download sat on a
+    /// static "Downloading…" for its whole (then main-actor-throttled) life. A body large
+    /// enough to span several progress steps must surface intermediate fractions.
+    @MainActor
+    func testDownloadPublishesIncreasingProgressFractions() async throws {
+        let bundle = try makeInstalledApp()
+        // 2 MiB spans 32 of the downloader's 64 KiB flush boundaries at 3.125% steps, all
+        // above the 1% publish throttle. Content is irrelevant (nothing compresses on the
+        // loopback fixture path) and not a mountable DMG — the flow is allowed to fail at
+        // the mount step; the phases under test all precede it.
+        let body = Data(repeating: 0x41, count: 2 * 1024 * 1024)
+        let digest = Self.sha256Hex(of: body) + "  Toolbox.dmg\n"
+        let server = try startServer()
+        server.route("/Toolbox.dmg", .init(status: 200, body: body))
+        server.route("/Toolbox.dmg.sha256", .init(status: 200, body: Data(digest.utf8)))
+        let updater = makeUpdater(bundle: bundle, relaunches: RelaunchLog())
+        var seen: [SelfUpdater.Phase] = []
+        let observation = updater.$phase.sink { seen.append($0) }
+        defer { observation.cancel() }
+
+        await updater.update(release: release(dmgURL: server.url("/Toolbox.dmg")))
+
+        let intermediate = seen.compactMap { phase -> Double? in
+            guard case .downloading(let fraction) = phase, fraction > 0, fraction < 1 else { return nil }
+            return fraction
+        }
+        XCTAssertGreaterThanOrEqual(Set(intermediate).count, 3,
+                                    "a 2 MB body must publish real intermediate progress, got \(seen)")
+        XCTAssertEqual(intermediate, intermediate.sorted(), "progress never goes backwards")
+        XCTAssertTrue(seen.contains(.verifying), "the download itself must still complete")
+    }
+
+    /// A force-quit mid-download leaks the run's work directory (its `defer` never runs) —
+    /// the next update sweeps abandoned siblings rather than letting partial DMGs pile up.
+    /// The sweep only takes entries older than an hour (a fresh one could be a live sibling
+    /// instance's in-flight download), so the abandoned fixture is backdated and the fresh
+    /// one asserted untouched.
+    @MainActor
+    func testUpdateSweepsAbandonedWorkDirectoriesFromEarlierRuns() async throws {
+        func makeWorkDirectory(named name: String) throws -> URL {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data(repeating: 0x41, count: 1024).write(to: directory.appendingPathComponent("Toolbox.dmg"))
+            addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+            return directory
+        }
+        let abandoned = try makeWorkDirectory(named: "Toolbox-update-STALE-\(UUID().uuidString)")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -7200)], ofItemAtPath: abandoned.path)
+        let fresh = try makeWorkDirectory(named: "Toolbox-update-FRESH-\(UUID().uuidString)")
+        let bundle = try makeInstalledApp()
+        let server = try startDMGServer()
+        let updater = makeUpdater(bundle: bundle, relaunches: RelaunchLog())
+
+        await updater.update(release: release(dmgURL: server.url("/Toolbox.dmg")))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path),
+                       "the abandoned work directory from a force-quit run must be swept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fresh.path),
+                      "a fresh directory could be a live sibling's in-flight download — never swept")
     }
 
     @MainActor
@@ -846,6 +929,59 @@ final class SelfUpdaterTests: XCTestCase {
                        "the disabled button says why it is disabled")
         XCTAssertTrue(banner(false).isButtonEnabled, "an idle queue leaves the button live")
         XCTAssertNil(banner(false).status, "and says nothing about batches")
+    }
+
+    // MARK: - Banner phase → chrome mappings (spec §11)
+
+    func testActiveProgressMapsEveryPhaseTheBannerRenders() throws {
+        // Resting phases render the button, never the stage group.
+        for phase: SelfUpdater.Phase in [.idle, .blockedByRun,
+                                         .degradedToReleasePage(reason: "x"),
+                                         .failed(message: "x", asidePath: nil)] {
+            XCTAssertNil(UpdateBannerView.activeProgress(for: phase), "\(phase)")
+        }
+
+        // Before the first percent there is no honest fraction, so no bar and no percent —
+        // an empty static track beside "Downloading…" is exactly the hung look this replaces.
+        let starting = try XCTUnwrap(UpdateBannerView.activeProgress(for: .downloading(0)))
+        XCTAssertEqual(starting.label, "Downloading…")
+        XCTAssertNil(starting.fraction)
+        XCTAssertNil(starting.percent)
+
+        let midway = try XCTUnwrap(UpdateBannerView.activeProgress(for: .downloading(0.45)))
+        XCTAssertEqual(midway.label, "Downloading…")
+        XCTAssertEqual(midway.fraction, 0.45)
+        XCTAssertEqual(midway.percent, 45)
+
+        // The tail stages hold the bar full, with no percent readout — a fraction exists to
+        // draw, but announcing "100 percent" for an unmeasurable stage would be a lie.
+        for (phase, label): (SelfUpdater.Phase, String) in
+            [(.verifying, "Verifying…"), (.installing, "Installing…"), (.relaunching, "Restarting…")] {
+            let stage = try XCTUnwrap(UpdateBannerView.activeProgress(for: phase), "\(phase)")
+            XCTAssertEqual(stage.label, label)
+            XCTAssertEqual(stage.fraction, 1)
+            XCTAssertNil(stage.percent)
+        }
+    }
+
+    func testHeadlineSwitchesFromAvailabilityToIntentWhileUpdating() {
+        XCTAssertEqual(UpdateBannerView.headline(for: .idle, version: "9.9.9"),
+                       "A newer version v9.9.9 is available")
+        XCTAssertEqual(UpdateBannerView.headline(for: .blockedByRun, version: "9.9.9"),
+                       "A newer version v9.9.9 is available")
+        for phase: SelfUpdater.Phase in [.downloading(0), .downloading(0.5), .verifying,
+                                         .installing, .relaunching] {
+            XCTAssertEqual(UpdateBannerView.headline(for: phase, version: "9.9.9"),
+                           "Updating to v9.9.9…", "\(phase)")
+        }
+    }
+
+    func testButtonTitleOffersDownloadWhenTheInstallCannotSelfReplace() {
+        XCTAssertEqual(UpdateBannerView.buttonTitle(for: .degradedToReleasePage(reason: "x")),
+                       "Download…")
+        for phase: SelfUpdater.Phase in [.idle, .blockedByRun, .failed(message: "x", asidePath: nil)] {
+            XCTAssertEqual(UpdateBannerView.buttonTitle(for: phase), "Update", "\(phase)")
+        }
     }
 }
 
