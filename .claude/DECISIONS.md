@@ -943,3 +943,22 @@ outcome-keyed rule that entry established is untouched and is what makes the cor
 **Spec:** .claude/specs/20260730-ui-redesign.md (§6.4, §11 — amended in this branch)
 **Affects:** `Sources/Toolbox/Queue/QueueViewModel.swift` (`ocrLeg`, `madeSearchable`),
 `Tests/ToolboxTests/QueuePassTests.swift`
+
+## 2026-08-04 — `SelfUpdater.download` moved off the main actor; banner shows real progress
+
+**Decision:** `SelfUpdater.download` is `nonisolated static` rather than a `@MainActor`
+instance method, and publishes real Content-Length-derived progress fractions into
+`Phase.downloading(Double)`. `UpdateBannerView` (human-approved, `DESIGN.md` §4/§9/§10)
+replaces the static "Downloading…" label with a stage group (label + `CapsuleProgressBar`)
+while an update runs.
+
+**Why:** a `@MainActor` `for try await byte in stream` loop paid two executor hops through
+the main thread per byte — measured at 155 KB/s against 40 MB/s off the actor — so a 16.5 MB
+DMG sat minutes behind a static label users read as hung; two abandoned partial downloads (at
+81% and 52%) were found on disk from force-quits. `sweepStaleWorkDirectories()` was added
+alongside it to reclaim the `Toolbox-update-*` directories force-quits leak (entries older
+than one hour only, so a sibling instance's in-flight download is never touched).
+
+**Affects:** `Sources/Toolbox/App/SelfUpdater.swift`, `Sources/Toolbox/App/UpdateBannerView.swift`,
+`Sources/Toolbox/DesignSystem/Components.swift` (`PrimaryButton`'s `compact` variant),
+`.claude/docs/modules/app.md`, `.claude/docs/modules/design-system.md`

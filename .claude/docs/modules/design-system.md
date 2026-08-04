@@ -35,6 +35,11 @@ styling inline; nothing here depends on `ToolJob`/`CompressPreset`/view-model st
   `sheet` (14) — root `DESIGN.md`'s Do/Don't caps rectangular corners at 12px, which
   every token but the redesign's sheet radius keeps. `input` (11) has no consumer left
   and is kept only as a token.
+- **`PrimaryButton`'s `compact: Bool` variant (13/semibold, 6×16 padding vs. the
+  standard 14/semibold, 10×22) is banner-only** — the update banner's slim strip sits
+  beside 13pt text, so the standard size overpowers it; every other `PrimaryButton`
+  call site keeps `compact: false` (the default). See [App](app.md)'s
+  `UpdateBannerView` row.
 - **Every plain-rendering button (all `MotionButtonStyle` sites) gets `clearsClickFocus()`** unless it
   deliberately keeps click focus: a click on any focusable SwiftUI control makes it
   first responder and macOS then draws a keyboard focus ring the user never asked for.

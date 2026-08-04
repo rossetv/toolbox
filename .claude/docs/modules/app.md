@@ -26,8 +26,8 @@ and two headless self-test hooks (compress, update).
 | `Sources/Toolbox/App/RootView.swift` | The window's single pane: owns `QueueViewModel`, `SelfUpdater` and `UpdateChecker`, shows `UpdateBannerView` when an update is available, and constructs `QueueView(model:history:showAbout:)` — `QueueView` builds all of its own popovers/sheets directly, `RootView` only threads the model, history and the externally-owned `showAbout` binding through |
 | `Sources/Toolbox/App/WindowConfigurator.swift` | `WindowSetup.applyMinimumSize(_:)` — enforces the window's minimum size (`preferredSize`, 900×640), title and titlebar style on `NSWindow`, restores/saves the remembered frame, and arms the stray-focus-clear net |
 | `Sources/Toolbox/App/UpdateChecker.swift` | Fetches the latest GitHub release on launch and compares versions — the app's only unprompted network request; parses and host-pins the release page and `.dmg` asset URLs (`https`/`github.com` only), with a DEBUG-only `TOOLBOX_UPDATE_FEED` fixture-feed override |
-| `Sources/Toolbox/App/SelfUpdater.swift` | The user-initiated self-update: download the release DMG, verify its published `.sha256`, mount it, aside-swap the running app bundle, relaunch — mirrors `scripts/install.sh` step for step; every failure leg leaves a working install on disk |
-| `Sources/Toolbox/App/UpdateBannerView.swift` | The strip shown under the titlebar when `UpdateChecker.available` is set: version, release-notes link, Update button (drives `SelfUpdater`), and a per-version dismiss (`bannerDismissed` in `UserDefaults`) |
+| `Sources/Toolbox/App/SelfUpdater.swift` | The user-initiated self-update: download the release DMG (`download(_:to:session:onProgress:)`, `nonisolated static`), verify its published `.sha256`, mount it, aside-swap the running app bundle, relaunch — mirrors `scripts/install.sh` step for step; every failure leg leaves a working install on disk; sweeps abandoned `Toolbox-update-*` work directories (`sweepStaleWorkDirectories()`) before each run |
+| `Sources/Toolbox/App/UpdateBannerView.swift` | The strip shown under the titlebar when `UpdateChecker.available` is set: resting state (version, "See what changed" link, Update button, per-version dismiss via `bannerDismissed` in `UserDefaults`); while an update runs, the button's slot swaps to a stage group (`activeProgress(for:)`) — a caption stage label + `CapsuleProgressBar` — driven by real download-progress fractions from `SelfUpdater.Phase.downloading(_)` |
 | `Sources/Toolbox/App/AboutView.swift` | The About content: bundle icon/name/version (read from `Bundle.main.infoDictionary`, never hard-coded), GitHub/licence/contact links, copyright; presented by `QueueView` itself, driven by the `showAbout` binding |
 | `Sources/Toolbox/App/CompressSmoke.swift` | `TOOLBOX_SMOKE=compress` — runs the real compress path from the app process, exits with a pass/fail line; the CI packaged-app smoke test |
 | `Sources/Toolbox/App/UpdateSmoke.swift` | `TOOLBOX_SMOKE=update` (DEBUG only) — drives a real update against a `TOOLBOX_UPDATE_FEED` fixture feed and proves the relaunch actually swaps to the new bundle, via a marker file (`checkRelaunchIfMarked()`) that crosses the process boundary `open` does not carry env vars across |
@@ -75,6 +75,24 @@ and two headless self-test hooks (compress, update).
   `github.com` exactly** (`UpdateChecker.parseRelease`, `pinnedDMGURL`) — the DMG is
   self-signed, so HTTPS-to-GitHub is the only trust anchor; a hostile API response
   must not be able to redirect the user or the downloader elsewhere.
+- **`SelfUpdater.download` is `nonisolated static`, never a `@MainActor` instance method** —
+  a `@MainActor` `for try await byte in stream` loop paid two executor hops through the main
+  thread per byte, measured at 155 KB/s against 40 MB/s off the actor, so a 16 MB DMG sat
+  minutes behind a static "Downloading…" and users force-quit mid-update. It flushes in
+  64 KiB chunks and calls its `onProgress: @escaping @MainActor (Double) -> Void` in order, at
+  most once per whole percent of `HTTPURLResponse.expectedContentLength`, with a final `1`
+  once the body is on disk — never called at all when the server declares no Content-Length
+  (`total <= 0`), since a fraction against a guess would be the fabricated progress
+  `Phase.downloading`'s doc forbids. `sha256(of:)` verification also runs off the main actor
+  (`Task.detached`), beside the pre-existing detached install, so hashing 16+ MB never freezes
+  the banner at the moment it claims to be working.
+- **`sweepStaleWorkDirectories()` runs at the start of every `update(release:)`**, before
+  `makeWorkDirectory()` creates this run's own directory — a force-quit mid-download skips the
+  owning run's `defer`, leaking a `Toolbox-update-*` directory with a partial (~16 MB) DMG.
+  Only entries older than `sweepMinimumAge` (3600s) are removed: two live instances can briefly
+  coexist (the single-instance guard's tie window, DEBUG update-smoke runs), and sweeping a
+  sibling's in-flight download would surface to its user as a checksum failure for a file this
+  process deleted. Best-effort — a removal failure never fails the update it precedes.
 - **`TOOLBOX_UPDATE_FEED` is a DEBUG-only fixture-feed override** (`UpdateChecker`'s
   `fetchLatest` init, `pinnedDMGURL`'s `feedOverrideActive`) — compiled out of every
   Release build, gated three ways when active (compile flag, override actually set,
