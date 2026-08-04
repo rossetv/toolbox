@@ -373,6 +373,30 @@ final class SelfUpdaterTests: XCTestCase {
         XCTAssertTrue(seen.contains(.verifying), "the download itself must still complete")
     }
 
+    /// `download`'s contract: no Content-Length, no progress — a fraction computed against a
+    /// guess would be fabricated progress (v1 §8). The download itself must still complete
+    /// (the body's end is the connection close), so the only fraction ever published is the
+    /// `.downloading(0)` the flow enters with.
+    @MainActor
+    func testDownloadWithoutContentLengthPublishesNoFractions() async throws {
+        let bundle = try makeInstalledApp()
+        let server = try startServer()
+        server.route("/Toolbox.dmg", .init(status: 200, body: Self.goodDMGBytes, omitsContentLength: true))
+        server.route("/Toolbox.dmg.sha256", .init(status: 200, body: Self.goodDMGChecksumFile))
+        let updater = makeUpdater(bundle: bundle, relaunches: RelaunchLog())
+        var seen: [SelfUpdater.Phase] = []
+        let observation = updater.$phase.sink { seen.append($0) }
+        defer { observation.cancel() }
+
+        await updater.update(release: release(dmgURL: server.url("/Toolbox.dmg")))
+
+        let fractions = seen.compactMap { phase -> Double? in
+            if case .downloading(let fraction) = phase { return fraction } else { return nil }
+        }
+        XCTAssertEqual(fractions, [0], "no honest fraction exists without a length — none may be published")
+        XCTAssertTrue(seen.contains(.verifying), "the download itself must still complete")
+    }
+
     /// A force-quit mid-download leaks the run's work directory (its `defer` never runs) —
     /// the next update sweeps abandoned siblings rather than letting partial DMGs pile up.
     /// The sweep only takes entries older than an hour (a fresh one could be a live sibling
@@ -999,6 +1023,9 @@ final class FixtureHTTPServer {
         /// bytes are actually written — lets a test declare an oversized body cheaply, without
         /// materialising it, to exercise a length-based rejection.
         var declaredContentLength: Int?
+        /// Sends no `Content-Length` header at all (the body's end is the connection close) —
+        /// the downloader's no-honest-fraction branch is unreachable without this.
+        var omitsContentLength = false
     }
 
     private let listener: NWListener
@@ -1073,7 +1100,9 @@ final class FixtureHTTPServer {
 
         let response = route ?? Route(status: 404)
         var header = "HTTP/1.1 \(response.status) \(response.status == 200 ? "OK" : "Found")\r\n"
-        header += "Content-Length: \(response.declaredContentLength ?? response.body.count)\r\n"
+        if !response.omitsContentLength {
+            header += "Content-Length: \(response.declaredContentLength ?? response.body.count)\r\n"
+        }
         header += "Connection: close\r\n"
         for (name, value) in response.headers { header += "\(name): \(value)\r\n" }
         header += "\r\n"

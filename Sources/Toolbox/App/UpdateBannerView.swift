@@ -73,8 +73,12 @@ struct UpdateBannerView: View {
                     ZStack {
                         // Invisible sizer: the banner's height is the button's in EVERY phase,
                         // so the button→bar swap never changes it — the bar + caption alone are
-                        // shorter and the whole strip would jump on click.
-                        PrimaryButton(title: "Update", isEnabled: false, compact: true, action: {}).hidden()
+                        // shorter and the whole strip would jump on click. Hidden from
+                        // accessibility too: `.hidden()` documents no accessibility-tree
+                        // removal, and a phantom disabled "Update" is VoiceOver noise.
+                        PrimaryButton(title: "Update", isEnabled: false, compact: true, action: {})
+                            .hidden()
+                            .accessibilityHidden(true)
                         if let progress = activeProgress {
                             progressGroup(progress)
                                 .transition(entrance)
@@ -167,8 +171,13 @@ struct UpdateBannerView: View {
             ZStack(alignment: .trailing) {
                 // Invisible sizer at the widest readout, so the label's width never changes
                 // as the percent gains digits — without it every 9%→10% tick shoves the
-                // whole trailing cluster sideways.
-                Text("Downloading… 100%").themeFont(.caption).monospacedDigit().hidden()
+                // whole trailing cluster sideways. Explicitly hidden from accessibility:
+                // `.hidden()` alone documents no accessibility-tree removal, and inside the
+                // group's `children: .combine` a leaked "100%" would be a false completion
+                // announcement mid-download.
+                Text("Downloading… 100%").themeFont(.caption).monospacedDigit()
+                    .hidden()
+                    .accessibilityHidden(true)
                 Text(progress.percent.map { "\(progress.label) \($0)%" } ?? progress.label)
                     .themeFont(.caption)
                     .monospacedDigit()

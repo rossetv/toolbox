@@ -225,8 +225,8 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
     /// Deliberately `nonisolated static`, and this is load-bearing, not style: as a
     /// `@MainActor` instance method, `for try await byte in stream` paid two executor hops
     /// through the main thread PER BYTE — measured at 155 KB/s against 40 MB/s off the actor,
-    /// which turned a 16 MB DMG into a minutes-long "Downloading…" the user reads as hung
-    /// (and force-quits, which is why v0.0.2→v0.0.3 updates died mid-download in the wild).
+    /// which turned a 16 MB DMG into a minutes-long "Downloading…" that reads as hung (two
+    /// abandoned partial downloads, at 81% and 52%, were found on disk from force-quits).
     ///
     /// `onProgress` is called in order, at most once per whole percent, with a final `1` once
     /// the body is fully on disk; it is never called when the server declares no
@@ -534,8 +534,10 @@ final class SelfUpdater: NSObject, ObservableObject, URLSessionTaskDelegate {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: tmp, includingPropertiesForKeys: [.contentModificationDateKey], options: []) else { return }
         for entry in entries where entry.lastPathComponent.hasPrefix(workDirectoryPrefix) {
+            // An unreadable date falls back to NOW — unknown age must fail toward keeping,
+            // or the fallback silently defeats the age floor this sweep promises.
             let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey])
-                .contentModificationDate) ?? .distantPast
+                .contentModificationDate) ?? Date()
             guard Date().timeIntervalSince(modified) > sweepMinimumAge else { continue }
             try? FileManager.default.removeItem(at: entry)
         }
